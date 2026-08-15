@@ -47,6 +47,11 @@ export async function insert(
 		.run();
 }
 
+/** 소유 확인 없이 읽는다. 아이 경로처럼 배정으로 소유가 이미 확인된 곳에서만 쓴다. */
+export async function find(env: AppEnv, quizId: string): Promise<QuizRow | null> {
+	return env.DB.prepare("SELECT * FROM quizzes WHERE id = ?").bind(quizId).first<QuizRow>();
+}
+
 export async function findOwned(
 	env: AppEnv,
 	parentUserId: string,

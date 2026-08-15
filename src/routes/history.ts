@@ -25,12 +25,22 @@ function readFilter(url: URL): HistoryFilter & { childId?: string } {
 	return { limit, offset, ...(bookId ? { bookId } : {}), ...(quizId ? { quizId } : {}), ...(childId ? { childId } : {}) };
 }
 
+interface Snapshot {
+	questionText?: string;
+	choices?: string[];
+	correctChoice?: number;
+}
+
 /** JSON 으로 저장된 변경 전/후 스냅샷에서 화면에 쓸 만한 것만 꺼낸다. */
-function summarize(raw: string | null): { questionText?: string; correctChoice?: number } | null {
+function summarize(raw: string | null): Snapshot | null {
 	if (!raw) return null;
 	try {
-		const parsed = JSON.parse(raw) as { questionText?: string; correctChoice?: number };
-		return { questionText: parsed.questionText, correctChoice: parsed.correctChoice };
+		const parsed = JSON.parse(raw) as Snapshot;
+		return {
+			questionText: parsed.questionText,
+			choices: Array.isArray(parsed.choices) ? parsed.choices : undefined,
+			correctChoice: parsed.correctChoice,
+		};
 	} catch {
 		return null;
 	}
@@ -52,6 +62,13 @@ async function questions({ env, url, principal }: RouteCtx): Promise<Response> {
 			bookTitle: row.book_title,
 			quizId: row.quiz_id,
 			quizRound: row.quiz_round,
+			// 정답을 함께 보여준다. 문항만 있으면 부모가 "이게 맞는 문제인가" 를 판단할 수 없다.
+			//
+			// 그 기록이 남긴 스냅샷을 먼저 쓴다. 지금 저장된 값을 그대로 보여주면 나중에 고친
+			// 내용이 과거 기록에 섞인다(§22). 스냅샷이 없는 기록(삭제·재생성)은 지금 값이
+			// 곧 그때의 값이라 그것을 쓴다.
+			choices: summarize(row.new_data)?.choices ?? [row.choice1, row.choice2, row.choice3, row.choice4],
+			correctChoice: summarize(row.new_data)?.correctChoice ?? row.correct_choice,
 			before: summarize(row.old_data),
 			after: summarize(row.new_data),
 		})),
@@ -75,6 +92,8 @@ async function answers({ env, url, principal }: RouteCtx): Promise<Response> {
 			questionNumber: row.question_number,
 			// 아이가 실제로 본 문항. 이후 부모가 문제를 고쳐도 이 값은 변하지 않는다(§22).
 			questionText: row.shown_text,
+			// 아이가 그때 본 선택지. 번호만 보여주면 무엇을 골랐는지 알 수 없다.
+			choices: [row.shown_choice1, row.shown_choice2, row.shown_choice3, row.shown_choice4],
 			selectedChoice: row.selected_choice,
 			correctChoice: row.correct_choice,
 			isCorrect: row.is_correct === 1,

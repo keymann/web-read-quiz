@@ -216,6 +216,46 @@ body {
 	border-color: var(--danger);
 }
 
+/* 아이 화면의 진행 표시·문제·결과 */
+.kid-progress {
+	margin: 0 0 8px;
+	font-size: 22px;
+	font-weight: 700;
+	color: var(--primary);
+}
+
+.kid-question {
+	margin: 0 0 18px;
+	font-size: 24px;
+	line-height: 1.5;
+}
+
+.kid-result {
+	margin-top: 14px;
+}
+
+.kid-score {
+	text-align: center;
+}
+
+.kid-score__emoji {
+	margin: 0;
+	font-size: 56px;
+	line-height: 1.2;
+}
+
+.kid-score__title {
+	margin: 4px 0 0;
+	font-size: 28px;
+}
+
+.kid-score__number {
+	margin: 6px 0 12px;
+	font-size: 44px;
+	font-weight: 800;
+	color: var(--primary);
+}
+
 /* ── 폼 ──────────────────────────────────────────────── */
 
 .field {
@@ -338,6 +378,32 @@ body {
 .list__meta {
 	color: var(--text-muted);
 	font-size: 14px;
+}
+
+/* 이력의 선택지 목록. 정답과 아이가 고른 답을 한눈에 구분한다. */
+.history__choices {
+	flex-basis: 100%;
+	margin: 8px 0 0;
+	padding-left: 22px;
+	display: grid;
+	gap: 4px;
+	font-size: 14px;
+	color: var(--text-muted);
+}
+
+.history__choices li {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+}
+
+.history__choices .is-answer {
+	color: var(--text);
+	font-weight: 600;
+}
+
+.history__choices .is-picked {
+	color: var(--text);
 }
 
 /* 근거가 아니라 "근거가 없었다" 는 기록. 눈에 띄게 구분한다. */

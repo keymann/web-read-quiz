@@ -132,14 +132,26 @@
 
 ## 아이 풀이
 
+Attempt 는 시작할 때 그 시점의 활성 문항을 **버전 단위로 고정한다**(§22). 이후 부모가 문제를
+고치거나 지워도 진행 중인 판은 흔들리지 않고, 나중에 이력을 볼 때도 "그때 본 문항" 이 그대로
+재구성된다. 본문·선택지·정답을 모두 `question_versions` 에서 읽는다.
+
+**정답은 아직 답하지 않은 문항에서 빠진다.** 응답에 담기기만 해도 개발자 도구로 볼 수 있다.
+채점은 서버가 하므로 클라이언트가 정답을 알아야 할 이유가 없고, 답한 뒤에는 그때 담아 준다.
+
+통과 기준만큼 맞히면 **그 자리에서 판이 끝난다**(§15 조기 종료). 남은 문항은 미응답으로 남는다.
+점수는 `round(정답 수 / 통과 기준 × 100)`, 최대 100 — 문항 수 대비 백분율이 아니라 **통과 기준
+대비 진척도**다(§17).
+
 | Method | Path | Role | 설명 |
 | --- | --- | --- | --- |
 | GET | `/api/my/quizzes` | CHILD | ✅ 내가 받은 퀴즈 (아직 안 끝난 것만) |
+| GET | `/api/my/attempts` | CHILD | ✅ 내 지난 기록 |
+| POST | `/api/attempts` | CHILD | ✅ `{ assignmentId }` → Attempt 시작 + 문항 스냅샷 고정 |
+| GET | `/api/attempts/:id` | CHILD | ✅ 진행 상태 + 문항 (**안 푼 문항에는 정답이 실리지 않는다**) |
+| POST | `/api/attempts/:id/answers` | CHILD | ✅ `{ questionNumber, selectedChoice }` → 채점 결과 즉시 반환 |
+| POST | `/api/attempts/:id/submit` | CHILD | ✅ 남은 문항을 두고 그만두기 → 점수·통과 확정 |
 | GET | `/api/children/:id/quizzes` | PARENT·CHILD | 제출된 퀴즈 목록 (CHILD 는 자기 것만) |
-| POST | `/api/attempts` | CHILD | `{ assignmentId }` → Attempt 시작 + 20문항 스냅샷 고정. 쿨다운 검사 |
-| GET | `/api/attempts/:id` | CHILD·PARENT | 진행 상태 + 현재 문항 (정답 필드는 CHILD 응답에서 제외) |
-| POST | `/api/attempts/:id/answers` | CHILD | `{ questionId, selectedChoice }` → 채점 결과 즉시 반환 |
-| POST | `/api/attempts/:id/submit` | CHILD | 최종 제출 → 점수·통과 여부 확정 |
 | GET | `/api/children/:id/history` | PARENT·CHILD | 과거 Attempt 목록 |
 | GET | `/api/children/:id/summary` | PARENT | 대시보드 집계 (총 퀴즈·통과·재도전) |
 

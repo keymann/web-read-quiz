@@ -18,6 +18,12 @@ export interface QuestionHistoryEntry {
 	new_data: string | null;
 	question_number: number;
 	question_text: string;
+	/** 지금 저장돼 있는 선택지와 정답. 스냅샷(new_data)이 없는 기록에서 이 값을 쓴다. */
+	choice1: string;
+	choice2: string;
+	choice3: string;
+	choice4: string;
+	correct_choice: number;
 	quiz_id: string;
 	quiz_round: number;
 	book_title: string;
@@ -51,6 +57,7 @@ export async function listQuestionHistory(
 	const { results } = await env.DB.prepare(
 		`SELECT h.id, h.created_at, h.action, h.actor_type, h.old_data, h.new_data,
 		        q.question_number, q.question_text,
+		        q.choice1, q.choice2, q.choice3, q.choice4, q.correct_choice,
 		        z.id AS quiz_id, z.round AS quiz_round,
 		        b.title AS book_title
 		   FROM question_histories h
@@ -77,6 +84,11 @@ export interface AnswerHistoryEntry {
 	question_text: string;
 	/** 아이가 실제로 본 문항 본문. 이후 문제가 수정돼도 이 값은 변하지 않는다(§22). */
 	shown_text: string;
+	/** 아이가 실제로 본 선택지 4개. 본문과 같은 이유로 버전에서 가져온다. */
+	shown_choice1: string;
+	shown_choice2: string;
+	shown_choice3: string;
+	shown_choice4: string;
 	child_name: string;
 	quiz_round: number;
 	book_title: string;
@@ -111,6 +123,8 @@ export async function listAnswerHistory(
 		`SELECT a.id, a.answered_at, a.selected_choice, a.correct_choice, a.is_correct,
 		        q.question_number, q.question_text,
 		        v.question_text AS shown_text,
+		        v.choice1 AS shown_choice1, v.choice2 AS shown_choice2,
+		        v.choice3 AS shown_choice3, v.choice4 AS shown_choice4,
 		        c.name AS child_name,
 		        z.round AS quiz_round,
 		        b.title AS book_title,

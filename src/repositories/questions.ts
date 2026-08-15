@@ -198,6 +198,30 @@ export async function deactivate(env: AppEnv, quizId: string, ids: string[]): Pr
 	return targets.length;
 }
 
+/**
+ * 문항별 **현재 버전 id**. Attempt 를 시작할 때 이 버전으로 문항을 고정한다(§22).
+ *
+ * `questions.current_version` 은 버전 번호이지 행 id 가 아니라 조인이 필요하다.
+ */
+export async function currentVersionIds(
+	env: AppEnv,
+	questionIds: string[],
+): Promise<Map<string, string>> {
+	if (questionIds.length === 0) return new Map();
+
+	const placeholders = questionIds.map(() => "?").join(",");
+	const { results } = await env.DB.prepare(
+		`SELECT v.question_id, v.id
+		   FROM question_versions v
+		   JOIN questions q ON q.id = v.question_id AND q.current_version = v.version
+		  WHERE v.question_id IN (${placeholders})`,
+	)
+		.bind(...questionIds)
+		.all<{ question_id: string; id: string }>();
+
+	return new Map(results.map((r) => [r.question_id, r.id]));
+}
+
 /** 지금 쓰이고 있는 문항 번호. 비운 자리를 다시 채울 때 쓴다. */
 export async function activeNumbers(env: AppEnv, quizId: string): Promise<number[]> {
 	const { results } = await env.DB.prepare(

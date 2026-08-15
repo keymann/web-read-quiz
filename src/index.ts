@@ -8,6 +8,7 @@
  */
 import { readSession } from "./auth/session";
 import { aiRelayRoutes } from "./routes/ai-relay";
+import { attemptRoutes } from "./routes/attempts";
 import { authRoutes } from "./routes/auth";
 import { bookRoutes } from "./routes/books";
 import { childrenRoutes } from "./routes/children";
@@ -26,6 +27,7 @@ const routes: Route[] = [
 	...settingsRoutes,
 	...bookRoutes,
 	...quizRoutes,
+	...attemptRoutes,
 	...historyRoutes,
 	...aiRelayRoutes,
 ];

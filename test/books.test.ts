@@ -102,22 +102,27 @@ async function uploadCover(client: Client, bytes = PNG_BYTES, filename = "cover.
 }
 
 describe("책 등록", () => {
-	it("표지를 올리면 R2 에 저장되고 책이 만들어진다", async () => {
+	it("표지를 올리면 KV 에 저장되고 책이 만들어진다", async () => {
 		const client = await withKey();
 		const res = await uploadCover(client);
 
 		expect(res.status).toBe(201);
 		const bookId = res.body.data.book.id;
 
-		const row = await env.DB.prepare("SELECT cover_r2_key, cover_mime FROM books WHERE id = ?")
+		const row = await env.DB.prepare("SELECT cover_key, cover_mime FROM books WHERE id = ?")
 			.bind(bookId)
-			.first<{ cover_r2_key: string; cover_mime: string }>();
+			.first<{ cover_key: string; cover_mime: string }>();
 
 		expect(row!.cover_mime).toBe("image/png");
-		// get() 은 본문 스트림을 열어 두어 테스트 격리 스토리지가 정리되지 않는다. 존재만 확인한다.
-		const object = await env.IMAGES.head(row!.cover_r2_key);
-		expect(object).not.toBeNull();
-		expect(object!.size).toBe(PNG_BYTES.byteLength);
+
+		const stored = await env.IMAGES.getWithMetadata<{ contentType: string }>(
+			row!.cover_key,
+			"arrayBuffer",
+		);
+		expect(stored.value).not.toBeNull();
+		expect(stored.value!.byteLength).toBe(PNG_BYTES.byteLength);
+		// 어떤 포맷으로 저장했는지 메타데이터에 함께 남긴다.
+		expect(stored.metadata?.contentType).toBe("image/png");
 	});
 
 	it("이미지가 아닌 파일은 확장자·MIME 을 속여도 거부된다", async () => {

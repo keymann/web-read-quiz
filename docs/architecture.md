@@ -15,14 +15,14 @@
             └───┬───────────┬───────────┬─────────────┘
                 │           │           │
                 ▼           ▼           ▼
-               D1          R2          KV            → OpenAI API
-          (관계형 데이터)  (표지 이미지)  (세션/RateLimit/캐시)   (Worker 에서만 호출)
+               D1      KV(SESSIONS)   KV(IMAGES)     → OpenAI / Gemini
+        (관계형 데이터)  (세션·RateLimit)  (책 표지)      (Worker 에서만 호출)
 ```
 
 프론트엔드와 API 를 **같은 Worker, 같은 오리진**에서 서빙한다. 그 결과:
 
 - CORS 설정이 필요 없다.
-- 세션 쿠키를 `SameSite=Strict` + `__Host-` 프리픽스로 걸 수 있어 CSRF 방어가 단순해진다.
+- 세션 쿠키에 `__Host-` 프리픽스를 걸 수 있어 CSRF 방어가 단순해진다.
 - 배포가 `wrangler deploy` 한 번이다.
 
 레퍼런스 프로젝트(`low-grade-operator-exercise-web`)와 동일하게 **빌드 단계가 없다.**

@@ -15,7 +15,7 @@ export interface BookRow {
 	isbn10: string | null;
 	isbn13: string | null;
 	cover_image_url: string | null;
-	cover_r2_key: string | null;
+	cover_key: string | null;
 	cover_mime: string | null;
 	description: string | null;
 	published_at: string | null;
@@ -40,13 +40,13 @@ export interface BookSourceRow {
 
 export async function insert(
 	env: AppEnv,
-	book: { id: string; createdBy: string; title: string; coverR2Key: string; coverMime: string },
+	book: { id: string; createdBy: string; title: string; coverKey: string; coverMime: string },
 ): Promise<void> {
 	await env.DB.prepare(
-		`INSERT INTO books (id, created_by, title, cover_r2_key, cover_mime)
+		`INSERT INTO books (id, created_by, title, cover_key, cover_mime)
 		 VALUES (?, ?, ?, ?, ?)`,
 	)
-		.bind(book.id, book.createdBy, book.title, book.coverR2Key, book.coverMime)
+		.bind(book.id, book.createdBy, book.title, book.coverKey, book.coverMime)
 		.run();
 }
 

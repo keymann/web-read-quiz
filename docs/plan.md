@@ -37,7 +37,7 @@
 | --- | --- |
 | `package.json` | 레퍼런스와 동일한 devDependencies 핀 + `db:migrate:*` 스크립트 추가 |
 | `tsconfig.json` | 레퍼런스와 동일 (strict) |
-| `wrangler.jsonc` | ASSETS + D1(`DB`) + R2(`IMAGES`) + KV(`SESSIONS`), observability, source maps |
+| `wrangler.jsonc` | ASSETS + D1(`DB`) + KV(`SESSIONS`·`IMAGES`), observability, source maps |
 | `migrations/0001_initial.sql` | 전체 스키마 15테이블 |
 | `src/index.ts` · `src/types.ts` · `src/utils/response.ts` | 라우터 골격 + 공통 응답 포맷 |
 | `public/` | SPA 셸 + green 디자인 토큰 |
@@ -121,7 +121,7 @@ Phase 2 에서 확정한 사항:
 | 파일 | 내용 |
 | --- | --- |
 | `migrations/0002_book_analysis.sql` | `cover_mime` · `brief` · `analyzed_at` · `searched_at` 추가 |
-| `src/utils/image.ts` | 매직 바이트 포맷 판정, 8MB 상한, data URL 변환 |
+| `src/utils/image.ts` | 매직 바이트 포맷 판정, 4MB 상한, data URL 변환 |
 | `src/repositories/books.ts` | `books` · `book_sources` |
 | `src/ai/responses.ts` | Responses API + Structured Output 공통 호출부 |
 | `src/ai/schemas.ts` | 식별·조사 JSON Schema |
@@ -130,20 +130,20 @@ Phase 2 에서 확정한 사항:
 | `src/search/web.ts` | OpenAI `web_search` 기반 줄거리·서평 수집 |
 | `src/services/book.ts` | 식별 → 검색 → 병합 → **Book Brief** 생성 |
 | `src/routes/books.ts` | 업로드 / 목록 / 상세 / analyze / search / cover 프록시 |
-| `public/js/image.js` | 브라우저 canvas 축소 (긴 변 1600px, JPEG) |
+| `public/js/image.js` | 브라우저 canvas 축소 (긴 변 1024px, JPEG 0.72) |
 | `public/js/pages/book-add.js` · `book-detail.js` · `book-list.js` | 화면 |
 | `test/books.test.ts` | 통합 테스트 16개 |
 
 카메라 입력은 `<input type="file" accept="image/*" capture="environment">` 로 처리한다
 (빌드 없는 환경에서 가장 단순하고 전 기기에서 동작).
 
-**완료 기준 달성** — 표지 업로드 → R2 저장 → AI 식별 → 부모 보정 → 웹 검색 → `book_sources` 적재 →
+**완료 기준 달성** — 표지 업로드 → KV 저장 → AI 식별 → 부모 보정 → 웹 검색 → `book_sources` 적재 →
 Book Brief 생성까지 동작. 자료가 2건 미만이면 `readyForQuiz = false` 로 문제 생성을 막는다.
 
 Phase 3 에서 확정한 사항:
 
 - **이미지 축소는 브라우저에서 한다.** Workers 런타임에 이미지 디코더가 없다. 클라이언트가
-  긴 변 1600px 로 줄여 올리고, 서버는 매직 바이트로 포맷을 다시 판정한다 — 축소는 최적화일 뿐
+  긴 변 1024px 로 줄여 올리고, 서버는 매직 바이트로 포맷을 다시 판정한다 — 축소는 최적화일 뿐
   신뢰 경계가 아니다.
 - **책을 특정하지 못한(`found: false`) 검색 결과의 서지정보는 받아들이지 않는다.** 엉뚱한 책의
   정보가 섞이면 부모가 알아채기 어렵고 그대로 문제 생성 입력이 된다.
@@ -321,7 +321,7 @@ Attempt #1 의 문항·답안은 그대로 조회된다.
   - Rate Limit
 - XSS: 모든 사용자·AI 생성 문자열은 `textContent` 로 렌더링한다. `innerHTML` 은 정적 템플릿에만.
 - CSP 헤더 추가 (`default-src 'self'`)
-- 실제 D1/R2/KV 생성 → ID 교체 → `wrangler secret put SESSION_SECRET` / `ENCRYPTION_KEY`
+- 실제 D1/KV 생성 → ID 교체 → `wrangler secret put SESSION_SECRET` / `ENCRYPTION_KEY`
 - `npm run db:migrate:remote` → `npm run deploy`
 
 ## 3. 화면 ↔ Phase 대응

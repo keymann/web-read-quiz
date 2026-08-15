@@ -1,0 +1,41 @@
+/**
+ * For more details on how to configure Wrangler, refer to:
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "web-read-quiz",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-10-08",
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+	// SPA 이므로 알 수 없는 경로는 index.html 로 돌려보내 클라이언트 라우터가 처리하게 한다.
+	"assets": {
+		"binding": "ASSETS",
+		"directory": "./public",
+		"not_found_handling": "single-page-application"
+	},
+	// 사용자/책/퀴즈/문제/풀이기록 등 서비스의 모든 관계형 데이터.
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "web-read-quiz",
+			"database_id": "00000000-0000-0000-0000-000000000000",
+			"migrations_dir": "migrations"
+		}
+	],
+	// 부모가 촬영/업로드한 책 표지 이미지 원본. 공개 버킷이 아니며 Worker 경유로만 서빙.
+	"r2_buckets": [
+		{
+			"binding": "IMAGES",
+			"bucket_name": "web-read-quiz-images"
+		}
+	],
+	// 세션 토큰, Rate Limit 카운터, AI 응답 캐시 등 TTL 기반 휘발성 데이터.
+	"kv_namespaces": [
+		{ "binding": "SESSIONS", "id": "00000000000000000000000000000000" }
+	],
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true
+}

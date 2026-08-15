@@ -1,0 +1,7 @@
+# 정적 자산은 Worker 를 거치지 않고 자산 서버가 바로 응답하므로,
+# 보안 헤더를 여기서 건다. (src/index.ts 의 SECURITY_HEADERS 와 같은 값을 유지할 것)
+/*
+  Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: same-origin
+  X-Frame-Options: DENY

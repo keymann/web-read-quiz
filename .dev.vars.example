@@ -1,0 +1,14 @@
+# 로컬 개발용 시크릿. 이 파일을 `.dev.vars` 로 복사해서 값을 채운다.
+# `.dev.vars` 는 .gitignore 에 포함되어 커밋되지 않는다.
+# 배포 환경에는 `wrangler secret put <NAME>` 으로 등록한다.
+
+# 세션 토큰(JWT) 서명 키. 임의의 긴 랜덤 문자열.
+#   openssl rand -base64 48
+SESSION_SECRET="dev-only-change-me-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# 부모가 설정 화면에서 입력한 OPENAI_API_KEY 를 D1 에 저장할 때 쓰는 AES-GCM 마스터 키(base64, 32바이트).
+#   openssl rand -base64 32
+ENCRYPTION_KEY="dev-only-change-me-xxxxxxxxxxxxxxxxxxxxxxxxx="
+
+# 회원가입 초대 코드(선택). 비워두면 가입 제한 없음.
+INVITE_CODE=""

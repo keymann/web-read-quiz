@@ -10,6 +10,7 @@ import { readSession } from "./auth/session";
 import { authRoutes } from "./routes/auth";
 import { bookRoutes } from "./routes/books";
 import { childrenRoutes } from "./routes/children";
+import { historyRoutes } from "./routes/history";
 import { quizRoutes } from "./routes/quizzes";
 import { matchRoute, type Route } from "./routes/router";
 import { settingsRoutes } from "./routes/settings";
@@ -24,6 +25,7 @@ const routes: Route[] = [
 	...settingsRoutes,
 	...bookRoutes,
 	...quizRoutes,
+	...historyRoutes,
 ];
 
 export default {

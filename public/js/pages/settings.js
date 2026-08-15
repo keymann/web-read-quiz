@@ -1,6 +1,8 @@
 import { del, get, put } from "../api.js";
 import { requireSession } from "../session.js";
 import { banner, confirmAction, el, field, header, mount, selectField, setKidMode } from "../ui.js";
+import { historyPanel } from "./settings-history.js";
+import { quizSettingsCard } from "./settings-quiz.js";
 
 /**
  * 부모 설정 — AI 제공자 선택과 API Key 등록(§25).
@@ -34,7 +36,14 @@ const GUIDES = {
 	},
 };
 
-export async function settingsPage() {
+/** 탭 정의. 경로에 담아 두면 새로고침·뒤로가기가 그대로 동작한다. */
+const TABS = [
+	{ key: "ai", label: "AI 설정" },
+	{ key: "quiz", label: "출제 설정" },
+	{ key: "history", label: "이력" },
+];
+
+export async function settingsPage(params = {}) {
 	setKidMode(false);
 	const s = await requireSession("PARENT");
 	if (!s) return;
@@ -45,7 +54,17 @@ export async function settingsPage() {
 	/** 화면에서 고르고 있는 제공자. 저장 전까지는 서버 값과 다를 수 있다. */
 	let draftProvider = null;
 
+	const tab = TABS.some((t) => t.key === params.tab) ? params.tab : "ai";
+	// 이력 패널은 자체 상태를 들고 있으므로 한 번만 만들고 재사용한다.
+	const history = tab === "history" ? historyPanel({ onMessage: setMessage }) : null;
+
 	await refresh();
+
+	function setMessage(text, kind) {
+		message = text;
+		messageKind = kind;
+		refresh();
+	}
 
 	async function refresh() {
 		let view = null;
@@ -53,7 +72,8 @@ export async function settingsPage() {
 			view = await get("/api/settings");
 			if (draftProvider === null) draftProvider = view.provider;
 			// 제공자를 바꾸는 중이면 이전 제공자의 모델 목록은 의미가 없다.
-			if (view.ai.configured && draftProvider === view.provider && models.length === 0) {
+			// 모델 목록은 AI 탭에서만 쓰므로 다른 탭에서는 불필요한 호출을 하지 않는다.
+			if (tab === "ai" && view.ai.configured && draftProvider === view.provider && models.length === 0) {
 				({ models } = await get("/api/settings/ai/models"));
 			}
 		} catch (err) {
@@ -73,13 +93,39 @@ export async function settingsPage() {
 		mount(
 			...[
 				header("설정", [homeLink()]),
+				tabBar(),
 				message ? banner(message, messageKind) : null,
-				providerCard(view),
-				keyCard(view, sameProvider),
-				view.ai.configured && sameProvider && models.length > 0 ? modelCard(view) : null,
-				guideCard(),
+				...panelFor(view, sameProvider),
 			].filter(Boolean),
 		);
+	}
+
+	function tabBar() {
+		return el(
+			"nav",
+			{ class: "tabs", "aria-label": "설정 탭" },
+			TABS.map((t) =>
+				el("a", {
+					class: t.key === tab ? "tab is-active" : "tab",
+					href: `/parent/settings/${t.key}`,
+					"data-link": true,
+					"aria-current": t.key === tab ? "page" : false,
+					text: t.label,
+				}),
+			),
+		);
+	}
+
+	function panelFor(view, sameProvider) {
+		if (tab === "quiz") return [quizSettingsCard(view, { onMessage: setMessage })];
+		if (tab === "history") return [history];
+
+		return [
+			providerCard(view),
+			keyCard(view, sameProvider),
+			view.ai.configured && sameProvider && models.length > 0 ? modelCard(view) : null,
+			guideCard(),
+		];
 	}
 
 	function homeLink() {

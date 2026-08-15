@@ -14,6 +14,17 @@ import { ApiError, invalid } from "../utils/response";
 
 const DEFAULT_PROVIDER: ProviderName = "openai";
 
+/** 요구사항 §17·§21.1 의 기본값. 부모가 설정에서 바꿀 수 있다. */
+export const DEFAULT_QUESTION_COUNT = 20;
+export const DEFAULT_PASS_COUNT = 10;
+
+/**
+ * 출제 문항 수의 허용 범위.
+ * 아래로는 통과 기준을 세울 수 없을 만큼 적고, 위로는 아이의 집중력과 AI 응답 길이가 감당하지 못한다.
+ */
+const MIN_QUESTIONS = 5;
+const MAX_QUESTIONS = 30;
+
 /** 클라이언트에 내보내는 설정. 키 원문은 절대 포함하지 않는다(§21.9). */
 export interface SettingsView {
 	provider: ProviderName;
@@ -23,6 +34,12 @@ export interface SettingsView {
 		last4: string | null;
 		model: string | null;
 		visionModel: string | null;
+	};
+	quiz: {
+		questionCount: number;
+		passCount: number;
+		minQuestions: number;
+		maxQuestions: number;
 	};
 }
 
@@ -37,7 +54,43 @@ export async function getView(env: AppEnv, userId: string): Promise<SettingsView
 			model: row?.text_model ?? null,
 			visionModel: row?.vision_model ?? null,
 		},
+		quiz: {
+			questionCount: row?.question_count ?? DEFAULT_QUESTION_COUNT,
+			passCount: row?.pass_count ?? DEFAULT_PASS_COUNT,
+			minQuestions: MIN_QUESTIONS,
+			maxQuestions: MAX_QUESTIONS,
+		},
 	};
+}
+
+/** 퀴즈를 만들 때 복사해 갈 값. 설정이 없으면 기본값. */
+export async function getQuizSettings(
+	env: AppEnv,
+	userId: string,
+): Promise<{ questionCount: number; passCount: number }> {
+	const row = await settingsRepo.find(env, userId);
+	return {
+		questionCount: row?.question_count ?? DEFAULT_QUESTION_COUNT,
+		passCount: row?.pass_count ?? DEFAULT_PASS_COUNT,
+	};
+}
+
+export async function saveQuizSettings(
+	env: AppEnv,
+	userId: string,
+	questionCount: number,
+	passCount: number,
+): Promise<{ questionCount: number; passCount: number }> {
+	if (!Number.isInteger(questionCount) || questionCount < MIN_QUESTIONS || questionCount > MAX_QUESTIONS) {
+		throw invalid(`문제 개수는 ${MIN_QUESTIONS}~${MAX_QUESTIONS} 사이로 정해 주세요.`);
+	}
+	// 통과 기준이 문항 수보다 크면 아무도 통과할 수 없다. 0 이면 누구나 통과한다.
+	if (!Number.isInteger(passCount) || passCount < 1 || passCount > questionCount) {
+		throw invalid(`통과 개수는 1 이상 ${questionCount} 이하로 정해 주세요.`);
+	}
+
+	await settingsRepo.saveQuizSettings(env, userId, { questionCount, passCount });
+	return { questionCount, passCount };
 }
 
 export interface SaveKeyResult {

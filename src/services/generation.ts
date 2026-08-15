@@ -24,7 +24,8 @@ import * as settings from "./settings";
  * 부모가 수동으로 다시 돌릴 수 있게 한다.
  */
 
-export const TARGET_QUESTIONS = 20;
+/** 설정이 없을 때의 기본 문항 수. 실제 값은 퀴즈 행에서 읽는다. */
+export const DEFAULT_TARGET_QUESTIONS = 20;
 const MAX_ROUNDS = 3;
 
 /** 이 점수 아래는 통과시키지 않는다. */
@@ -62,7 +63,17 @@ export async function createQuiz(
 	// 같은 책에 대해 여러 회차가 쌓인다(§18 재도전).
 	const round = await quizzesRepo.nextRound(env, bookId);
 
-	await quizzesRepo.insert(env, { id: quizId, bookId, parentUserId: userId, round });
+	// 설정값을 퀴즈에 **복사해 둔다.** 나중에 설정을 바꿔도 이미 만든 퀴즈의 기준은 그대로여야 한다.
+	const { questionCount, passCount } = await settings.getQuizSettings(env, userId);
+
+	await quizzesRepo.insert(env, {
+		id: quizId,
+		bookId,
+		parentUserId: userId,
+		round,
+		questionCount,
+		passCount,
+	});
 
 	const row = await quizzesRepo.findOwned(env, userId, quizId);
 	if (!row) throw new ApiError("internal", "퀴즈를 만들지 못했습니다.", 500);
@@ -99,11 +110,12 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 		// 근거가 웹 검색이 아니라 모델 지식뿐이면 출제도 보수적으로 가야 한다(Phase 3.5).
 		const briefIsUnverified = !(await hasWebSource(env, quiz.book_id));
 
+		const target = quiz.question_count;
 		const accepted: AcceptedQuestion[] = [];
 		const rejected: { questionText: string; reason: string }[] = [];
 
-		for (let round = 1; round <= MAX_ROUNDS && accepted.length < TARGET_QUESTIONS; round++) {
-			const need = TARGET_QUESTIONS - accepted.length;
+		for (let round = 1; round <= MAX_ROUNDS && accepted.length < target; round++) {
+			const need = target - accepted.length;
 
 			const { value: fresh } = await withModelFallback(ai.provider, ai.apiKey, ai.model, (model) =>
 				generateQuestions({
@@ -143,7 +155,7 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 
 			const byNumber = new Map(verdicts.map((v) => [v.questionNumber, v]));
 			for (const question of screened.passed) {
-				if (accepted.length >= TARGET_QUESTIONS) break;
+				if (accepted.length >= target) break;
 
 				const verdict = byNumber.get(question.questionNumber);
 				if (!verdict || !passes(verdict)) {
@@ -169,18 +181,18 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 
 		await persist(env, quizId, accepted);
 
-		const shortfall = TARGET_QUESTIONS - accepted.length;
+		const shortfall = target - accepted.length;
 		await quizzesRepo.setStatus(
 			env,
 			quizId,
 			"REVIEW",
 			shortfall > 0
-				? `${TARGET_QUESTIONS}문제 중 ${accepted.length}개만 검수를 통과했습니다. 다시 생성하면 나머지를 채웁니다.`
+				? `${target}문제 중 ${accepted.length}개만 검수를 통과했습니다. 다시 생성하면 나머지를 채웁니다.`
 				: null,
 		);
 
 		console.log(
-			`quiz ${quizId}: ${accepted.length}/${TARGET_QUESTIONS} accepted, ${rejected.length} rejected`,
+			`quiz ${quizId}: ${accepted.length}/${target} accepted, ${rejected.length} rejected`,
 			typeDistribution(accepted.map((a) => a.question)),
 		);
 	} catch (err) {
@@ -249,7 +261,7 @@ export async function progress(
 	return {
 		status: quiz.status,
 		generated: await questionsRepo.countActive(env, quizId),
-		total: TARGET_QUESTIONS,
+		total: quiz.question_count,
 		error: quiz.generation_error,
 	};
 }

@@ -70,10 +70,15 @@ export async function generateQuestions(request: GenerateRequest): Promise<Gener
 		`위 책 정보로 4지선다 문제 ${request.count}개를 만들어 주세요.`,
 	];
 
-	if (request.count >= 20) {
-		// 분배는 서버가 사후에 강제하지 못하는 부분(유형·난이도)만 프롬프트로 요구한다.
+	// 분배는 서버가 사후에 강제하지 못하는 부분(유형·난이도)만 프롬프트로 요구한다.
+	// 문항 수는 부모가 정하므로 비율로 환산한다.
+	if (request.count >= 8) {
+		const perType = Math.max(1, Math.floor(request.count / 8));
+		const easy = Math.round(request.count * 0.3);
+		const hard = Math.round(request.count * 0.3);
 		parts.push(
-			"유형은 8종을 최소 2문항씩 배분하고, 난이도는 Easy 6 · Normal 8 · Hard 6 으로 나눠 주세요.",
+			`유형은 8종을 최소 ${perType}문항씩 배분하고,` +
+				` 난이도는 Easy ${easy} · Normal ${request.count - easy - hard} · Hard ${hard} 정도로 나눠 주세요.`,
 		);
 	}
 

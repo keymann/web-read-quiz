@@ -565,3 +565,46 @@ body {
 	color: var(--text-muted);
 	font-size: 14px;
 }
+
+/* ── 탭 ──────────────────────────────────────────────── */
+
+.tabs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin-bottom: var(--space);
+	padding: 4px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--surface);
+}
+
+.tab {
+	flex: 1 1 auto;
+	padding: 10px 14px;
+	border-radius: calc(var(--radius) - 4px);
+	color: var(--text-muted);
+	font-weight: 600;
+	font-size: 15px;
+	text-align: center;
+	text-decoration: none;
+}
+
+.tab:hover {
+	background: var(--bg-subtle);
+}
+
+.tab.is-active {
+	background: var(--primary);
+	color: var(--on-primary);
+}
+
+.tab:focus-visible {
+	outline: 3px solid var(--green-300);
+	outline-offset: 2px;
+}
+
+.tag--warn {
+	border-color: var(--warning);
+	color: var(--warning);
+}

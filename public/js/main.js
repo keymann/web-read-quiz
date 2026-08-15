@@ -18,6 +18,7 @@ register("/login", loginPage);
 register("/parent", parentHomePage);
 register("/parent/children", childManagementPage);
 register("/parent/settings", settingsPage);
+register("/parent/settings/:tab", settingsPage);
 // `/new` 는 :id 패턴과 세그먼트 수가 같으므로 먼저 등록해야 한다.
 register("/parent/books/new", bookAddPage);
 register("/parent/books", bookListPage);

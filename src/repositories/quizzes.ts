@@ -8,6 +8,10 @@ export interface QuizRow {
 	parent_user_id: string;
 	status: QuizStatus;
 	round: number;
+	/** 이 퀴즈의 출제 문항 수. 설정을 나중에 바꿔도 이 값은 그대로다. */
+	question_count: number;
+	/** 이 퀴즈의 통과 기준(맞혀야 하는 문항 수). */
+	pass_count: number;
 	generation_error: string | null;
 	created_at: string;
 	updated_at: string;
@@ -15,12 +19,27 @@ export interface QuizRow {
 
 export async function insert(
 	env: AppEnv,
-	quiz: { id: string; bookId: string; parentUserId: string; round: number },
+	quiz: {
+		id: string;
+		bookId: string;
+		parentUserId: string;
+		round: number;
+		questionCount: number;
+		passCount: number;
+	},
 ): Promise<void> {
 	await env.DB.prepare(
-		"INSERT INTO quizzes (id, book_id, parent_user_id, round) VALUES (?, ?, ?, ?)",
+		`INSERT INTO quizzes (id, book_id, parent_user_id, round, question_count, pass_count)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
 	)
-		.bind(quiz.id, quiz.bookId, quiz.parentUserId, quiz.round)
+		.bind(
+			quiz.id,
+			quiz.bookId,
+			quiz.parentUserId,
+			quiz.round,
+			quiz.questionCount,
+			quiz.passCount,
+		)
 		.run();
 }
 

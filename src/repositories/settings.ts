@@ -11,6 +11,8 @@ export interface ParentSettingsRow {
 	api_key_last4: string | null;
 	text_model: string | null;
 	vision_model: string | null;
+	question_count: number;
+	pass_count: number;
 	created_at: string;
 	updated_at: string;
 }
@@ -63,6 +65,24 @@ export async function clearKey(env: AppEnv, userId: string): Promise<void> {
 		  WHERE user_id = ?`,
 	)
 		.bind(userId)
+		.run();
+}
+
+/** 출제 문항 수와 통과 기준. 퀴즈를 만들 때 이 값이 퀴즈로 복사된다. */
+export async function saveQuizSettings(
+	env: AppEnv,
+	userId: string,
+	settings: { questionCount: number; passCount: number },
+): Promise<void> {
+	await env.DB.prepare(
+		`INSERT INTO parent_settings (user_id, question_count, pass_count)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(user_id) DO UPDATE SET
+		   question_count = excluded.question_count,
+		   pass_count     = excluded.pass_count,
+		   updated_at     = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+	)
+		.bind(userId, settings.questionCount, settings.passCount)
 		.run();
 }
 

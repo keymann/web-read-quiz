@@ -38,6 +38,7 @@
 | DELETE | `/api/settings/ai-key` | PARENT | ✅ 키 삭제 |
 | GET | `/api/settings/ai/models` | PARENT | ✅ 저장된 키로 사용 가능한 모델 목록 조회 |
 | PUT | `/api/settings/ai/models` | PARENT | ✅ 사용할 모델 저장 (계정에 실제 존재하는지 확인) |
+| PUT | `/api/settings/quiz` | PARENT | ✅ `{ questionCount, passCount }` — 한 번에 낼 문제 수와 통과 기준 |
 
 `provider` 는 `openai` | `gemini`.
 
@@ -72,6 +73,17 @@
 | POST | `/api/books/:id/search` | PARENT | ✅ 웹 검색으로 책 정보 보강 + `book_sources` 적재 |
 | PATCH | `/api/books/:id` | PARENT | ✅ 부모가 책 정보 직접 수정 (AI 오인식 보정) |
 | GET | `/api/books/:id/history` | PARENT | 이 책의 퀴즈·풀이 이력 |
+
+## 이력
+
+| Method | Path | Role | 설명 |
+| --- | --- | --- | --- |
+| GET | `/api/history/questions` | PARENT | ✅ 문제 생성·수정 이력 (`bookId` · `quizId` · `limit` · `offset`) |
+| GET | `/api/history/answers` | PARENT | ✅ 아이 답안 이력 (`childId` 추가 필터) |
+| GET | `/api/history/filters` | PARENT | ✅ 이력 화면의 책·아이 선택지 |
+
+답안 이력은 `question_versions` 를 조인해 **아이가 그때 본 문항 본문**을 돌려준다.
+`questions` 를 그대로 읽으면 부모가 나중에 고친 문장이 과거 기록에 섞인다(§22).
 
 ## 퀴즈 생성 · 검수
 

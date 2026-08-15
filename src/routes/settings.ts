@@ -51,10 +51,22 @@ async function putModels({ request, env, principal }: RouteCtx): Promise<Respons
 	return ok({ model, visionModel });
 }
 
+/** 한 번에 출제할 문제 개수와 통과 개수(§17·§21.1). 기본값은 20/10. */
+async function putQuizSettings({ request, env, principal }: RouteCtx): Promise<Response> {
+	const parent = requireParent(principal);
+	const body = await v.readJson(request);
+
+	const questionCount = Number(body.questionCount);
+	const passCount = Number(body.passCount);
+
+	return ok(await settings.saveQuizSettings(env, parent.userId, questionCount, passCount));
+}
+
 export const settingsRoutes: Route[] = [
 	route("GET", "/api/settings", read),
 	route("PUT", "/api/settings/ai-key", putKey),
 	route("DELETE", "/api/settings/ai-key", deleteKey),
 	route("GET", "/api/settings/ai/models", models),
 	route("PUT", "/api/settings/ai/models", putModels),
+	route("PUT", "/api/settings/quiz", putQuizSettings),
 ];

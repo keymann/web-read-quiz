@@ -56,7 +56,7 @@ async function generate({ env, ctx, principal, params }: RouteCtx): Promise<Resp
 
 	ctx.waitUntil(generation.runGeneration(env, parent.userId, quiz.id));
 
-	return ok({ status: "GENERATING", total: generation.TARGET_QUESTIONS }, 202);
+	return ok({ status: "GENERATING", total: quiz.question_count }, 202);
 }
 
 async function detail({ env, principal, params }: RouteCtx): Promise<Response> {
@@ -76,13 +76,15 @@ async function detail({ env, principal, params }: RouteCtx): Promise<Response> {
 			bookTitle: book?.title ?? "",
 			status: quiz.status,
 			round: quiz.round,
+			questionCount: quiz.question_count,
+			passCount: quiz.pass_count,
 			error: quiz.generation_error,
 			createdAt: quiz.created_at,
 		},
 		questions: questions.map(toQuestionView),
 		progress: {
 			generated: questions.length,
-			total: generation.TARGET_QUESTIONS,
+			total: quiz.question_count,
 		},
 	});
 }

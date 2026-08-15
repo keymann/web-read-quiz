@@ -1,7 +1,7 @@
 import { env, fetchMock } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { balanceAnswerPositions, screen } from "../src/services/question-checks";
-import { Client, addChild, signupParent } from "./helpers";
+import { Client, FIXTURE_PLOT, addChild, makeQuestions, signupParent, verdictsFor } from "./helpers";
 
 /**
  * 문제 생성 파이프라인. OpenAI 는 fetchMock 으로 가로챈다.
@@ -20,62 +20,10 @@ const PNG = new Uint8Array([
 	0x42, 0x60, 0x82,
 ]);
 
-const TYPES = [
-	"EVENT",
-	"CHARACTER",
-	"DETAIL",
-	"SEQUENCE",
-	"CAUSE_EFFECT",
-	"ACTION",
-	"EMOTION",
-	"INFERENCE",
-];
 
-/**
- * 검사를 통과하는 문항 n개.
- *
- * 문장이 서로 비슷하면 중복 검사(자카드 0.7)에 걸린다. 실제로 처음 픽스처는 번호만 다른 같은
- * 문장이라 전부 탈락했다 — 검사가 제대로 도는 증거이기도 하다. 그래서 어절을 통째로 바꿔 준다.
- */
-/**
- * 어휘가 겹치면 중복 검사(자카드 0.7)에 걸린다. 처음 픽스처는 번호만 다른 같은 문장이라
- * 전부 탈락했다 — 검사가 제대로 도는 증거이기도 하다. 문항마다 어절 자체를 바꿔 준다.
- */
-const WORDS = [
-	"가람", "나루", "다솜", "라온", "마루", "바다", "사슴", "아람", "자연", "차오름",
-	"카나리", "타래", "파랑", "하늘", "거북", "노을", "도담", "라일락", "모래", "바람",
-	"새벽", "여울", "자작", "초록", "푸름",
-];
 
-const word = (n: number) => WORDS[n % WORDS.length];
 
-function makeQuestions(count: number, offset = 0) {
-	return Array.from({ length: count }, (_, i) => {
-		const n = offset + i + 1;
-		return {
-			questionNumber: i + 1,
-			// 번호를 여러 어절에 넣어 문항끼리 겹치는 토큰 비율을 확실히 낮춘다.
-			questionText: `${n}번 장면 ${word(n)}에서 일어난 일 Q${n}`,
-			choices: [`선택지 ${n}-가`, `선택지 ${n}-나`, `선택지 ${n}-다`, `선택지 ${n}-라`],
-			correctChoice: 1,
-			questionType: TYPES[i % TYPES.length],
-			difficulty: (i % 3) + 1,
-			explanation: `${n}번 장면의 해설입니다.`,
-			evidence: `${n}번 장면의 근거입니다.`,
-			readRequired: true,
-		};
-	});
-}
 
-const verdictsFor = (questions: { questionNumber: number }[], valid = true) => ({
-	results: questions.map((q) => ({
-		questionNumber: q.questionNumber,
-		valid,
-		score: valid ? 90 : 20,
-		reason: valid ? "" : "책 내용과 맞지 않습니다.",
-		readRequired: true,
-	})),
-});
 
 beforeAll(() => {
 	fetchMock.activate();
@@ -134,7 +82,7 @@ async function readyBook(): Promise<{ client: Client; bookId: string }> {
 		publishedAt: "2000",
 		targetAge: "초등 고학년",
 		description: "양계장을 나온 암탉 이야기.",
-		plotSummary: "잎싹이 양계장을 나와 초록머리를 기른다.",
+		plotSummary: FIXTURE_PLOT,
 		characters: [{ name: "잎싹", role: "암탉" }],
 		keyEvents: ["양계장을 떠난다", "알을 품는다"],
 		sources: [

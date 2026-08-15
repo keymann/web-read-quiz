@@ -156,6 +156,7 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 				accepted: [...keptTexts, ...accepted.map((a) => a.question.questionText)],
 				title: book.title,
 				author: book.author ?? "",
+				brief,
 			});
 			for (const failure of screened.failed) {
 				const source = fresh.find((q) => q.questionNumber === failure.questionNumber);
@@ -181,12 +182,8 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 		}
 
 		if (accepted.length === 0) {
-			await quizzesRepo.setStatus(
-				env,
-				quizId,
-				kept.length > 0 ? "REVIEW" : "DRAFT",
-				"검수를 통과한 문제가 없습니다. 책 정보를 보강하고 다시 시도해 주세요.",
-			);
+			const notice = shortfallNotice(quiz.question_count, kept.length, rejected);
+			await quizzesRepo.setStatus(env, quizId, kept.length > 0 ? "REVIEW" : "DRAFT", notice);
 			return;
 		}
 
@@ -194,13 +191,12 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 
 		const total = kept.length + accepted.length;
 		const shortfall = quiz.question_count - total;
+
 		await quizzesRepo.setStatus(
 			env,
 			quizId,
 			"REVIEW",
-			shortfall > 0
-				? `${quiz.question_count}문제 중 ${total}개만 검수를 통과했습니다. 다시 생성하면 나머지를 채웁니다.`
-				: null,
+			shortfall > 0 ? shortfallNotice(quiz.question_count, total, rejected) : null,
 		);
 
 		console.log(
@@ -213,6 +209,54 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 			err instanceof ApiError ? err.message : "문제를 만들지 못했습니다. 잠시 후 다시 시도해 주세요.";
 		await quizzesRepo.setStatus(env, quizId, "DRAFT", message);
 	}
+}
+
+/**
+ * 한 문제도 못 만들었을 때 부모에게 보여줄 말.
+ *
+ * "검수를 통과한 문제가 없습니다" 만으로는 무엇을 해야 할지 알 수 없다. 탈락 사유의 대부분이
+ * **근거 부족**이라면 원인은 모델이 아니라 책 정보다 — AI 가 지어내는 것을 서버가 막은 것이고,
+ * 부모가 할 일은 다시 생성이 아니라 책 정보를 채우는 것이다.
+ */
+function failureNotice(rejected: { reason: string }[]): string {
+	const ungrounded = rejected.filter((r) => r.reason.includes("제공된 책 정보")).length;
+
+	if (rejected.length > 0 && ungrounded >= rejected.length / 2) {
+		return (
+			"책 정보가 부족해 근거를 댈 수 있는 문제를 만들지 못했습니다. " +
+			"AI 가 지어낸 내용은 서버가 걸러냅니다. 책 화면에서 '정보 다시 찾기' 로 줄거리를 보강해 주세요."
+		);
+	}
+
+	return "검수를 통과한 문제가 없습니다. 책 정보를 보강하고 다시 시도해 주세요.";
+}
+
+/** 탈락 사유의 절반 이상이 근거 부족이면, 문제는 모델이 아니라 책 정보다. */
+export const mostlyUngrounded = (rejected: { reason: string }[]): boolean =>
+	rejected.length > 0 &&
+	rejected.filter((r) => r.reason.includes("제공된 책 정보")).length >= rejected.length / 2;
+
+/**
+ * 부족하게 끝났을 때 부모에게 보여줄 말.
+ *
+ * "검수를 통과한 문제가 없습니다" 만으로는 무엇을 해야 할지 알 수 없다. 근거 부족이 원인이면
+ * 부모가 할 일은 **다시 생성이 아니라 책 정보를 채우는 것**이다 — 같은 정보로 다시 돌려도
+ * 같은 이유로 걸린다. AI 가 지어낸 것을 서버가 막은 것이므로 이건 고장이 아니다.
+ */
+export function shortfallNotice(
+	target: number,
+	total: number,
+	rejected: { reason: string }[],
+): string {
+	const head =
+		total === 0
+			? "검수를 통과한 문제가 없습니다."
+			: `${target}문제 중 ${total}개만 검수를 통과했습니다.`;
+
+	return mostlyUngrounded(rejected)
+		? `${head} 책 정보에 없는 내용을 다룬 문항이 많았습니다. AI 가 지어낸 내용은 서버가 걸러냅니다.` +
+			" 책 화면에서 '정보 다시 찾기' 로 줄거리를 보강해 주세요."
+		: `${head} 다시 생성하면 나머지를 채웁니다.`;
 }
 
 const passes = (verdict: Verdict): boolean =>

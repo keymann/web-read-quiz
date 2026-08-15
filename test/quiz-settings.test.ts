@@ -1,6 +1,6 @@
 import { env, fetchMock } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { Client, addChild, signupParent } from "./helpers";
+import { Client, FIXTURE_PLOT, addChild, makeQuestions, signupParent, verdictsFor } from "./helpers";
 
 /** 출제 설정(문항 수·통과 개수)과 문제·답 이력. */
 const API_KEY = "sk-test1234567890abcdefghijklmn";
@@ -13,39 +13,8 @@ const PNG = new Uint8Array([
 	0x42, 0x60, 0x82,
 ]);
 
-const TYPES = ["EVENT", "CHARACTER", "DETAIL", "SEQUENCE", "CAUSE_EFFECT", "ACTION", "EMOTION", "INFERENCE"];
-const WORDS = [
-	"가람", "나루", "다솜", "라온", "마루", "바다", "사슴", "아람", "자연", "차오름",
-	"카나리", "타래", "파랑", "하늘", "거북", "노을", "도담", "라일락", "모래", "바람",
-	"새벽", "여울", "자작", "초록", "푸름",
-];
 
-function makeQuestions(count: number, offset = 0) {
-	return Array.from({ length: count }, (_, i) => {
-		const n = offset + i + 1;
-		return {
-			questionNumber: i + 1,
-			questionText: `${n}번 장면 ${WORDS[n % WORDS.length]}에서 일어난 일 Q${n}`,
-			choices: [`선택지 ${n}-가`, `선택지 ${n}-나`, `선택지 ${n}-다`, `선택지 ${n}-라`],
-			correctChoice: 1,
-			questionType: TYPES[i % TYPES.length],
-			difficulty: (i % 3) + 1,
-			explanation: `${n}번 해설`,
-			evidence: `${n}번 근거`,
-			readRequired: true,
-		};
-	});
-}
 
-const verdictsFor = (questions: { questionNumber: number }[]) => ({
-	results: questions.map((q) => ({
-		questionNumber: q.questionNumber,
-		valid: true,
-		score: 90,
-		reason: "",
-		readRequired: true,
-	})),
-});
 
 beforeAll(() => {
 	fetchMock.activate();
@@ -102,7 +71,7 @@ async function readyBook(): Promise<{ client: Client; bookId: string }> {
 		publishedAt: "2000",
 		targetAge: "초등 고학년",
 		description: "양계장을 나온 암탉 이야기.",
-		plotSummary: "잎싹이 양계장을 나와 초록머리를 기른다.",
+		plotSummary: FIXTURE_PLOT,
 		characters: [{ name: "잎싹", role: "암탉" }],
 		keyEvents: ["양계장을 떠난다"],
 		sources: [
@@ -357,7 +326,8 @@ describe("문제·답 이력", { timeout: 30_000 }, () => {
 		expect(entry.childName).toBe("성현");
 		expect(entry.isCorrect).toBe(false);
 		expect(entry.selectedChoice).toBe(2);
+		// 아이가 그때 본 본문이어야 한다 — 부모가 나중에 고친 문장이 섞이면 안 된다(§22)
 		expect(entry.questionText).not.toBe("부모가 나중에 고친 문장");
-		expect(entry.questionText).toContain("1번 장면");
+		expect(entry.questionText).toContain("어떻게 되었나요");
 	});
 });

@@ -11,7 +11,7 @@
 	},
 	"private": true,
 	"scripts": {
-		"cf-typegen": "wrangler types",
+		"cf-typegen": "node scripts/typegen.mjs",
 		"check": "tsc --noEmit && wrangler deploy --dry-run",
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",

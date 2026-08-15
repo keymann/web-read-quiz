@@ -7,9 +7,18 @@
  * 크기 검증과 포맷 검증은 서버가 다시 한다. 여기서 하는 일은 최적화일 뿐, 신뢰 경계가 아니다.
  */
 
-/** 표지의 작은 글씨(ISBN·출판사)까지 읽혀야 하므로 너무 줄이지 않는다. */
-const MAX_EDGE = 1600;
-const QUALITY = 0.85;
+/**
+ * 저장·전송 규격.
+ *
+ * 표지 원본을 그대로 둘 이유가 없다. 이 이미지는 **AI 가 글자를 읽는 용도**로만 쓰이고
+ * 화면에는 썸네일 크기로만 보인다. 원본을 보관하면 KV 용량과 Vision 토큰만 먹는다.
+ *
+ * 1024px / 0.72 는 제목·지은이·출판사가 또렷하게 읽히는 하한선 근처다. 실제 표지로
+ * 확인했을 때 이 값에서 네 항목이 모두 정확히 읽혔다. 여기서 더 줄이면 뒤표지 바코드
+ * 아래 ISBN 처럼 작은 글씨부터 무너진다.
+ */
+const MAX_EDGE = 1024;
+const QUALITY = 0.72;
 
 async function toBitmap(file) {
 	if (typeof createImageBitmap === "function") {
@@ -52,7 +61,7 @@ export async function shrinkImage(file) {
 	if (!longest) return file;
 
 	const scale = Math.min(1, MAX_EDGE / longest);
-	// 이미 충분히 작고 JPEG 이면 다시 인코딩해서 화질을 깎을 이유가 없다.
+	// 이미 규격 안에 들어오는 JPEG 이면 다시 인코딩해서 화질만 깎을 이유가 없다.
 	if (scale === 1 && file.type === "image/jpeg") return file;
 
 	const canvas = document.createElement("canvas");

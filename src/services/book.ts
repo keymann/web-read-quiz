@@ -66,15 +66,17 @@ export async function create(
 	const mime = assertUploadedImage(bytes);
 
 	const bookId = newId();
-	// 키에 사용자 id 를 넣어 R2 상에서도 소유가 드러나게 한다. 버킷은 비공개다.
+	// 키에 사용자 id 를 넣어 저장소에서도 소유가 드러나게 한다.
 	const key = `books/${userId}/${bookId}`;
 
-	await env.IMAGES.put(key, bytes, { httpMetadata: { contentType: mime } });
+	// KV 값 상한은 25MB, 업로드 상한은 8MB 라 여유가 있다.
+	// TTL 을 걸지 않는다 — 표지는 책이 남아 있는 동안 계속 필요하다.
+	await env.IMAGES.put(key, bytes, { metadata: { contentType: mime } });
 	await booksRepo.insert(env, {
 		id: bookId,
 		createdBy: userId,
 		title: "(분석 전)",
-		coverR2Key: key,
+		coverKey: key,
 		coverMime: mime,
 	});
 
@@ -99,12 +101,27 @@ export async function readCover(
 	bookId: string,
 ): Promise<{ body: ReadableStream; mime: string }> {
 	const row = await requireOwned(env, userId, bookId);
-	if (!row.cover_r2_key) throw notFound("표지 이미지가 없습니다.");
+	if (!row.cover_key) throw notFound("표지 이미지가 없습니다.");
 
-	const object = await env.IMAGES.get(row.cover_r2_key);
-	if (!object) throw notFound("표지 이미지가 없습니다.");
+	const body = await env.IMAGES.get(row.cover_key, "stream");
+	if (!body) throw notFound("표지 이미지가 없습니다.");
 
-	return { body: object.body, mime: row.cover_mime ?? "application/octet-stream" };
+	return { body, mime: row.cover_mime ?? "application/octet-stream" };
+}
+
+/**
+ * 표지 바이트를 읽는다. AI 에 넘길 때 쓴다.
+ *
+ * KV 는 쓰기가 전역에 퍼지는 데 시간이 걸린다(eventual consistency). 업로드 직후 분석을
+ * 누르면 아직 못 읽는 경우가 드물게 생긴다. 몇 번 짧게 다시 읽어 그 창을 넘긴다.
+ */
+async function readCoverBytes(env: AppEnv, key: string): Promise<Uint8Array | null> {
+	for (let attempt = 1; attempt <= 3; attempt++) {
+		const buffer = await env.IMAGES.get(key, "arrayBuffer");
+		if (buffer) return new Uint8Array(buffer);
+		if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
+	}
+	return null;
 }
 
 /* ── 2. AI 식별 ──────────────────────────────────────── */
@@ -122,17 +139,14 @@ const LOW_CONFIDENCE = 0.6;
 
 export async function analyze(env: AppEnv, userId: string, bookId: string): Promise<AnalyzeResult> {
 	const row = await requireOwned(env, userId, bookId);
-	if (!row.cover_r2_key) throw invalid("표지 이미지가 없습니다.");
+	if (!row.cover_key) throw invalid("표지 이미지가 없습니다.");
 
-	const object = await env.IMAGES.get(row.cover_r2_key);
-	if (!object) throw invalid("표지 이미지를 찾을 수 없습니다.");
+	const bytes = await readCoverBytes(env, row.cover_key);
+	if (!bytes) throw invalid("표지 이미지를 찾을 수 없습니다.");
 
 	const ai = await settings.getRuntime(env, userId);
 
-	const image = {
-		bytes: new Uint8Array(await object.arrayBuffer()),
-		mime: row.cover_mime ?? "image/jpeg",
-	};
+	const image = { bytes, mime: row.cover_mime ?? "image/jpeg" };
 	const { value: identity, fellBackFrom } = await withModelFallback(
 		ai.provider,
 		ai.apiKey,

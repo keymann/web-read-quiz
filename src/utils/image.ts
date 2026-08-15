@@ -7,7 +7,14 @@ import { invalid } from "./response";
  * 실제 바이트의 시그니처(매직 바이트)로 포맷을 다시 확인한다.
  */
 
-export const MAX_BYTES = 8 * 1024 * 1024;
+/**
+ * 업로드 상한.
+ *
+ * 클라이언트가 긴 변 1024px · JPEG 0.72 로 줄여 올리므로 보통 100~300KB 다.
+ * 상한을 4MB 로 둔 것은 축소가 실패했거나(브라우저가 디코딩 못 함) 원본을 그대로
+ * 올리는 경우를 위한 여유다. KV 값 상한 25MB 보다 한참 아래다.
+ */
+export const MAX_BYTES = 4 * 1024 * 1024;
 
 export type ImageMime = "image/jpeg" | "image/png" | "image/webp" | "image/heic";
 

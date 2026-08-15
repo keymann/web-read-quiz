@@ -31,7 +31,7 @@ migrations/         D1 스키마
 docs/               설계 문서
 ```
 
-바인딩: **D1**(`DB`) · **R2**(`IMAGES`, 책 표지) · **KV**(`SESSIONS`, 세션/RateLimit) · **ASSETS**(정적 자산)
+바인딩: **D1**(`DB`) · **KV**(`SESSIONS` 세션/RateLimit, `IMAGES` 책 표지) · **ASSETS**(정적 자산)
 
 AI 호출은 **전부 Worker 안에서만** 일어난다. API Key 는 클라이언트로 나가지 않는다.
 
@@ -58,7 +58,7 @@ npm run db:migrate:local           # 로컬 D1 에 스키마 적용
 npm run dev                        # http://localhost:8787
 ```
 
-`wrangler dev` 는 D1 · R2 · KV 를 모두 로컬(Miniflare)로 시뮬레이션한다.
+`wrangler dev` 는 D1 · KV 를 모두 로컬(Miniflare)로 시뮬레이션한다.
 `wrangler.jsonc` 의 placeholder ID 그대로도 로컬 개발이 된다.
 
 `.dev.vars` 값 생성:
@@ -82,16 +82,19 @@ npm run cf-typegen   # wrangler.jsonc 변경 후 Env 타입 재생성
 
 ```bash
 npx wrangler d1 create web-read-quiz
-npx wrangler r2 bucket create web-read-quiz-images
 npx wrangler kv namespace create SESSIONS
+npx wrangler kv namespace create IMAGES
 ```
 
-출력된 ID 로 `wrangler.jsonc` 의 placeholder 를 교체한다.
+출력된 ID 로 `wrangler.jsonc` 의 값을 교체한다.
 
 - `d1_databases[0].database_id`
-- `kv_namespaces[0].id`
+- `kv_namespaces[].id` (SESSIONS · IMAGES)
 
-R2 버킷은 **공개하지 않는다.** 이미지는 `/api/books/:id/cover` 가 소유권을 확인하고 프록시한다.
+표지 이미지는 KV(`IMAGES`)에 담는다. 원래 R2 를 쓰려 했으나 R2 는 계정에서 따로 활성화해야 해서
+(결제 수단 등록 필요) KV 로 갔다. 업로드가 긴 변 1024px·JPEG 0.72 로 줄여 들어오므로 보통
+100~300KB 이고, KV 값 상한 25MB 에 한참 못 미친다. **공개 접근은 불가능하며**
+`/api/books/:id/cover` 가 소유권을 확인한 뒤에만 내보낸다.
 
 ### 2. Secret 등록
 

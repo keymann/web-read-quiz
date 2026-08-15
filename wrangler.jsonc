@@ -23,16 +23,14 @@
 			"migrations_dir": "migrations"
 		}
 	],
-	// 부모가 촬영/업로드한 책 표지 이미지 원본. 공개 버킷이 아니며 Worker 경유로만 서빙.
-	"r2_buckets": [
-		{
-			"binding": "IMAGES",
-			"bucket_name": "web-read-quiz-images"
-		}
-	],
-	// 세션 토큰, Rate Limit 카운터, AI 응답 캐시 등 TTL 기반 휘발성 데이터.
 	"kv_namespaces": [
-		{ "binding": "SESSIONS", "id": "87ad6de1b2e14742af9ed85c55a8c55c" }
+		// 세션 토큰, Rate Limit 카운터 등 TTL 기반 휘발성 데이터.
+		{ "binding": "SESSIONS", "id": "87ad6de1b2e14742af9ed85c55a8c55c" },
+		// 부모가 촬영/업로드한 책 표지 이미지 원본.
+		// 원래 R2 를 쓰려 했으나 계정에 R2 를 활성화하지 않기로 해 KV 로 보관한다.
+		// KV 값 상한은 25MB 이고 업로드 상한은 8MB 라 여유가 있다. 공개 접근은 불가능하며
+		// `/api/books/:id/cover` 가 소유권을 확인한 뒤에만 내보낸다.
+		{ "binding": "IMAGES", "id": "9fb10f4231c5405f8d0d93b30d6295e2" }
 	],
 	"observability": {
 		"enabled": true

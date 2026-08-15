@@ -124,6 +124,17 @@ export async function quizResultPage({ id }) {
 					el("p", { class: "hint", text: `${retry.prepared} / ${retry.total} 문제 · 조금만 기다려요` }),
 				]);
 
+			// 만들다 멈췄다(크레딧 부족·키 만료 등). 기다려도 저절로 되지 않는다.
+			case "FAILED":
+				return el("section", { class: "card" }, [
+					el("h2", { class: "section-title", text: "새 문제를 만들지 못했어요" }),
+					el("p", {
+						class: "status status--warn",
+						text: "부모님께 말해 주세요. 확인하고 다시 만들어 주실 거예요.",
+					}),
+					retry.error ? el("p", { class: "hint", text: retry.error }) : null,
+				]);
+
 			// 부모의 키가 브라우저에서만 동작하는 경우(Gemini). 아이 혼자서는 만들 수 없다.
 			case "NEEDS_PARENT":
 				return el("section", { class: "card" }, [

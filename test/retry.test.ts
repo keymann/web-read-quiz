@@ -318,6 +318,31 @@ describe("재도전", { timeout: 40_000 }, () => {
 		expect(rounds[0].questionCount).toBe(5);
 	});
 
+	/**
+	 * 서버가 만들다 실패하면(크레딧 부족·키 만료 등) 문항 수는 0 그대로다. 실패를 보지 않으면
+	 * 아이 화면이 "만들고 있어요" 를 영원히 띄운다 — 배포 환경에서 실제로 그랬다.
+	 */
+	it("서버가 만들다 실패하면 그 사실을 알려준다", async () => {
+		const { parent, child, attemptId, bookId } = await failedAttempt();
+		await expireCooldown(attemptId);
+
+		// 생성이 실패한 상황. 인터셉터를 걸지 않았으므로 백그라운드 호출이 그대로 실패한다.
+		await child.client.post(`/api/attempts/${attemptId}/retry`);
+
+		const rounds = (await parent.get(`/api/books/${bookId}/quizzes`)).body.data.quizzes;
+		const deadline = Date.now() + 10_000;
+		while (Date.now() < deadline) {
+			const detail = await parent.get(`/api/quizzes/${rounds[0].id}`);
+			if (detail.body.data.quiz.error) break;
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+
+		const view = (await child.client.get(`/api/attempts/${attemptId}`)).body.data.retry;
+		expect(view.status).toBe("FAILED");
+		expect(view.error).toBeTruthy();
+		expect(view.prepared).toBe(0);
+	});
+
 	it("남의 판으로는 재도전할 수 없다", async () => {
 		const { attemptId } = await failedAttempt();
 		const { client: other } = await signupParent();

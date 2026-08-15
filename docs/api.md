@@ -152,6 +152,7 @@ Attempt 는 시작할 때 그 시점의 활성 문항을 **버전 단위로 고�
 | `READY` | 지금 재도전을 시작할 수 있다 |
 | `PREPARING` | 새 회차를 만들었고 서버가 문제를 만드는 중 (`prepared` / `total`) |
 | `NEEDS_PARENT` | 새 회차는 만들었지만 문제는 **부모의 브라우저**가 만들어야 한다(Gemini) |
+| `FAILED` | 만들려다 실패했다(`error` 에 사유). 기다려도 저절로 되지 않는다 |
 | `WAITING` | 새 회차의 문제가 준비됐다 (`nextAssignmentId` 로 시작) |
 
 `GET /api/my/quizzes` 의 `ready` 는 문항이 다 찼는지다. 재도전은 배정을 먼저 만들고 문제를

@@ -6,12 +6,14 @@ import { childHomePage } from "./pages/child-home.js";
 import { childManagementPage } from "./pages/child-management.js";
 import { loginPage } from "./pages/login.js";
 import { parentHomePage } from "./pages/parent-home.js";
+import { settingsPage } from "./pages/settings.js";
 import { navigate, register, setNotFound, start } from "./router.js";
 import { homePathFor, loadSession } from "./session.js";
 
 register("/login", loginPage);
 register("/parent", parentHomePage);
 register("/parent/children", childManagementPage);
+register("/parent/settings", settingsPage);
 register("/child", childHomePage);
 
 // 루트는 로그인 상태에 따라 갈라진다.

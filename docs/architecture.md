@@ -83,11 +83,16 @@ CSP 는 `default-src 'self'` 기반이며 인라인 스크립트·인라인 스�
 
 API Key 는 **부모가 설정 화면에서 직접 입력**한다(§25). 저장 방식:
 
-1. 입력받은 키를 `ENCRYPTION_KEY`(Worker Secret) 기반 AES-GCM 으로 암호화
-2. `parent_settings.openai_api_key_cipher` + `..._iv` 에 저장, 뒤 4자리만 별도 컬럼에 평문 보관
-3. 조회 API 는 `{ configured: true, last4: "abcd" }` 만 반환. **복호화된 키는 절대 응답에 담지 않는다**
+1. 저장 **전에** OpenAI `GET /v1/models` 로 키가 실제로 동작하는지 확인한다
+2. `ENCRYPTION_KEY`(Worker Secret, base64 32바이트) 기반 AES-GCM 으로 암호화. IV 는 매번 새로 뽑아
+   같은 키를 다시 저장해도 암호문이 달라진다
+3. `parent_settings.openai_api_key_cipher` + `..._iv` 에 저장, 뒤 4자리만 별도 컬럼에 평문 보관
+4. 조회 API 는 `{ configured: true, last4: "abcd" }` 만 반환. **복호화된 키는 절대 응답에 담지 않는다**
 
-AI 호출이 필요한 시점에만 서버에서 복호화해 `Authorization` 헤더로 사용한다.
+복호화된 키가 나가는 통로는 `src/services/settings.ts` 의 `getApiKey` 하나뿐이고, 그 반환값은
+AI 서비스가 `Authorization` 헤더를 만들 때만 쓴다. 라우트가 실수로 응답에 담을 경로 자체를 없앴다.
+
+DB 가 통째로 유출돼도 `ENCRYPTION_KEY` 없이는 키를 복원할 수 없다.
 
 ## 백그라운드 생성
 

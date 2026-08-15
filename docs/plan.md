@@ -83,25 +83,34 @@ Phase 1 에서 확정한 사항:
 
 ---
 
-### Phase 2 — 부모 설정 (OPENAI_API_KEY)
+### Phase 2 — 부모 설정 (OPENAI_API_KEY) ✅ 완료
 
 | 파일 | 내용 |
 | --- | --- |
-| `src/utils/crypto.ts` | AES-GCM 암복호화 (`ENCRYPTION_KEY` 기반) |
-| `src/repositories/settings.ts` | `parent_settings` 접근 |
-| `src/ai/client.ts` | OpenAI 호출 래퍼 (재시도·타임아웃·로깅) |
-| `src/ai/models.ts` | 기본 모델 상수 + `/v1/models` 조회 |
-| `src/routes/settings.ts` | 키 저장/삭제/조회, 모델 목록 |
-| `public/js/pages/settings.js` | 설정 화면 + **키 발급 가이드**(§25) |
+| `src/utils/crypto.ts` | AES-GCM 암복호화 (`ENCRYPTION_KEY` 기반, 매번 새 IV) |
+| `src/repositories/settings.ts` | `parent_settings` 접근 (upsert) |
+| `src/ai/client.ts` | OpenAI 호출 래퍼 (타임아웃·백오프 재시도·에러 변환) |
+| `src/ai/models.ts` | 접두사 선호 목록 + `/v1/models` 조회·필터 |
+| `src/services/settings.ts` | 키 검증·보관, 모델 선택. **복호화 통로는 `getApiKey` 하나** |
+| `src/routes/settings.ts` | 키 저장/삭제/조회, 모델 목록/저장 |
+| `public/js/pages/settings.js` | 설정 화면 + 키 발급 가이드(§25) |
+| `test/settings.test.ts` | 통합 테스트 15개 (fetchMock 으로 OpenAI 대체) |
 
-키 저장 시 OpenAI 로 1회 검증 호출을 보내 유효한 키인지 확인한 뒤 저장한다.
-조회 응답에는 `configured`·`last4` 만 담고 원문은 절대 내려보내지 않는다.
+**완료 기준 달성** — 키 저장 시 OpenAI 로 검증 후 저장, `GET /api/settings` 는
+`{configured, last4, model, visionModel}` 만 반환, D1 에는 암호문만 존재.
 
-설정 화면 가이드 문구에 포함할 것:
-`platform.openai.com` → API keys → Create new secret key → `sk-` 로 시작하는 키 복사 →
-결제 수단 등록 필요 → 키는 생성 직후 1회만 표시됨 → 유출 시 즉시 폐기.
+Phase 2 에서 확정한 사항:
 
-**완료 기준** — 키 저장 후 `GET /api/settings` 가 `{configured:true, last4}` 반환. D1 에는 암호문만 존재.
+- **모델 ID 를 코드에 고정하지 않는다.** 접두사 선호 목록으로 계정의 실제 모델 목록에서 고른다.
+  라인업이 바뀌어도 배열에 문자열 하나만 추가하면 되고, 그 모델이 없는 계정은 다음 순위를 쓴다.
+- 키 저장 **전에** `GET /v1/models` 로 검증한다. 잘못된 키가 저장되면 문제 생성 단계에서야
+  실패가 드러나 진단이 어렵다.
+- 복호화된 키가 나가는 통로는 `services/settings.getApiKey` 하나뿐이다. 라우트가 실수로 응답에
+  담을 경로 자체를 없앴다.
+- OpenAI 4xx 는 재시도하지 않는다. 429·5xx 만 1→2→4초 백오프로 최대 3회.
+
+> `ENCRYPTION_KEY` 는 base64 로 **정확히 32바이트**여야 한다. 길이가 틀리면 키 저장이 500 으로 실패하며,
+> 서버 로그에 길이 진단이 남는다. `openssl rand -base64 32` 로 생성할 것.
 
 ---
 

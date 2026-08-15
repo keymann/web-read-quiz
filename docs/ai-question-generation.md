@@ -150,13 +150,27 @@ Structured Output 스키마 (§29):
 
 ## 모델 선택
 
-모델 ID 는 코드에 고정하지 않는다. 부모 설정 화면에서 고르고 `parent_settings` 에 저장한다.
+**모델 ID 를 코드에 고정하지 않는다.** OpenAI 라인업은 자주 바뀌고 계정마다 접근 가능한 모델도 다르다.
+특정 이름을 상수로 박아 두면 그 모델이 사라지는 날 서비스가 멈춘다.
 
-- `GET /api/settings/openai/models` 가 부모의 키로 OpenAI `/v1/models` 를 조회해 선택지를 채운다
-- 저장값이 없으면 `src/ai/models.ts` 의 기본값을 쓴다
-- 텍스트 생성용과 Vision 용을 따로 저장한다 (`openai_model`, `openai_vision_model`)
+대신 `src/ai/models.ts` 는 **접두사 선호 목록**만 들고 있다.
 
-모델 라인업은 계속 바뀌므로, 코드가 특정 모델 이름에 의존하지 않는 이 구조를 유지한다.
+```
+PREFERENCE = ["gpt-5.6", "gpt-5.5", "gpt-5", "gpt-4.1", "gpt-4o"]
+```
+
+동작:
+
+1. 부모의 키로 `GET /v1/models` 를 조회해 **그 계정이 실제로 쓸 수 있는 목록**을 얻는다
+2. 임베딩·moderation·TTS·transcribe·realtime·image·codex 계열은 이름으로 걸러낸다
+3. 남은 것을 선호 접두사 순서로 정렬한다 — 목록에 없는 접두사는 그냥 건너뛴다
+4. 부모가 고르지 않았으면 맨 앞을 기본값으로 잡아 `parent_settings` 에 저장한다
+
+부모가 직접 고를 때도 그 값이 계정 목록에 실제로 있는지 확인한 뒤에만 저장한다.
+텍스트 생성용과 Vision 용을 따로 둔다 (`openai_model`, `openai_vision_model`).
+
+선호 목록에 새 모델이 나오면 배열 맨 앞에 문자열 하나만 추가하면 된다.
+그 모델이 아직 없는 계정은 자동으로 다음 순위를 쓴다.
 
 ## 실패 처리
 

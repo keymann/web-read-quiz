@@ -32,10 +32,15 @@
 | POST | `/api/auth/login` | – | ✅ 로그인 → 세션 쿠키 |
 | POST | `/api/auth/logout` | any | ✅ 세션 폐기 |
 | GET | `/api/auth/me` | any | ✅ 현재 신원 + role (+ CHILD 면 childId) |
-| GET | `/api/settings` | PARENT | `{ openai: { configured, last4, model } }` — **키 원문 미포함** |
-| PUT | `/api/settings/openai-key` | PARENT | 키 저장(암호화). 저장 전 OpenAI 로 유효성 1회 검증 |
-| DELETE | `/api/settings/openai-key` | PARENT | 키 삭제 |
-| GET | `/api/settings/openai/models` | PARENT | 저장된 키로 사용 가능한 모델 목록 조회 |
+| GET | `/api/settings` | PARENT | ✅ `{ openai: { configured, last4, model, visionModel } }` — **키 원문 미포함** |
+| PUT | `/api/settings/openai-key` | PARENT | ✅ 키 저장(암호화). 저장 전 OpenAI 로 유효성 1회 검증 |
+| DELETE | `/api/settings/openai-key` | PARENT | ✅ 키 삭제 |
+| GET | `/api/settings/openai/models` | PARENT | ✅ 저장된 키로 사용 가능한 모델 목록 조회 |
+| PUT | `/api/settings/openai/models` | PARENT | ✅ 사용할 모델 저장 (계정에 실제 존재하는지 확인) |
+
+`PUT /api/settings/openai-key` 는 저장 **전에** `GET /v1/models` 로 키를 검증한다.
+잘못된 키가 저장되면 문제 생성 단계에서야 실패가 드러나 진단이 어렵기 때문이다.
+검증에 실패하면 아무것도 저장하지 않는다.
 
 ## 아이 관리
 
@@ -101,6 +106,9 @@ KV 카운터(`rl:<scope>:<key>`)로 고정 윈도우 방식.
 | 로그인 | 10회 / 15분 (IP + login_id) |
 | 이미지 업로드 | 20회 / 시간 (user) |
 | AI 생성·검증·재생성 | 20회 / 시간 (user) |
+| API Key 저장 | 10회 / 시간 (user) |
+| 모델 목록 조회 | 30회 / 시간 (user) |
+| 회원가입 | 5회 / 시간 (IP) |
 | 그 외 API | 300회 / 분 (user) |
 
 초과 시 `429` + `Retry-After` 헤더.

@@ -349,6 +349,33 @@ body {
 	display: none;
 }
 
+/* ── 설정 ────────────────────────────────────────────── */
+
+.status {
+	margin: 0 0 10px;
+	padding: 10px 14px;
+	border-radius: var(--radius);
+	font-size: 15px;
+}
+
+.status--ok {
+	background: var(--primary-soft);
+	color: var(--primary-hover);
+}
+
+.status--warn {
+	background: var(--bg-subtle);
+	color: var(--text-muted);
+}
+
+.steps {
+	margin: 0 0 12px;
+	padding-left: 20px;
+	display: grid;
+	gap: 8px;
+	font-size: 15px;
+}
+
 /* ── 로그인 ──────────────────────────────────────────── */
 
 .auth {

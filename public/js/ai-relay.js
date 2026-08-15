@@ -42,8 +42,19 @@ async function withCredential(run) {
 	}
 }
 
-/** 잠깐 기다리면 풀리는 상태들. 서버 호출 경로(`src/ai/http.ts`)와 같은 기준이다. */
-const TRANSIENT = new Set([429, 500, 502, 503, 504]);
+/**
+ * 잠깐 기다리면 풀리는 상태들 — 서버가 과부하일 때다. 몇 초 뒤 같은 모델로 다시 부른다.
+ */
+const RETRYABLE = new Set([500, 502, 503, 504]);
+
+/**
+ * 이 모델의 한도를 다 썼다는 뜻(`RESOURCE_EXHAUSTED`). 몇 초 기다린다고 풀리지 않으므로
+ * 같은 모델로 다시 부르지 않고 바로 다른 모델로 넘어간다.
+ *
+ * 실측: 무료 등급 키에서 최신 flash 모델은 거의 항상 429 다. 재시도를 3번 돌면 매 단계마다
+ * 4.5초를 그냥 버리게 된다.
+ */
+const QUOTA_EXHAUSTED = 429;
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -100,8 +111,9 @@ async function runStep(apiKey, request, { fatal } = {}) {
 				return { plan, response: await callGemini(apiKey, plan) };
 			} catch (err) {
 				if (fatal?.(err)) throw err;
-				if (!TRANSIENT.has(err.status)) throw err;
 				lastError = err;
+				if (err.status === QUOTA_EXHAUSTED) break; // 기다려도 안 풀린다. 모델을 바꾼다.
+				if (!RETRYABLE.has(err.status)) throw err;
 				if (attempt < 3) await wait(attempt * 1500);
 			}
 		}

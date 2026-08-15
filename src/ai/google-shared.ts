@@ -120,6 +120,10 @@ const EXCLUDED_SUBSTRINGS = [
 	"video-understanding",
 	"-eap",
 	"customtools",
+	// 아래 셋은 실제 계정 목록에 떠서 확인한 것들이다. 문제 생성용 텍스트 모델이 아니다.
+	"computer-use", // 화면 조작 에이전트
+	"robotics", // 로봇 제어
+	"omni", // 실시간 멀티모달 대화
 ];
 
 /** 세대. 앞에 있을수록 우선. 더 구체적인 접두사를 먼저 둔다. */

@@ -66,30 +66,17 @@ beforeAll(() => {
 
 afterEach(() => fetchMock.assertNoPendingInterceptors());
 
-function mockGeminiModels(times = 1) {
-	fetchMock
-		.get("https://generativelanguage.googleapis.com")
-		.intercept({ path: (p) => p.startsWith("/v1beta/models?"), method: "GET" })
-		.reply(200, { models: [{ name: "models/gemini-3.5-flash", supportedGenerationMethods: ["generateContent"] }] })
-		.times(times);
-}
-
-function mockGeminiGenerate(times = 1) {
-	fetchMock
-		.get("https://generativelanguage.googleapis.com")
-		.intercept({ path: (p) => p.includes(":generateContent"), method: "POST" })
-		.reply(200, { candidates: [] })
-		.times(times);
-}
-
-/** Gemini 키를 등록한 부모. 키 저장은 서버가 목록 조회 + 추론 확인을 한다. */
+/**
+ * Gemini 키를 등록한 부모.
+ *
+ * 서버는 Gemini 를 부를 수 없으므로(지역 차단) 키 저장 때 브라우저가 조회해 온 모델
+ * 목록을 그대로 받는다. 인터셉터 없이 저장되는 것이 그 증거다.
+ */
 async function parentWithGemini(): Promise<Client> {
 	const { client } = await signupParent();
-	mockGeminiModels(1);
-	mockGeminiGenerate(1);
 	await client.request("/api/settings/ai-key", {
 		method: "PUT",
-		body: { provider: "gemini", apiKey: GEMINI_KEY },
+		body: { provider: "gemini", apiKey: GEMINI_KEY, models: ["gemini-3.5-flash"] },
 	});
 	return client;
 }

@@ -1,4 +1,5 @@
 import { del, get, put } from "../api.js";
+import { fetchGeminiModels } from "../ai-relay.js";
 import { requireSession } from "../session.js";
 import { banner, confirmAction, el, field, header, mount, selectField, setKidMode, textareaField } from "../ui.js";
 import { historyPanel } from "./settings-history.js";
@@ -86,7 +87,13 @@ export async function settingsPage(params = {}) {
 			// 제공자를 바꾸는 중이면 이전 제공자의 모델 목록은 의미가 없다.
 			// 모델 목록은 AI 탭에서만 쓰므로 다른 탭에서는 불필요한 호출을 하지 않는다.
 			if (tab === "ai" && view.ai.configured && draftProvider === view.provider && models.length === 0) {
-				({ models } = await get("/api/settings/ai/models"));
+				if (view.provider === "gemini") {
+					// 서버가 Gemini 를 부를 수 없으므로 저장된 키를 받아 브라우저가 조회한다.
+					const credential = await get("/api/ai/credential");
+					models = await fetchGeminiModels(credential.apiKey);
+				} else {
+					({ models } = await get("/api/settings/ai/models"));
+				}
 			}
 		} catch (err) {
 			message = err.message;
@@ -261,9 +268,15 @@ export async function settingsPage(params = {}) {
 			event.preventDefault();
 			form.querySelector("button[type=submit]").disabled = true;
 			try {
+				// Gemini 는 서버가 부를 수 없어(요청 위치 차단) 키 검증과 모델 조회를 브라우저가 한다.
+				// 조회가 성공했다는 것 자체가 키가 유효하다는 증거다.
+				const browserModels =
+					draftProvider === "gemini" ? await fetchGeminiModels(apiKey.input.value.trim()) : undefined;
+
 				const result = await put("/api/settings/ai-key", {
 					provider: draftProvider,
 					apiKey: apiKey.input.value,
+					...(browserModels ? { models: browserModels } : {}),
 				});
 				models = result.models;
 				// 키는 저장됐지만 실제 호출이 막혀 있는 경우(크레딧 부족 등)는 경고로 알린다.

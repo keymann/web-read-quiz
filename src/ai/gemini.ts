@@ -175,6 +175,11 @@ export const gemini: AiProvider = {
 		return sortGeminiModels(ids);
 	},
 
+	// 배포 환경에서는 브라우저가 목록을 가져온다. 거르고 정렬하는 기준은 여기 그대로 둔다.
+	normalizeModels(ids) {
+		return sortGeminiModels(ids.filter(isUsableGeminiModel));
+	},
+
 	async probe(apiKey, model) {
 		try {
 			await call(

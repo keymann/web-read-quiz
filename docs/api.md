@@ -35,9 +35,9 @@
 | POST | `/api/auth/logout` | any | ✅ 세션 폐기 |
 | GET | `/api/auth/me` | any | ✅ 현재 신원 + role (+ CHILD 면 childId) |
 | GET | `/api/settings` | PARENT | ✅ `{ provider, providers, ai: { configured, last4, model, visionModel } }` — **키 원문 미포함** |
-| PUT | `/api/settings/ai-key` | PARENT | ✅ `{ provider, apiKey }` 저장(암호화). 저장 전 제공자로 유효성 검증 |
+| PUT | `/api/settings/ai-key` | PARENT | ✅ `{ provider, apiKey, models? }` 저장(암호화). 저장 전 제공자로 유효성 검증 |
 | DELETE | `/api/settings/ai-key` | PARENT | ✅ 키 삭제 |
-| GET | `/api/settings/ai/models` | PARENT | ✅ 저장된 키로 사용 가능한 모델 목록 조회 |
+| GET | `/api/settings/ai/models` | PARENT | ✅ 저장된 키로 사용 가능한 모델 목록 조회 (gemini 는 400 — 브라우저가 직접 조회) |
 | PUT | `/api/settings/ai/models` | PARENT | ✅ 사용할 모델 저장 (계정에 실제 존재하는지 확인) |
 | PUT | `/api/settings/quiz` | PARENT | ✅ `{ questionCount, passCount }` — 한 번에 낼 문제 수와 통과 기준 |
 
@@ -52,6 +52,12 @@
 
 1이 실패하면 아무것도 저장하지 않는다. 2가 실패하면 저장은 하되 `warning` 을 함께 돌려준다.
 결제 수단을 등록하러 가는 중일 수 있어 저장 자체는 막지 않는다.
+
+**`provider: "gemini"` 는 예외다.** 서버가 Gemini 를 부를 수 없으므로(지역 차단) 두 확인을
+모두 건너뛰고, 대신 브라우저가 조회해 온 `models` 를 **필수로** 받는다. 그 조회가 성공했다는
+것 자체가 키가 유효하다는 증거다. 서버는 받은 목록을 자기 기준으로 거르고 정렬한 뒤
+저장하므로, 못 쓰는 모델만 보내면 400 이다. 자세한 배경은
+[architecture.md](architecture.md) 의 "브라우저 릴레이" 참고.
 
 ## 아이 관리
 

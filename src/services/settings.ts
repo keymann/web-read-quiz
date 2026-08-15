@@ -104,14 +104,30 @@ export interface SaveKeyResult {
 }
 
 /**
- * 키를 저장하기 전에 제공자에게 한 번 물어본다.
- * 잘못된 키가 저장되면 그 사실을 문제 생성 단계에서야 알게 되어 진단이 어렵다.
+ * 제공자가 이 서버에서 호출 가능한지.
+ *
+ * Gemini(AI Studio)는 요청을 보낸 서버의 위치를 보고 막는다. 배포 환경(Cloudflare)에서는
+ * 서버가 Gemini 를 **한 번도** 부를 수 없다 — 키 검증도, 모델 목록 조회도 마찬가지다.
+ * 그래서 Gemini 는 브라우저가 대신 부르고, 서버는 받은 결과를 저장만 한다.
+ */
+const callableFromServer = (provider: ProviderName): boolean => provider !== "gemini";
+
+/**
+ * 키를 저장한다.
+ *
+ * 서버가 부를 수 있는 제공자는 저장 전에 직접 확인한다. 잘못된 키가 저장되면 그 사실을
+ * 문제 생성 단계에서야 알게 되어 진단이 어렵다.
+ *
+ * Gemini 는 서버가 부를 수 없으므로 **브라우저가 미리 조회한 모델 목록**을 함께 받는다.
+ * 그 조회가 성공했다는 것 자체가 키가 유효하다는 증거다.
  */
 export async function saveKey(
 	env: AppEnv,
 	userId: string,
 	providerName: ProviderName,
 	apiKey: string,
+	/** 브라우저가 조회해 온 모델 목록. Gemini 에서는 필수. */
+	browserModels?: string[],
 ): Promise<SaveKeyResult> {
 	const provider = providerFor(providerName);
 	const trimmed = apiKey.trim();
@@ -121,9 +137,17 @@ export async function saveKey(
 	if (trimmed.length < 20 || trimmed.length > 8_000) throw invalid("자격증명 형식이 올바르지 않습니다.");
 	provider.assertKeyFormat(trimmed);
 
-	const models = await provider.listModels(trimmed);
+	// 목록을 누가 가져왔든 무엇을 쓸 수 있고 무엇이 먼저인지는 서버가 정한다.
+	const models = callableFromServer(providerName)
+		? await provider.listModels(trimmed)
+		: (provider.normalizeModels?.(browserModels ?? []) ?? []);
+
 	if (models.length === 0) {
-		throw invalid(`이 키로 사용할 수 있는 ${provider.label} 모델이 없습니다. 계정 설정을 확인해 주세요.`);
+		throw invalid(
+			callableFromServer(providerName)
+				? `이 키로 사용할 수 있는 ${provider.label} 모델이 없습니다. 계정 설정을 확인해 주세요.`
+				: "모델 목록을 확인하지 못했습니다. 키를 다시 확인해 주세요.",
+		);
 	}
 
 	const sealed = await seal(env, trimmed);
@@ -140,7 +164,9 @@ export async function saveKey(
 
 	// 목록 조회는 인증만 확인한다. 실제로 추론이 되는지는 따로 확인해야 크레딧·권한 문제를
 	// 문제 생성 단계가 아니라 지금 이 화면에서 알려줄 수 있다.
-	const warning = model ? await provider.probe(trimmed, model) : null;
+	// 서버가 부를 수 없는 제공자는 이 확인을 건너뛴다 — 첫 사용 때 브라우저가 알게 된다.
+	const warning =
+		model && callableFromServer(providerName) ? await provider.probe(trimmed, model) : null;
 
 	return { provider: providerName, keyHint, models, model, warning };
 }
@@ -149,8 +175,20 @@ export async function clearKey(env: AppEnv, userId: string): Promise<void> {
 	await settingsRepo.clearKey(env, userId);
 }
 
+/**
+ * 이 계정에서 쓸 수 있는 모델 목록.
+ *
+ * Gemini 는 서버에서 조회할 수 없다. 그 경우 브라우저가 직접 조회해야 하므로 여기서 막는다.
+ */
 export async function listModels(env: AppEnv, userId: string): Promise<string[]> {
 	const { provider, apiKey } = await getRuntime(env, userId);
+	if (!callableFromServer(provider.name)) {
+		throw new ApiError(
+			"region_blocked",
+			"이 제공자의 모델 목록은 서버에서 조회할 수 없습니다. 화면에서 다시 시도해 주세요.",
+			400,
+		);
+	}
 	return provider.listModels(apiKey);
 }
 
@@ -160,11 +198,19 @@ export async function saveModels(
 	model: string,
 	visionModel: string,
 ): Promise<void> {
+	const row = await settingsRepo.find(env, userId);
+	const providerName = row?.ai_provider ?? DEFAULT_PROVIDER;
+
 	// 임의의 문자열이 저장되면 나중에 호출이 통째로 실패한다. 계정에서 실제로 쓸 수 있는지 확인한다.
-	const available = await listModels(env, userId);
-	for (const candidate of [model, visionModel]) {
-		if (!available.includes(candidate)) throw invalid("사용할 수 없는 모델입니다.");
+	// 서버가 목록을 조회할 수 없는 제공자(Gemini)는 이 확인을 할 방법이 없다. 목록을 보여준
+	// 주체가 브라우저이고 부모는 거기서 고른 것이므로, 형식만 확인하고 받아들인다.
+	if (callableFromServer(providerName)) {
+		const available = await listModels(env, userId);
+		for (const candidate of [model, visionModel]) {
+			if (!available.includes(candidate)) throw invalid("사용할 수 없는 모델입니다.");
+		}
 	}
+
 	await settingsRepo.saveModels(env, userId, { model, visionModel });
 }
 
@@ -198,6 +244,10 @@ export async function getRuntime(env: AppEnv, userId: string): Promise<AiRuntime
 	}
 
 	// 모델이 비어 있으면(제공자를 막 바꾼 직후 등) 지금 계정에서 다시 고른다.
+	// saveKey 가 항상 모델을 채우므로 정상 경로에서는 오지 않는다.
+	if (!callableFromServer(provider.name)) {
+		throw new ApiError("invalid", "사용할 모델이 정해지지 않았습니다. 설정에서 다시 저장해 주세요.", 400);
+	}
 	const available = await provider.listModels(apiKey);
 	const fallback = available[0];
 	if (!fallback) throw new ApiError("ai_failed", "사용할 수 있는 모델이 없습니다.", 502);

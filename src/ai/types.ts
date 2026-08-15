@@ -57,6 +57,14 @@ export interface AiProvider {
 	listModels(apiKey: string): Promise<string[]>;
 
 	/**
+	 * 서버가 아닌 곳(브라우저)에서 조회해 온 목록을 같은 기준으로 거르고 정렬한다.
+	 *
+	 * 서버가 제공자를 부를 수 없는 경우(Gemini 지역 차단)에만 쓴다. 목록을 누가 가져왔든
+	 * "무엇을 쓸 수 있고 무엇이 먼저인지" 는 서버가 정한다.
+	 */
+	normalizeModels?(ids: string[]): string[];
+
+	/**
 	 * 실제 추론이 되는지 확인한다. 문제 없으면 null, 아니면 사용자에게 보여줄 안내 문구.
 	 * 목록 조회는 인증만 검증하므로 이 확인이 따로 필요하다.
 	 */

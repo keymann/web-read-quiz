@@ -1,5 +1,6 @@
 import type { GeneratedQuestion } from "../ai/generate";
 import { QUESTION_TYPES } from "../ai/schemas";
+import { checkGrounding } from "./grounding";
 
 /**
  * AI 호출 없이 서버가 하는 사후 검사.
@@ -42,6 +43,13 @@ export interface CheckContext {
 	/** 책 제목·저자. 문제 본문에 그대로 들어가면 §7 금지 유형에 가깝다. */
 	title: string;
 	author: string;
+	/**
+	 * 이 문항들을 만들 때 준 책 정보.
+	 *
+	 * 문항이 **이 안에서** 나왔는지 대조한다. 프롬프트로 "지어내지 마세요" 라고 부탁하는
+	 * 것만으로는 부족했다 — 지어내는 모델은 근거도 함께 지어낸다.
+	 */
+	brief?: string;
 }
 
 /** 통과한 문항과 탈락한 문항을 나눠 돌려준다. */
@@ -90,6 +98,13 @@ function firstProblem(
 
 	// 근거를 못 대는 문항은 지어냈을 가능성이 높다(§10-10).
 	if ((question.evidence ?? "").trim() === "") return "근거가 비어 있습니다.";
+
+	// 근거가 **제공된 책 정보 안에** 있는지 글자로 대조한다. AI 검증은 같은 모델이 하므로
+	// 모델이 그 책을 잘못 기억하면 출제도 검수도 같은 방향으로 틀린다(§10-10).
+	if (context.brief) {
+		const grounding = checkGrounding(question, context.brief);
+		if (!grounding.ok) return grounding.reason!;
+	}
 
 	// §7 금지 유형 휴리스틱 — 제목·저자를 그대로 묻는 문제.
 	if (context.title && normalize(text).includes(normalize(context.title))) {

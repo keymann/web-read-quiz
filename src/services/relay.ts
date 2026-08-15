@@ -329,6 +329,7 @@ export async function planValidate(
 		accepted: existing.map((q) => q.question_text),
 		title: bookRow.title,
 		author: bookRow.author ?? "",
+		brief,
 	});
 
 	const rejected = screened.failed.map((failure) => ({
@@ -392,6 +393,7 @@ export async function applyAccept(
 		accepted: existing.map((q) => q.question_text),
 		title: bookRow.title,
 		author: bookRow.author ?? "",
+		brief: bookRow.brief ?? "",
 	});
 
 	const room = quiz.question_count - existing.length;
@@ -420,7 +422,9 @@ export async function applyAccept(
 			"REVIEW",
 			total >= quiz.question_count
 				? null
-				: `${quiz.question_count}문제 중 ${total}개만 검수를 통과했습니다. 다시 만들면 나머지를 채웁니다.`,
+				: // 서버 경로와 같은 안내를 쓴다. 근거 부족이 원인이면 "다시 만들기" 가 아니라
+					// 책 정보를 보강해야 한다는 것을 부모가 알아야 한다.
+					generation.shortfallNotice(quiz.question_count, total, rejected),
 		);
 	}
 

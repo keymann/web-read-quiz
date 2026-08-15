@@ -1,7 +1,7 @@
 import { env, fetchMock } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { scoreOf } from "../src/services/attempt";
-import { addChild, signupParent, type Client } from "./helpers";
+import { FIXTURE_PLOT, addChild, makeQuestions, signupParent, verdictsFor, type Client } from "./helpers";
 
 /**
  * 아이가 퀴즈를 푸는 판(§15·§17·§22).
@@ -18,35 +18,8 @@ const PNG = new Uint8Array([
 	0x42, 0x60, 0x82,
 ]);
 
-const TYPES = ["EVENT", "CHARACTER", "DETAIL", "SEQUENCE", "CAUSE_EFFECT", "ACTION", "EMOTION", "INFERENCE"];
-const WORDS = ["가람", "나루", "다솜", "라온", "마루", "바다", "사슴", "아람", "자연", "차오름"];
 
-function makeQuestions(count: number, offset = 0) {
-	return Array.from({ length: count }, (_, i) => {
-		const n = offset + i + 1;
-		return {
-			questionNumber: i + 1,
-			questionText: `${n}번 장면 ${WORDS[n % WORDS.length]}에서 일어난 일 Q${n}`,
-			choices: [`선택지 ${n}-가`, `선택지 ${n}-나`, `선택지 ${n}-다`, `선택지 ${n}-라`],
-			correctChoice: 1,
-			questionType: TYPES[i % TYPES.length],
-			difficulty: (i % 3) + 1,
-			explanation: `${n}번 장면의 해설입니다.`,
-			evidence: `${n}번 장면의 근거입니다.`,
-			readRequired: true,
-		};
-	});
-}
 
-const verdictsFor = (questions: { questionNumber: number }[]) => ({
-	results: questions.map((q) => ({
-		questionNumber: q.questionNumber,
-		valid: true,
-		score: 90,
-		reason: "",
-		readRequired: true,
-	})),
-});
 
 beforeAll(() => {
 	fetchMock.activate();
@@ -110,7 +83,7 @@ async function assignedQuiz(): Promise<{
 		publishedAt: "2000",
 		targetAge: "초등 고학년",
 		description: "양계장을 나온 암탉 이야기.",
-		plotSummary: "잎싹이 양계장을 나와 초록머리를 기른다.",
+		plotSummary: FIXTURE_PLOT,
 		characters: [{ name: "잎싹", role: "암탉" }],
 		keyEvents: ["양계장을 떠난다", "알을 품는다"],
 		sources: [

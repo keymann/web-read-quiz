@@ -1,6 +1,6 @@
 import { env, fetchMock } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { Client, addChild, signupParent } from "./helpers";
+import { Client, FIXTURE_PLOT, addChild, makeQuestions, signupParent, verdictsFor } from "./helpers";
 
 /**
  * 브라우저 릴레이.
@@ -20,44 +20,13 @@ const PNG = new Uint8Array([
 	0x42, 0x60, 0x82,
 ]);
 
-const TYPES = ["EVENT", "CHARACTER", "DETAIL", "SEQUENCE", "CAUSE_EFFECT", "ACTION", "EMOTION", "INFERENCE"];
-const WORDS = [
-	"가람", "나루", "다솜", "라온", "마루", "바다", "사슴", "아람", "자연", "차오름",
-	"카나리", "타래", "파랑", "하늘", "거북", "노을", "도담", "라일락", "모래", "바람",
-	"새벽", "여울", "자작", "초록", "푸름",
-];
 
-function makeQuestions(count: number, offset = 0) {
-	return Array.from({ length: count }, (_, i) => {
-		const n = offset + i + 1;
-		return {
-			questionNumber: i + 1,
-			questionText: `${n}번 장면 ${WORDS[n % WORDS.length]}에서 일어난 일 Q${n}`,
-			choices: [`선택지 ${n}-가`, `선택지 ${n}-나`, `선택지 ${n}-다`, `선택지 ${n}-라`],
-			correctChoice: 1,
-			questionType: TYPES[i % TYPES.length],
-			difficulty: (i % 3) + 1,
-			explanation: `${n}번 해설`,
-			evidence: `${n}번 근거`,
-			readRequired: true,
-		};
-	});
-}
 
 /** Gemini 원본 응답 모양. 브라우저는 이걸 그대로 서버에 돌려준다. */
 const geminiResponse = (payload: unknown) => ({
 	candidates: [{ content: { parts: [{ text: JSON.stringify(payload) }] }, finishReason: "STOP" }],
 });
 
-const verdictsFor = (questions: { questionNumber: number }[], valid = true) => ({
-	results: questions.map((q) => ({
-		questionNumber: q.questionNumber,
-		valid,
-		score: valid ? 90 : 20,
-		reason: valid ? "" : "책 내용과 맞지 않습니다.",
-		readRequired: true,
-	})),
-});
 
 beforeAll(() => {
 	fetchMock.activate();
@@ -107,7 +76,7 @@ async function bookReadyForQuiz(client: Client): Promise<string> {
 			publishedAt: "2000",
 			targetAge: "초등 고학년",
 			description: "양계장을 나온 암탉 이야기.",
-			plotSummary: "잎싹이 양계장을 나와 초록머리를 기른다.",
+			plotSummary: FIXTURE_PLOT,
 			characters: [{ name: "잎싹", role: "암탉" }],
 			keyEvents: ["양계장을 떠난다"],
 			sources: [

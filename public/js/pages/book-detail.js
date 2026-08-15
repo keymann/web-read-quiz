@@ -104,8 +104,9 @@ export async function bookDetailPage({ id }) {
 					onClick: () =>
 						run("search", `/api/books/${id}/search`, "책 정보를 찾아 정리했습니다.", (data) =>
 							data.readyForQuiz
-								? null
-								: "근거 자료가 부족합니다. 제목·지은이를 다시 확인하거나 정보를 한 번 더 찾아 주세요.",
+								? data.searchNotice
+								: data.searchNotice ??
+									"근거 자료가 부족합니다. 제목·지은이를 다시 확인하거나 정보를 한 번 더 찾아 주세요.",
 						),
 				}),
 			]),
@@ -178,7 +179,8 @@ export async function bookDetailPage({ id }) {
 		try {
 			const data = await post(path);
 			const warning = warn ? warn(data) : null;
-			message = warning ?? successMessage;
+			// 모델 폴백은 결과 차이를 설명해 주는 정보라 성공 메시지에도 덧붙인다.
+			message = [warning ?? successMessage, data.modelNotice].filter(Boolean).join(" ");
 			messageKind = warning ? "error" : "info";
 		} catch (err) {
 			message = err.message;

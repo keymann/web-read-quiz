@@ -33,7 +33,11 @@ docs/               설계 문서
 
 바인딩: **D1**(`DB`) · **R2**(`IMAGES`, 책 표지) · **KV**(`SESSIONS`, 세션/RateLimit) · **ASSETS**(정적 자산)
 
-OpenAI 호출은 **전부 Worker 안에서만** 일어난다. API Key 는 클라이언트로 나가지 않는다.
+AI 호출은 **전부 Worker 안에서만** 일어난다. API Key 는 클라이언트로 나가지 않는다.
+
+AI 제공자는 **OpenAI** 와 **Google Gemini** 중에 부모가 고른다. Gemini 는 결제 수단 없이
+무료 등급으로 시작할 수 있고(이미지 인식·문제 생성 모두 가능), OpenAI 는 상위 모델을 쓸 수 있다.
+자세한 차이와 제약은 [docs/plan.md](docs/plan.md) 의 Phase 3.5 참고.
 
 ## 문서
 
@@ -97,8 +101,8 @@ npx wrangler secret put ENCRYPTION_KEY
 npx wrangler secret put INVITE_CODE      # 선택
 ```
 
-`OPENAI_API_KEY` 는 Secret 이 아니다. **부모가 앱의 설정 화면에서 직접 입력**하고,
-서버가 AES-GCM 으로 암호화해 D1 에 저장한다.
+AI API Key 는 Secret 이 아니다. **부모가 앱의 설정 화면에서 직접 입력**하고,
+서버가 AES-GCM 으로 암호화해 D1 에 저장한다. 설정 화면에 제공자별 키 발급 방법이 안내되어 있다.
 
 ### 3. 마이그레이션 + 배포
 

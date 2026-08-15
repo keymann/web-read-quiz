@@ -19,7 +19,8 @@
 | `conflict` | 409 | 상태 전이 불가 (예: COMPLETED 퀴즈 수정) |
 | `rate_limited` | 429 | Rate Limit 초과 |
 | `invalid` | 400 | 입력 검증 실패 |
-| `ai_failed` | 502 | OpenAI 호출 실패 |
+| `ai_failed` | 502 | AI 호출 실패 |
+| `search_unavailable` | 400 | 이 키로는 웹 검색을 쓸 수 없음 (Gemini 무료 등급) |
 | `internal` | 500 | 그 외 |
 
 ## 인증 · 설정
@@ -32,15 +33,20 @@
 | POST | `/api/auth/login` | – | ✅ 로그인 → 세션 쿠키 |
 | POST | `/api/auth/logout` | any | ✅ 세션 폐기 |
 | GET | `/api/auth/me` | any | ✅ 현재 신원 + role (+ CHILD 면 childId) |
-| GET | `/api/settings` | PARENT | ✅ `{ openai: { configured, last4, model, visionModel } }` — **키 원문 미포함** |
-| PUT | `/api/settings/openai-key` | PARENT | ✅ 키 저장(암호화). 저장 전 OpenAI 로 유효성 1회 검증 |
-| DELETE | `/api/settings/openai-key` | PARENT | ✅ 키 삭제 |
-| GET | `/api/settings/openai/models` | PARENT | ✅ 저장된 키로 사용 가능한 모델 목록 조회 |
-| PUT | `/api/settings/openai/models` | PARENT | ✅ 사용할 모델 저장 (계정에 실제 존재하는지 확인) |
+| GET | `/api/settings` | PARENT | ✅ `{ provider, providers, ai: { configured, last4, model, visionModel } }` — **키 원문 미포함** |
+| PUT | `/api/settings/ai-key` | PARENT | ✅ `{ provider, apiKey }` 저장(암호화). 저장 전 제공자로 유효성 검증 |
+| DELETE | `/api/settings/ai-key` | PARENT | ✅ 키 삭제 |
+| GET | `/api/settings/ai/models` | PARENT | ✅ 저장된 키로 사용 가능한 모델 목록 조회 |
+| PUT | `/api/settings/ai/models` | PARENT | ✅ 사용할 모델 저장 (계정에 실제 존재하는지 확인) |
 
-`PUT /api/settings/openai-key` 는 저장 **전에** `GET /v1/models` 로 키를 검증한다.
-잘못된 키가 저장되면 문제 생성 단계에서야 실패가 드러나 진단이 어렵기 때문이다.
-검증에 실패하면 아무것도 저장하지 않는다.
+`provider` 는 `openai` | `gemini`.
+
+`PUT /api/settings/ai-key` 는 저장 **전에** 두 가지를 확인한다.
+1. 모델 목록 조회 — 키가 인증되는지
+2. 아주 작은 추론 호출 — 실제로 호출이 되는지 (크레딧 부족·권한 문제를 여기서 잡는다)
+
+1이 실패하면 아무것도 저장하지 않는다. 2가 실패하면 저장은 하되 `warning` 을 함께 돌려준다.
+결제 수단을 등록하러 가는 중일 수 있어 저장 자체는 막지 않는다.
 
 ## 아이 관리
 

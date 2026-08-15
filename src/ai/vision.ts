@@ -1,5 +1,4 @@
-import { toDataUrl } from "../utils/image";
-import { structured } from "./responses";
+import type { AiProvider } from "./types";
 import { BOOK_IDENTITY_SCHEMA } from "./schemas";
 
 /** 파이프라인 1단계 — 책 표지 사진에서 서지정보를 읽는다(§5). */
@@ -24,26 +23,20 @@ const INSTRUCTIONS = `당신은 책 표지 사진에서 서지정보를 읽어�
   흐릿하거나 일부만 보이면 낮게 주세요.`;
 
 export async function identifyBook(
+	provider: AiProvider,
 	apiKey: string,
 	model: string,
 	image: { bytes: Uint8Array; mime: string },
 ): Promise<BookIdentity> {
-	return structured<BookIdentity>(
+	return provider.structured<BookIdentity>(
 		apiKey,
 		{
 			model,
 			instructions: INSTRUCTIONS,
+			prompt: "이 책 표지에서 서지정보를 읽어 주세요.",
+			image,
 			schemaName: "book_identity",
-			schema: BOOK_IDENTITY_SCHEMA,
-			input: [
-				{
-					role: "user",
-					content: [
-						{ type: "input_text", text: "이 책 표지에서 서지정보를 읽어 주세요." },
-						{ type: "input_image", image_url: toDataUrl(image.bytes, image.mime) },
-					],
-				},
-			],
+			schema: BOOK_IDENTITY_SCHEMA as unknown as Record<string, unknown>,
 		},
 		{ timeoutMs: 90_000 },
 	);

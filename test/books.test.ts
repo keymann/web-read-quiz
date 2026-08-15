@@ -22,8 +22,8 @@ const IDENTITY = {
 	confidence: 0.93,
 };
 
+/** `found` 는 스키마에 없다. 서버가 채워진 내용을 보고 도출한다. */
 const RESEARCH = {
-	found: true,
 	title: "마당을 나온 암탉",
 	author: "황선미",
 	publisher: "사계절",
@@ -90,7 +90,7 @@ async function withKey(): Promise<Client> {
 	// 키 저장은 모델 목록 조회 + 추론 가능 확인, 두 번을 부른다.
 	mockModels(1);
 	mockResponses({ ok: true });
-	await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
+	await client.request("/api/settings/ai-key", { method: "PUT", body: { provider: "openai", apiKey: API_KEY } });
 	return client;
 }
 
@@ -281,8 +281,9 @@ describe("책 정보 검색", () => {
 
 		await client.patch(`/api/books/${bookId}`, { title: "자료 없는 책" });
 
+		// `found` 는 모델이 신고하지 않는다. 서버가 "내용을 채웠는지"로 판정하므로 비워서 보낸다.
 		mockGoogleBooksMiss();
-		mockResponses({ ...RESEARCH, found: false, sources: [] });
+		mockResponses({ ...RESEARCH, plotSummary: "", characters: [], keyEvents: [], sources: [] });
 		const res = await client.post(`/api/books/${bookId}/search`);
 
 		expect(res.body.data.readyForQuiz).toBe(false);

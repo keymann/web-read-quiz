@@ -50,13 +50,13 @@ export async function parentHomePage() {
 		]),
 		el("section", { class: "card card--muted" }, [
 			el("h2", { class: "section-title", text: "다음 단계" }),
-			settings?.openai.configured
+			settings?.ai.configured
 				? el("div", { class: "empty" }, [
 						el("p", { text: "책 표지를 찍으면 AI 가 책을 알아보고 정보를 모읍니다." }),
 						el("a", { class: "btn", href: "/parent/books/new", "data-link": true, text: "책 등록하기" }),
 					])
 				: el("div", { class: "empty" }, [
-						el("p", { text: "문제를 만들려면 먼저 OpenAI API Key 를 등록해야 합니다." }),
+						el("p", { text: "문제를 만들려면 먼저 AI API Key 를 등록해야 합니다. Gemini 는 결제 수단 없이 무료로 시작할 수 있어요." }),
 						el("a", { class: "btn", href: "/parent/settings", "data-link": true, text: "설정으로 가기" }),
 					]),
 		]),

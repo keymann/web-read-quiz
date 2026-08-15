@@ -23,7 +23,9 @@ export const BOOK_IDENTITY_SCHEMA = {
 export const BOOK_RESEARCH_SCHEMA = {
 	type: "object",
 	properties: {
-		found: { type: "boolean", description: "이 책을 특정할 수 있었는지." },
+		// `found` 는 모델에게 묻지 않는다. 스키마 첫 필드로 두면 모델이 내용을 떠올리기 전에
+		// 판단을 확정해 버려, 아는 책인데도 false 로 빠지는 일이 생긴다(실측 확인).
+		// 서버가 채워진 내용을 보고 도출한다.
 		title: { type: "string" },
 		author: { type: "string" },
 		publisher: { type: "string" },
@@ -66,7 +68,6 @@ export const BOOK_RESEARCH_SCHEMA = {
 		},
 	},
 	required: [
-		"found",
 		"title",
 		"author",
 		"publisher",

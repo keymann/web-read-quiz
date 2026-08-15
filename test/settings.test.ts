@@ -99,18 +99,19 @@ describe("OpenAI API Key 설정", () => {
 		const res = await client.get("/api/settings");
 
 		expect(res.status).toBe(200);
-		expect(res.body.data.openai.configured).toBe(false);
-		expect(res.body.data.openai.last4).toBeNull();
+		expect(res.body.data.ai.configured).toBe(false);
+		expect(res.body.data.ai.last4).toBeNull();
 	});
 
-	it("sk- 로 시작하지 않으면 OpenAI 를 부르지 않고 거절한다", async () => {
+	it("Google 계열 키를 OpenAI 로 저장하려 하면 제공자를 바꾸라고 알려준다", async () => {
 		const { client } = await signupParent();
-		const res = await client.request("/api/settings/openai-key", {
+		const res = await client.request("/api/settings/ai-key", {
 			method: "PUT",
-			body: { apiKey: "not-a-key-but-long-enough-string" },
+			body: { provider: "openai", apiKey: "AIzaSyLooksLikeAGoogleKey0123456789" },
 		});
 
 		expect(res.status).toBe(400);
+		expect(res.body.error.message).toContain("Gemini");
 		// 인터셉터를 걸지 않았으므로, 호출이 있었다면 disableNetConnect 로 실패했을 것이다.
 	});
 
@@ -118,9 +119,9 @@ describe("OpenAI API Key 설정", () => {
 		const { client } = await signupParent();
 		mockKeySave(1);
 
-		const saved = await client.request("/api/settings/openai-key", {
+		const saved = await client.request("/api/settings/ai-key", {
 			method: "PUT",
-			body: { apiKey: API_KEY },
+			body: { provider: "openai", apiKey: API_KEY },
 		});
 
 		expect(saved.status).toBe(200);
@@ -130,9 +131,9 @@ describe("OpenAI API Key 설정", () => {
 		expect(saved.body.data.model).toBe("gpt-5.6-mini");
 
 		const view = await client.get("/api/settings");
-		expect(view.body.data.openai.configured).toBe(true);
-		expect(view.body.data.openai.last4).toBe("klmn");
-		expect(view.body.data.openai.model).toBe("gpt-5.6-mini");
+		expect(view.body.data.ai.configured).toBe(true);
+		expect(view.body.data.ai.last4).toBe("klmn");
+		expect(view.body.data.ai.model).toBe("gpt-5.6-mini");
 	});
 
 	// 실제 계정에서 돌아온 목록을 그대로 넣어 정렬·필터가 의도대로 도는지 고정한다.
@@ -141,9 +142,9 @@ describe("OpenAI API Key 설정", () => {
 		mockModels(1, 200, { data: REAL_WORLD_MODELS.map((id) => ({ id })) });
 		mockProbe(1);
 
-		const saved = await client.request("/api/settings/openai-key", {
+		const saved = await client.request("/api/settings/ai-key", {
 			method: "PUT",
-			body: { apiKey: API_KEY },
+			body: { provider: "openai", apiKey: API_KEY },
 		});
 
 		const models: string[] = saved.body.data.models;
@@ -170,13 +171,13 @@ describe("OpenAI API Key 설정", () => {
 		expect(models.indexOf("gpt-4o")).toBeLessThan(models.indexOf("o3"));
 
 		// 기본값은 목록 맨 앞이 그대로 잡힌다
-		expect((await client.get("/api/settings")).body.data.openai.model).toBe(models[0]);
+		expect((await client.get("/api/settings")).body.data.ai.model).toBe(models[0]);
 	});
 
 	it("어떤 응답에도 키 원문이 담기지 않는다", async () => {
 		const { client } = await signupParent();
 		mockKeySave(1);
-		const saved = await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
+		const saved = await client.request("/api/settings/ai-key", { method: "PUT", body: { provider: "openai", apiKey: API_KEY } });
 		const view = await client.get("/api/settings");
 
 		expect(JSON.stringify(saved.body)).not.toContain(API_KEY);
@@ -186,10 +187,10 @@ describe("OpenAI API Key 설정", () => {
 	it("DB 에는 평문이 아니라 암호문이 저장된다", async () => {
 		const { client } = await signupParent();
 		mockKeySave(1);
-		await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
+		await client.request("/api/settings/ai-key", { method: "PUT", body: { provider: "openai", apiKey: API_KEY } });
 
 		const rows = await env.DB.prepare(
-			"SELECT openai_api_key_cipher AS c, openai_api_key_iv AS iv FROM parent_settings WHERE openai_api_key_cipher IS NOT NULL",
+			"SELECT api_key_cipher AS c, api_key_iv AS iv FROM parent_settings WHERE api_key_cipher IS NOT NULL",
 		).all<{ c: string; iv: string }>();
 
 		expect(rows.results.length).toBeGreaterThan(0);
@@ -204,10 +205,10 @@ describe("OpenAI API Key 설정", () => {
 		const { client } = await signupParent();
 		mockKeySave(2);
 
-		await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
+		await client.request("/api/settings/ai-key", { method: "PUT", body: { provider: "openai", apiKey: API_KEY } });
 		const first = await currentCipher(client);
 
-		await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
+		await client.request("/api/settings/ai-key", { method: "PUT", body: { provider: "openai", apiKey: API_KEY } });
 		const second = await currentCipher(client);
 
 		expect(first).not.toBe(second);
@@ -217,11 +218,11 @@ describe("OpenAI API Key 설정", () => {
 		const { client } = await signupParent();
 		mockModels(1, 401, { error: { message: "Incorrect API key provided" } });
 
-		const res = await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
+		const res = await client.request("/api/settings/ai-key", { method: "PUT", body: { provider: "openai", apiKey: API_KEY } });
 		expect(res.status).toBe(400);
 		expect(res.body.error.code).toBe("invalid");
 
-		expect((await client.get("/api/settings")).body.data.openai.configured).toBe(false);
+		expect((await client.get("/api/settings")).body.data.ai.configured).toBe(false);
 	});
 
 	// 크레딧이 없는 계정도 /v1/models 는 통과한다. 문제 생성 단계가 아니라 지금 알려줘야 한다.
@@ -235,24 +236,24 @@ describe("OpenAI API Key 설정", () => {
 			},
 		});
 
-		const saved = await client.request("/api/settings/openai-key", {
+		const saved = await client.request("/api/settings/ai-key", {
 			method: "PUT",
-			body: { apiKey: API_KEY },
+			body: { provider: "openai", apiKey: API_KEY },
 		});
 
 		expect(saved.status).toBe(200);
 		expect(saved.body.data.warning).toContain("크레딧");
 		// 결제 수단을 등록하러 가는 중일 수 있으므로 저장 자체는 막지 않는다.
-		expect((await client.get("/api/settings")).body.data.openai.configured).toBe(true);
+		expect((await client.get("/api/settings")).body.data.ai.configured).toBe(true);
 	});
 
 	it("추론 호출이 정상이면 경고가 없다", async () => {
 		const { client } = await signupParent();
 		mockKeySave(1);
 
-		const saved = await client.request("/api/settings/openai-key", {
+		const saved = await client.request("/api/settings/ai-key", {
 			method: "PUT",
-			body: { apiKey: API_KEY },
+			body: { provider: "openai", apiKey: API_KEY },
 		});
 
 		expect(saved.body.data.warning).toBeNull();
@@ -262,18 +263,18 @@ describe("OpenAI API Key 설정", () => {
 		const { client } = await signupParent();
 		mockModels(1, 200, { data: [{ id: "text-embedding-3-small" }] });
 
-		const res = await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
+		const res = await client.request("/api/settings/ai-key", { method: "PUT", body: { provider: "openai", apiKey: API_KEY } });
 		expect(res.status).toBe(400);
-		expect((await client.get("/api/settings")).body.data.openai.configured).toBe(false);
+		expect((await client.get("/api/settings")).body.data.ai.configured).toBe(false);
 	});
 
 	it("삭제하면 configured 가 false 로 돌아간다", async () => {
 		const { client } = await signupParent();
 		mockKeySave(1);
-		await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
+		await client.request("/api/settings/ai-key", { method: "PUT", body: { provider: "openai", apiKey: API_KEY } });
 
-		expect((await client.del("/api/settings/openai-key")).status).toBe(200);
-		expect((await client.get("/api/settings")).body.data.openai.configured).toBe(false);
+		expect((await client.del("/api/settings/ai-key")).status).toBe(200);
+		expect((await client.get("/api/settings")).body.data.ai.configured).toBe(false);
 	});
 });
 
@@ -283,9 +284,9 @@ describe("모델 선택", () => {
 		mockKeySave(1); // 키 저장(목록 + 추론 확인)
 		mockModels(1); // 모델 저장 시 목록 재확인
 
-		await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
+		await client.request("/api/settings/ai-key", { method: "PUT", body: { provider: "openai", apiKey: API_KEY } });
 
-		const res = await client.request("/api/settings/openai/models", {
+		const res = await client.request("/api/settings/ai/models", {
 			method: "PUT",
 			body: { model: "gpt-does-not-exist" },
 		});
@@ -297,19 +298,19 @@ describe("모델 선택", () => {
 		mockKeySave(1);
 		mockModels(1);
 
-		await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
-		const res = await client.request("/api/settings/openai/models", {
+		await client.request("/api/settings/ai-key", { method: "PUT", body: { provider: "openai", apiKey: API_KEY } });
+		const res = await client.request("/api/settings/ai/models", {
 			method: "PUT",
 			body: { model: "gpt-4o" },
 		});
 
 		expect(res.status).toBe(200);
-		expect((await client.get("/api/settings")).body.data.openai.model).toBe("gpt-4o");
+		expect((await client.get("/api/settings")).body.data.ai.model).toBe("gpt-4o");
 	});
 
 	it("키가 없으면 모델 목록을 조회할 수 없다", async () => {
 		const { client } = await signupParent();
-		const res = await client.get("/api/settings/openai/models");
+		const res = await client.get("/api/settings/ai/models");
 		expect(res.status).toBe(400);
 	});
 });
@@ -320,8 +321,8 @@ describe("설정 권한", () => {
 		const { client: child } = await addChild(parent);
 
 		expect((await child.get("/api/settings")).status).toBe(403);
-		expect((await child.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } })).status).toBe(403);
-		expect((await child.del("/api/settings/openai-key")).status).toBe(403);
+		expect((await child.request("/api/settings/ai-key", { method: "PUT", body: { provider: "openai", apiKey: API_KEY } })).status).toBe(403);
+		expect((await child.del("/api/settings/ai-key")).status).toBe(403);
 	});
 
 	it("로그인하지 않으면 401", async () => {
@@ -333,18 +334,18 @@ describe("설정 권한", () => {
 	it("다른 부모의 키는 보이지 않는다", async () => {
 		const { client: parentA } = await signupParent();
 		mockKeySave(1);
-		await parentA.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
+		await parentA.request("/api/settings/ai-key", { method: "PUT", body: { provider: "openai", apiKey: API_KEY } });
 
 		const { client: parentB } = await signupParent();
-		expect((await parentB.get("/api/settings")).body.data.openai.configured).toBe(false);
+		expect((await parentB.get("/api/settings")).body.data.ai.configured).toBe(false);
 	});
 });
 
 async function currentCipher(client: { get: (p: string) => Promise<{ body: any }> }): Promise<string> {
 	const view = await client.get("/api/settings");
-	const last4 = view.body.data.openai.last4 as string;
+	const last4 = view.body.data.ai.last4 as string;
 	const row = await env.DB.prepare(
-		"SELECT openai_api_key_cipher AS c FROM parent_settings WHERE openai_api_key_last4 = ? ORDER BY updated_at DESC LIMIT 1",
+		"SELECT api_key_cipher AS c FROM parent_settings WHERE api_key_last4 = ? ORDER BY updated_at DESC LIMIT 1",
 	)
 		.bind(last4)
 		.first<{ c: string }>();

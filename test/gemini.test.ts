@@ -13,29 +13,22 @@ const OPENAI_KEY = "sk-test1234567890abcdefghijklmn";
 
 const GEMINI_HOST = "https://generativelanguage.googleapis.com";
 
-/** 실제 응답 형태에 맞춘 목록. 임베딩·이미지·TTS 와 generateContent 미지원이 섞여 온다. */
-const MODEL_LIST = {
-	models: [
-		{ name: "models/gemini-2.5-flash", supportedGenerationMethods: ["generateContent"] },
-		{ name: "models/gemini-3.5-flash", supportedGenerationMethods: ["generateContent"] },
-		{ name: "models/gemini-3.5-flash-lite", supportedGenerationMethods: ["generateContent"] },
-		{ name: "models/gemini-3.5-pro", supportedGenerationMethods: ["generateContent"] },
-		{ name: "models/gemini-3.7-flash", supportedGenerationMethods: ["generateContent"] },
-		{ name: "models/gemini-3-flash-preview", supportedGenerationMethods: ["generateContent"] },
-		{ name: "models/gemini-embedding-001", supportedGenerationMethods: ["embedContent"] },
-		{ name: "models/gemini-2.5-flash-image", supportedGenerationMethods: ["generateContent"] },
-		{ name: "models/gemini-2.5-flash-native-audio", supportedGenerationMethods: ["generateContent"] },
-		{ name: "models/imagen-4.0-generate-001", supportedGenerationMethods: ["predict"] },
-		{ name: "models/gemma-3-27b-it", supportedGenerationMethods: ["generateContent"] },
-	],
-};
-
 beforeAll(() => {
 	fetchMock.activate();
 	fetchMock.disableNetConnect();
 });
 
 afterEach(() => fetchMock.assertNoPendingInterceptors());
+
+/** 실제 응답 형태에 맞춘 목록. 임베딩·이미지·TTS 와 generateContent 미지원이 섞여 온다. */
+const MODEL_LIST = {
+	models: [
+		{ name: "models/gemini-3.7-flash", supportedGenerationMethods: ["generateContent"] },
+		{ name: "models/gemini-3.5-flash", supportedGenerationMethods: ["generateContent"] },
+		{ name: "models/gemini-3.5-flash-lite", supportedGenerationMethods: ["generateContent"] },
+		{ name: "models/gemini-embedding-001", supportedGenerationMethods: ["embedContent"] },
+	],
+};
 
 function mockGeminiModels(times = 1, status = 200, body: unknown = MODEL_LIST) {
 	fetchMock
@@ -53,15 +46,17 @@ function mockGenerate(times = 1, status = 200, body: unknown = { candidates: [] 
 		.times(times);
 }
 
-function mockKeySave(times = 1) {
-	mockGeminiModels(times);
-	mockGenerate(times);
-}
+/**
+ * Gemini 는 **서버가 부를 수 없다**(요청 위치 차단). 그래서 키 저장 시 서버는 Gemini 를
+ * 한 번도 부르지 않고, 브라우저가 조회해 온 모델 목록을 그대로 받는다.
+ * 인터셉터를 걸지 않았는데도 저장이 되는 것 자체가 그 증거다.
+ */
+const BROWSER_MODELS = ["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"];
 
-const saveGeminiKey = (client: Client) =>
+const saveGeminiKey = (client: Client, models: string[] = BROWSER_MODELS) =>
 	client.request("/api/settings/ai-key", {
 		method: "PUT",
-		body: { provider: "gemini", apiKey: GEMINI_KEY },
+		body: { provider: "gemini", apiKey: GEMINI_KEY, models },
 	});
 
 describe("Gemini 키 설정", () => {
@@ -80,11 +75,14 @@ describe("Gemini 키 설정", () => {
 
 	it("AIza 가 아닌 형식(AQ. 등)의 Google 키도 받아들인다", async () => {
 		const { client } = await signupParent();
-		mockKeySave(1);
 
 		const res = await client.request("/api/settings/ai-key", {
 			method: "PUT",
-			body: { provider: "gemini", apiKey: "AQ.Ab8RN6Jtestkey0123456789abcdefghijklmnopqr" },
+			body: {
+				provider: "gemini",
+				apiKey: "AQ.Ab8RN6Jtestkey0123456789abcdefghijklmnopqr",
+				models: BROWSER_MODELS,
+			},
 		});
 
 		expect(res.status).toBe(200);
@@ -101,16 +99,14 @@ describe("Gemini 키 설정", () => {
 		expect(res.body.error.message).toContain("공백");
 	});
 
-	it("유효한 키는 저장되고 무료 티어에서 쓸 수 있는 flash 가 기본이 된다", async () => {
+	it("브라우저가 조회한 목록으로 저장되고 첫 모델이 기본이 된다", async () => {
 		const { client } = await signupParent();
-		mockKeySave(1);
 
 		const saved = await saveGeminiKey(client);
 
 		expect(saved.status).toBe(200);
 		expect(saved.body.data.provider).toBe("gemini");
 		expect(saved.body.data.warning).toBeNull();
-		// 최신 세대의 flash 가 먼저. pro 는 유료 전용이라 자동 선택되지 않게 뒤로 민다.
 		expect(saved.body.data.model).toBe("gemini-3.7-flash");
 
 		const view = await client.get("/api/settings");
@@ -119,69 +115,51 @@ describe("Gemini 키 설정", () => {
 		expect(view.body.data.ai.keyHint).toBe(`끝 4자리 ${GEMINI_KEY.slice(-4)}`);
 	});
 
-	it("쓸 수 없는 모델을 걸러내고 선호 순서로 정렬한다", async () => {
+	// 목록을 브라우저가 가져와도 "무엇을 쓸 수 있고 무엇이 먼저인지" 는 서버가 정한다.
+	// 조작된 목록을 그대로 믿으면 못 쓰는 모델이 기본값으로 박힌다.
+	it("브라우저가 보낸 목록도 서버 기준으로 거르고 정렬한다", async () => {
 		const { client } = await signupParent();
-		mockKeySave(1);
 
-		const models: string[] = (await saveGeminiKey(client)).body.data.models;
+		const saved = await saveGeminiKey(client, [
+			"gemini-embedding-001",
+			"gemma-3-27b-it",
+			"gemini-2.5-flash-image",
+			"gpt-5.6-mini",
+			"gemini-3.5-flash-lite",
+			"gemini-3.7-flash",
+			"gemini-3.5-flash",
+		]);
 
-		// generateContent 를 지원하지 않거나 문제 생성에 못 쓰는 계열은 빠진다
-		expect(models).not.toContain("gemini-embedding-001");
-		expect(models).not.toContain("imagen-4.0-generate-001");
-		expect(models).not.toContain("gemma-3-27b-it");
-		expect(models).not.toContain("gemini-2.5-flash-image");
-		expect(models).not.toContain("gemini-2.5-flash-native-audio");
-
-		// 최신 세대 우선, 같은 세대에서는 flash → flash-lite → pro
-		expect(models[0]).toBe("gemini-3.7-flash");
-		expect(models.indexOf("gemini-3.5-flash")).toBeLessThan(models.indexOf("gemini-3.5-flash-lite"));
-		expect(models.indexOf("gemini-3.5-flash-lite")).toBeLessThan(models.indexOf("gemini-3.5-pro"));
-		// preview 는 예고 없이 바뀌므로 뒤로
-		expect(models.indexOf("gemini-3.5-flash")).toBeLessThan(models.indexOf("gemini-3-flash-preview"));
+		expect(saved.status).toBe(200);
+		const models: string[] = saved.body.data.models;
+		expect(models).toEqual(["gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]);
+		expect(saved.body.data.model).toBe("gemini-3.7-flash");
 	});
 
-	it("잘못된 키는 400 INVALID_ARGUMENT 로 오며 저장되지 않는다", async () => {
+	// 쓸 수 있는 게 하나도 없으면 저장할 이유가 없다.
+	it("쓸 수 없는 모델만 보내면 거부한다", async () => {
 		const { client } = await signupParent();
-		// Gemini 는 잘못된 키도 400 으로 준다. 상태 코드만으로는 구분되지 않는다.
-		mockGeminiModels(1, 400, {
-			error: { status: "INVALID_ARGUMENT", message: "API key not valid. Please pass a valid API key." },
-		});
+		const res = await saveGeminiKey(client, ["gemini-embedding-001", "gpt-5.6-mini"]);
 
-		const res = await saveGeminiKey(client);
 		expect(res.status).toBe(400);
-		expect(res.body.error.code).toBe("invalid");
-		expect(res.body.error.message).toContain("Gemini");
-
 		expect((await client.get("/api/settings")).body.data.ai.configured).toBe(false);
 	});
 
-	// Cloudflare Worker 에서 나가는 요청을 Google 이 위치 기준으로 막는다(실측 확인).
-	// 같은 키로 로컬에서는 잘 되기 때문에, 이 사실을 알려주지 않으면 키를 몇 번이고 다시 넣어 보게 된다.
-	it("서버 위치가 차단되면 그 사실을 그대로 알려준다", async () => {
+	// 서버가 Gemini 를 못 부르므로 목록을 못 받으면 저장할 근거가 없다.
+	it("모델 목록 없이 저장하려 하면 거부한다", async () => {
 		const { client } = await signupParent();
-		mockGeminiModels(1, 400, {
-			error: {
-				code: 400,
-				status: "FAILED_PRECONDITION",
-				message: "User location is not supported for the API use.",
-			},
+		const res = await client.request("/api/settings/ai-key", {
+			method: "PUT",
+			body: { provider: "gemini", apiKey: GEMINI_KEY },
 		});
 
-		const res = await saveGeminiKey(client);
-
 		expect(res.status).toBe(400);
-		expect(res.body.error.code).toBe("region_blocked");
-		expect(res.body.error.message).toContain("지역");
-		// OpenAI 로 가라는 안내가 함께 있어야 한다
-		expect(res.body.error.message).toContain("OpenAI");
-
-		// 쓸 수 없는 키를 저장해 두면 나중에 더 헷갈린다
+		expect(res.body.error.message).toContain("모델 목록");
 		expect((await client.get("/api/settings")).body.data.ai.configured).toBe(false);
 	});
 
 	it("DB 에는 평문이 아니라 암호문이 저장된다", async () => {
 		const { client } = await signupParent();
-		mockKeySave(1);
 		await saveGeminiKey(client);
 
 		const row = await env.DB.prepare(
@@ -209,7 +187,7 @@ describe("제공자 전환", () => {
 	it("OpenAI 에서 Gemini 로 바꾸면 이전 모델 선택이 남지 않는다", async () => {
 		const { client } = await signupParent();
 
-		// 먼저 OpenAI 키를 등록한다
+		// 먼저 OpenAI 키를 등록한다 (OpenAI 는 서버가 부를 수 있다)
 		fetchMock
 			.get("https://api.openai.com")
 			.intercept({ path: "/v1/models", method: "GET" })
@@ -227,7 +205,6 @@ describe("제공자 전환", () => {
 
 		// Gemini 로 교체하면 OpenAI 모델 이름이 남아 있으면 안 된다.
 		// 남으면 다음 호출이 "gpt-5.6-mini" 를 Gemini 에 보내 404 로 실패한다.
-		mockKeySave(1);
 		await saveGeminiKey(client);
 
 		const view = await client.get("/api/settings");
@@ -237,6 +214,8 @@ describe("제공자 전환", () => {
 	});
 });
 
+// 폴백은 서버가 제공자를 직접 부르는 경로의 동작이다. 지역 차단이 없는 로컬 실행에서
+// Gemini 를 쓰는 경우가 여기 해당한다.
 describe("모델 폴백", () => {
 	/** 표지 분석까지 가려면 책이 필요하다. 최소 PNG 하나면 된다. */
 	const PNG = new Uint8Array([
@@ -262,7 +241,6 @@ describe("모델 폴백", () => {
 
 	async function bookWithGeminiKey() {
 		const { client } = await signupParent();
-		mockKeySave(1);
 		await saveGeminiKey(client);
 
 		const form = new FormData();

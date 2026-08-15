@@ -26,7 +26,10 @@ async function putKey({ request, env, principal }: RouteCtx): Promise<Response> 
 	if (!isProviderName(provider)) throw invalid("지원하지 않는 AI 제공자입니다.");
 
 	const apiKey = v.str(body, "apiKey", "API Key");
-	return ok(await settings.saveKey(env, parent.userId, provider, apiKey));
+	// Gemini 는 서버가 부를 수 없어 브라우저가 조회한 모델 목록을 함께 보낸다.
+	const models = Array.isArray(body.models) ? (body.models as unknown[]).map(String) : undefined;
+
+	return ok(await settings.saveKey(env, parent.userId, provider, apiKey, models));
 }
 
 async function deleteKey({ env, principal }: RouteCtx): Promise<Response> {

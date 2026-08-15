@@ -70,6 +70,39 @@ async function callGemini(apiKey, plan) {
 	return payload;
 }
 
+/* ── 키 등록 ─────────────────────────────────────────── */
+
+/** Gemini 모델 목록 조회 엔드포인트. 서버가 부를 수 없으므로 브라우저가 직접 부른다. */
+const GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200";
+
+/**
+ * 아직 저장 전인 키로 모델 목록을 조회한다.
+ *
+ * 서버는 Gemini 를 부를 수 없으므로 키가 유효한지 확인할 방법이 없다. 이 조회가 성공했다는
+ * 것 자체가 키가 유효하다는 증거이고, 받은 목록을 저장 요청에 함께 실어 보낸다.
+ *
+ * 여기서는 **거르지 않는다.** 무엇을 쓸 수 있고 무엇이 먼저인지는 서버가 정한다(단일 기준).
+ * 목록을 누가 가져왔는지와 무관하게 같은 규칙이 적용되어야 한다.
+ */
+export async function fetchGeminiModels(apiKey) {
+	let response;
+	try {
+		response = await fetch(GEMINI_MODELS_URL, { headers: { "x-goog-api-key": apiKey } });
+	} catch {
+		throw new Error("Gemini 에 연결하지 못했습니다. 네트워크를 확인해 주세요.");
+	}
+
+	const payload = await response.json().catch(() => null);
+	if (!response.ok) {
+		throw new Error(payload?.error?.message ?? `Gemini 키를 확인하지 못했습니다 (${response.status})`);
+	}
+
+	return (payload.models ?? [])
+		.filter((m) => !m.supportedGenerationMethods || m.supportedGenerationMethods.includes("generateContent"))
+		.map((m) => (m.name ?? "").replace(/^models\//, ""))
+		.filter(Boolean);
+}
+
 /* ── 책 표지 식별 ─────────────────────────────────────── */
 
 export async function identifyBook(bookId) {

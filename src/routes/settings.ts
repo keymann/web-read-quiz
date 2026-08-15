@@ -27,7 +27,8 @@ async function putKey({ request, env, principal }: RouteCtx): Promise<Response> 
 
 	const apiKey = v.str(body, "apiKey", "API Key");
 	// Gemini 는 서버가 부를 수 없어 브라우저가 조회한 모델 목록을 함께 보낸다.
-	const models = Array.isArray(body.models) ? (body.models as unknown[]).map(String) : undefined;
+	// 실제 계정 목록이 50건 안팎이라 200이면 넉넉하다.
+	const models = "models" in body ? v.strArray(body, "models", { max: 200, maxLength: 120 }) : undefined;
 
 	return ok(await settings.saveKey(env, parent.userId, provider, apiKey, models));
 }

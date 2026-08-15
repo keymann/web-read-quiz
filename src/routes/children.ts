@@ -7,6 +7,7 @@ import type { ChildView } from "../types";
 import { newId } from "../utils/id";
 import { conflict, invalid, ok } from "../utils/response";
 import * as v from "../utils/validate";
+import { rateLimit } from "../utils/ratelimit";
 import { route, type Route, type RouteCtx } from "./router";
 
 /** 아이는 자기 비밀번호를 직접 입력해야 하므로 부모보다 짧게 허용한다. */
@@ -26,8 +27,24 @@ async function list({ env, principal }: RouteCtx): Promise<Response> {
 	return ok({ children: rows.map(toView) });
 }
 
+/**
+ * 한 부모가 등록할 수 있는 아이 수.
+ *
+ * 아이를 추가할 때마다 로그인 계정(`users` 행)이 하나씩 생긴다. 막지 않으면 부모 계정 하나로
+ * 계정을 무한히 찍어낼 수 있다. 한 가정에 이보다 많을 일은 없다.
+ */
+const MAX_CHILDREN = 20;
+
 async function create({ request, env, principal }: RouteCtx): Promise<Response> {
 	const parent = requireParent(principal);
+	// 등록 자체는 아래 MAX_CHILDREN 이 막는다. 이 제한은 **시도**를 묶는 것이다 —
+	// 실패하는 요청도 비밀번호 해시(PBKDF2 10만 회)를 돌리므로 CPU 가 든다.
+	// 한도(20)보다 높게 잡아야 정상 사용자가 한도에 닿기 전에 막히지 않는다.
+	await rateLimit(env, "child-create", parent.userId, 30, 60 * 60);
+
+	if ((await childrenRepo.listByParent(env, parent.userId)).length >= MAX_CHILDREN) {
+		throw conflict(`아이는 ${MAX_CHILDREN}명까지 등록할 수 있습니다.`);
+	}
 
 	const body = await v.readJson(request);
 	const name = v.displayName(body, "name");

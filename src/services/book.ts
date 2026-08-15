@@ -277,6 +277,16 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
  * 그래서 얻은 것이 적어도 **출처는 반드시 남긴다.** 웹 근거가 하나도 없었다는 사실 자체가
  * 부모가 알아야 할 정보다("이건 모델 기억에서 나온 내용이다").
  */
+/**
+ * 저장해도 되는 출처 주소인지.
+ *
+ * 이 URL 은 AI 응답과 외부 서지 API 에서 온다 — 우리가 만든 값이 아니다. `javascript:` 같은
+ * 스킴이 섞여 들어오면 부모 화면에 그대로 링크로 붙는다. 화면도 같은 검사를 하지만(`ui.js`),
+ * **이미 저장된 값은 화면 검사만으로 지워지지 않으므로** 들어올 때 막는 편이 확실하다.
+ */
+const isStorableUrl = (url: string | null): url is string =>
+	typeof url === "string" && /^https?:\/\//i.test(url.trim());
+
 function collectSources(
 	bookId: string,
 	bib: bibliographic.BibRecord[],
@@ -291,7 +301,7 @@ function collectSources(
 		id: newId(),
 		bookId,
 		source: record.source,
-		url: record.url,
+		url: isStorableUrl(record.url) ? record.url : null,
 		title: record.title,
 		content: record.description,
 	}));
@@ -299,7 +309,7 @@ function collectSources(
 	// 모델이 적어 준 출처와 제공자가 알려준 출처를 합친다. 같은 URL 은 한 번만.
 	const seen = new Set<string>();
 	for (const source of [...found.sources, ...(notices.groundingSources ?? [])]) {
-		if (!source.url || seen.has(source.url)) continue;
+		if (!isStorableUrl(source.url) || seen.has(source.url)) continue;
 		seen.add(source.url);
 		sources.push({
 			id: newId(),

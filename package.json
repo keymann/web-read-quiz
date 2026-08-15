@@ -1,0 +1,23 @@
+{
+	"name": "web-read-quiz",
+	"description": "AI 독서 퀴즈 웹앱 — 부모가 책을 등록하면 AI가 4지선다 20문제를 만들고 아이가 풀어 독서 여부를 확인한다",
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "0.10.11",
+		"@cloudflare/workers-types": "^4.20250425.0",
+		"@types/node": "24.10.1",
+		"typescript": "5.9.3",
+		"vitest": "3.2.4",
+		"wrangler": "4.56.0"
+	},
+	"private": true,
+	"scripts": {
+		"cf-typegen": "wrangler types",
+		"check": "tsc --noEmit && wrangler deploy --dry-run",
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"test": "vitest",
+		"db:migrate:local": "wrangler d1 migrations apply web-read-quiz --local",
+		"db:migrate:remote": "wrangler d1 migrations apply web-read-quiz --remote"
+	}
+}

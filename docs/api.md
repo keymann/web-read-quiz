@@ -41,7 +41,10 @@
 | PUT | `/api/settings/ai/models` | PARENT | ✅ 사용할 모델 저장 (계정에 실제 존재하는지 확인) |
 | PUT | `/api/settings/quiz` | PARENT | ✅ `{ questionCount, passCount }` — 한 번에 낼 문제 수와 통과 기준 |
 
-`provider` 는 `openai` | `gemini`.
+`provider` 는 `openai` | `gemini` | `vertex`.
+
+`apiKey` 필드는 제공자에 따라 내용이 다르다 — OpenAI·Gemini 는 API Key 한 줄, Vertex 는
+서비스 계정 JSON 전체다. 응답의 `keyHint` 도 제공자가 정한다(끝 4자리 / 프로젝트 이름).
 
 `PUT /api/settings/ai-key` 는 저장 **전에** 두 가지를 확인한다.
 1. 모델 목록 조회 — 키가 인증되는지

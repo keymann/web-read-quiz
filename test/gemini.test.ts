@@ -1,6 +1,6 @@
 import { env, fetchMock } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { toGeminiSchema } from "../src/ai/gemini";
+import { toGeminiSchema } from "../src/ai/google-shared";
 import { BOOK_IDENTITY_SCHEMA } from "../src/ai/schemas";
 import { Client, signupParent } from "./helpers";
 
@@ -116,7 +116,7 @@ describe("Gemini 키 설정", () => {
 		const view = await client.get("/api/settings");
 		expect(view.body.data.provider).toBe("gemini");
 		expect(view.body.data.ai.configured).toBe(true);
-		expect(view.body.data.ai.last4).toBe(GEMINI_KEY.slice(-4));
+		expect(view.body.data.ai.keyHint).toBe(`끝 4자리 ${GEMINI_KEY.slice(-4)}`);
 	});
 
 	it("쓸 수 없는 모델을 걸러내고 선호 순서로 정렬한다", async () => {
@@ -187,7 +187,7 @@ describe("Gemini 키 설정", () => {
 		const row = await env.DB.prepare(
 			"SELECT ai_provider AS p, api_key_cipher AS c FROM parent_settings WHERE api_key_last4 = ?",
 		)
-			.bind(GEMINI_KEY.slice(-4))
+			.bind(`끝 4자리 ${GEMINI_KEY.slice(-4)}`)
 			.first<{ p: string; c: string }>();
 
 		expect(row!.p).toBe("gemini");
@@ -233,7 +233,7 @@ describe("제공자 전환", () => {
 		const view = await client.get("/api/settings");
 		expect(view.body.data.provider).toBe("gemini");
 		expect(view.body.data.ai.model).toBe("gemini-3.7-flash");
-		expect(view.body.data.ai.last4).toBe(GEMINI_KEY.slice(-4));
+		expect(view.body.data.ai.keyHint).toBe(`끝 4자리 ${GEMINI_KEY.slice(-4)}`);
 	});
 });
 

@@ -31,7 +31,8 @@ export interface SettingsView {
 	providers: { name: ProviderName; label: string; consoleUrl: string }[];
 	ai: {
 		configured: boolean;
-		last4: string | null;
+		/** 어떤 자격증명을 등록했는지 알려주는 짧은 문구. 키 원문은 담기지 않는다. */
+		keyHint: string | null;
 		model: string | null;
 		visionModel: string | null;
 	};
@@ -50,7 +51,7 @@ export async function getView(env: AppEnv, userId: string): Promise<SettingsView
 		providers: providerChoices(),
 		ai: {
 			configured: row?.api_key_cipher !== null && row?.api_key_cipher !== undefined,
-			last4: row?.api_key_last4 ?? null,
+			keyHint: row?.api_key_last4 ?? null,
 			model: row?.text_model ?? null,
 			visionModel: row?.vision_model ?? null,
 		},
@@ -95,7 +96,7 @@ export async function saveQuizSettings(
 
 export interface SaveKeyResult {
 	provider: ProviderName;
-	last4: string;
+	keyHint: string;
 	models: string[];
 	model: string | null;
 	/** 키는 유효하지만 실제 호출이 안 되는 경우(크레딧 부족 등)의 안내. 정상이면 null. */
@@ -115,8 +116,10 @@ export async function saveKey(
 	const provider = providerFor(providerName);
 	const trimmed = apiKey.trim();
 
+	// 형식 검증은 제공자가 한다. Vertex 는 API Key 한 줄이 아니라 서비스 계정 JSON 전체를 받으므로
+	// 길이 상한을 여기서 일괄로 두면 멀쩡한 자격증명을 거부하게 된다.
+	if (trimmed.length < 20 || trimmed.length > 8_000) throw invalid("자격증명 형식이 올바르지 않습니다.");
 	provider.assertKeyFormat(trimmed);
-	if (trimmed.length < 20 || trimmed.length > 300) throw invalid("API Key 형식이 올바르지 않습니다.");
 
 	const models = await provider.listModels(trimmed);
 	if (models.length === 0) {
@@ -124,8 +127,8 @@ export async function saveKey(
 	}
 
 	const sealed = await seal(env, trimmed);
-	const last4 = trimmed.slice(-4);
-	await settingsRepo.saveKey(env, userId, { provider: providerName, ...sealed, last4 });
+	const keyHint = provider.keyLabel(trimmed);
+	await settingsRepo.saveKey(env, userId, { provider: providerName, ...sealed, last4: keyHint });
 
 	// 아직 고른 모델이 없으면 선호 순서의 첫 모델을 기본으로 잡아 준다.
 	const existing = await settingsRepo.find(env, userId);
@@ -139,7 +142,7 @@ export async function saveKey(
 	// 문제 생성 단계가 아니라 지금 이 화면에서 알려줄 수 있다.
 	const warning = model ? await provider.probe(trimmed, model) : null;
 
-	return { provider: providerName, last4, models, model, warning };
+	return { provider: providerName, keyHint, models, model, warning };
 }
 
 export async function clearKey(env: AppEnv, userId: string): Promise<void> {

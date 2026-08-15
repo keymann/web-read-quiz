@@ -1,8 +1,9 @@
 import { gemini } from "./gemini";
 import { openai } from "./openai";
+import { vertex } from "./vertex";
 import type { AiProvider, ProviderName } from "./types";
 
-const PROVIDERS: Record<ProviderName, AiProvider> = { openai, gemini };
+const PROVIDERS: Record<ProviderName, AiProvider> = { openai, gemini, vertex };
 
 export const providerFor = (name: ProviderName): AiProvider => PROVIDERS[name];
 

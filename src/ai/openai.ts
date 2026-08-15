@@ -167,6 +167,8 @@ export const openai: AiProvider = {
 
 	assertKeyFormat: assertOpenAiKeyShape,
 
+	keyLabel: (apiKey) => `끝 4자리 ${apiKey.slice(-4)}`,
+
 	async listModels(apiKey) {
 		const body = await call<ModelListResponse>(apiKey, "/models", { method: "GET" }, {
 			timeoutMs: 15_000,

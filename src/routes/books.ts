@@ -40,7 +40,7 @@ async function detail({ env, principal, params }: RouteCtx): Promise<Response> {
 		// 판정 기준은 서비스 한 곳에만 둔다. 예전에는 여기와 search 결과가 서로 달라
 		// "검색 직후엔 만들 수 있다더니 다시 열면 버튼이 잠기는" 일이 있었다.
 		readyForQuiz: book.isReadyForQuiz(row.brief),
-		evidenceWeak: book.hasWeakEvidence(sources.length),
+		evidenceWeak: book.hasWeakEvidence(book.evidenceCount(sources)),
 	});
 }
 

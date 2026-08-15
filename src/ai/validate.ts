@@ -1,5 +1,6 @@
 import type { GeneratedQuestion } from "./generate";
 import { VALIDATION_SCHEMA } from "./schemas";
+import type { QuestionLanguage } from "../types";
 import type { AiProvider, StructuredRequest } from "./types";
 
 /** 파이프라인 5단계 — 생성된 문제를 한 번의 호출로 일괄 검증한다(§10·§28). */
@@ -39,6 +40,8 @@ export interface ValidateRequest {
 	model: string;
 	brief: string;
 	questions: GeneratedQuestion[];
+	/** 문제를 낸 언어. 판정 사유(reason)를 같은 언어로 받으려는 게 아니라, 언어가 섞였는지 보게 한다. */
+	language?: QuestionLanguage;
 }
 
 export function buildValidateRequest(request: ValidateRequest): StructuredRequest {
@@ -56,7 +59,18 @@ export function buildValidateRequest(request: ValidateRequest): StructuredReques
 	return {
 		model: request.model,
 		instructions: INSTRUCTIONS,
-		prompt: [request.brief, "", "다음 문제들을 검수해 주세요.", "", rendered].join("\n"),
+		prompt: [
+			request.brief,
+			"",
+			"다음 문제들을 검수해 주세요.",
+			// 언어가 섞인 문항은 아이가 읽지 못한다. 사후검사로는 잡기 어려워 검수자에게 맡긴다.
+			request.language === "ko"
+				? "이 문제들은 한국어로 출제되어야 합니다. 영어가 섞여 있으면 탈락시키세요."
+				: "이 문제들은 영어로 출제되어야 합니다. 한국어가 섞여 있으면 탈락시키세요.",
+			"reason 은 한국어로 적습니다.",
+			"",
+			rendered,
+		].join("\n"),
 		schemaName: "question_validation",
 		schema: VALIDATION_SCHEMA as unknown as Record<string, unknown>,
 	};

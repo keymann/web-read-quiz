@@ -295,7 +295,9 @@ describe("문제 생성 릴레이", { timeout: 30_000 }, () => {
 
 		const detail = await client.get(`/api/quizzes/${quizId}`);
 		expect(detail.body.data.questions).toHaveLength(6);
-		expect(detail.body.data.quiz.status).toBe("DRAFT");
+		// 서버가 도는 경로와 마찬가지로 검수 대기로 넘어간다. DRAFT 에 머물면 목록에서
+		// "아직 안 만든 퀴즈" 와 구분되지 않는다.
+		expect(detail.body.data.quiz.status).toBe("REVIEW");
 	});
 
 	// 클라이언트가 보낸 문항을 그대로 믿으면 §7·§9·§10 게이트가 무의미해진다.

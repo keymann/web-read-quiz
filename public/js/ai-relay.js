@@ -96,14 +96,19 @@ async function callGemini(apiKey, plan) {
  * 다음에 무엇을 쓸지는 서버가 정한다. 후보가 떨어지면 서버가 거절한다.
  *
  * `fatal` 은 재시도해도 소용없는 실패를 가려낸다(예: 웹 검색 권한이 없는 키의 429).
+ * `onPlan` 은 긴 호출을 보내기 직전에, `onNote` 는 재시도·모델 교체 때 불린다 — 둘 다
+ * 화면이 "지금 무엇을 하고 있는지" 를 계속 보여줄 수 있게 하기 위한 것이다.
  */
-async function runStep(apiKey, request, { fatal } = {}) {
+async function runStep(apiKey, request, { fatal, onNote, onPlan } = {}) {
 	const avoid = [];
 
 	for (;;) {
 		const plan = await post("/api/ai/plan", { ...request, avoid });
 		// 서버가 "더 할 일 없음" 이라고 하면 호출할 것도 없다.
 		if (plan.done || plan.url === undefined) return { plan, response: null };
+
+		// 호출을 보내기 **전에** 알린다. 응답을 기다리는 수십 초 동안 화면이 멈춰 보이면 안 된다.
+		onPlan?.(plan);
 
 		let lastError;
 		for (let attempt = 1; attempt <= 3; attempt++) {
@@ -114,13 +119,17 @@ async function runStep(apiKey, request, { fatal } = {}) {
 				lastError = err;
 				if (err.status === QUOTA_EXHAUSTED) break; // 기다려도 안 풀린다. 모델을 바꾼다.
 				if (!RETRYABLE.has(err.status)) throw err;
-				if (attempt < 3) await wait(attempt * 1500);
+				if (attempt < 3) {
+					onNote?.(`AI 가 지금 붐벼서 잠시 뒤 다시 시도합니다 (${attempt}/3)`);
+					await wait(attempt * 1500);
+				}
 			}
 		}
 
 		// 재시도로 안 풀렸다. 이 모델은 빼고 서버에게 다시 물어본다.
 		avoid.push(plan.model);
 		if (avoid.length >= 3) throw lastError;
+		onNote?.(`${plan.model} 모델이 응답하지 않아 다른 모델로 바꿉니다`);
 	}
 }
 
@@ -202,35 +211,63 @@ export async function researchBook(bookId) {
 /** 서버가 라운드를 이끈다. 브라우저는 시키는 호출만 한다. 최대 라운드도 서버 목표치로 정해진다. */
 const MAX_ROUNDS = 3;
 
+/**
+ * 문제를 만든다. 진행 상황을 **호출 전에** 알린다.
+ *
+ * 생성 한 번이 30초를 넘기는 일이 흔하다. 끝난 뒤에만 알리면 그 시간 내내 화면이 멈춰
+ * 보이고, 부모는 고장 났다고 생각해 새로고침한다(그러면 정말로 중단된다). 그래서 무엇을
+ * 하려는 참인지를 먼저 알리고, 기다리는 동안에도 무슨 일이 벌어지는지 계속 보이게 한다.
+ */
 export async function generateQuestions(quizId, onProgress) {
 	return withCredential(async ({ apiKey }) => {
 		let rejected = [];
 		let last = null;
+		/** 마지막으로 알린 상태. 곁가지 소식(재시도 등)이 숫자를 지우지 않게 들고 있는다. */
+		let state = { accepted: 0, target: 0 };
+
+		const report = (patch) => {
+			state = { ...state, note: null, ...patch };
+			onProgress?.(state);
+		};
 
 		for (let round = 1; round <= MAX_ROUNDS; round++) {
-			// 1~2) 몇 개가 더 필요한지 서버가 정하고, 브라우저가 그 요청을 보낸다
-			const { plan, response: generated } = await runStep(apiKey, {
-				kind: "generate",
-				quizId,
-				rejected,
-			});
+			report({ phase: "planning", round });
+
+			// 1) 이번 라운드에 몇 개가 더 필요한지 서버가 정하고, 브라우저가 그 요청을 보낸다.
+			//    onPlan 은 **긴 호출 직전**에 불린다 — 기다림이 시작되기 전에 알려야 의미가 있다.
+			const { plan, response: generated } = await runStep(
+				apiKey,
+				{ kind: "generate", quizId, rejected },
+				{
+					onPlan: (p) =>
+						report({ phase: "generating", round, need: p.need, accepted: p.accepted, target: p.target }),
+					onNote: (note) => report({ note }),
+				},
+			);
 			if (plan.done) return { accepted: plan.accepted, target: plan.target, done: true };
 
-			onProgress?.({ accepted: plan.accepted, target: plan.target, phase: "generating" });
+			// 2) 만든 문제를 서버가 사후검사하고, 남은 것만 AI 검수로 보낸다
+			report({ phase: "screening", round, accepted: plan.accepted, target: plan.target });
 
-			// 3~4) 서버가 사후검사를 돌리고 검증 요청을 만들어 주면 그것도 보낸다
-			onProgress?.({ accepted: last?.accepted ?? 0, target: plan.target, phase: "validating" });
-			const { plan: validatePlan, response: verdicts } = await runStep(apiKey, {
-				kind: "validate",
-				quizId,
-				response: generated,
-			});
+			const { plan: validatePlan, response: verdicts } = await runStep(
+				apiKey,
+				{ kind: "validate", quizId, response: generated },
+				{
+					onPlan: (p) => report({ phase: "validating", round, checking: p.questions?.length ?? 0 }),
+					onNote: (note) => report({ note }),
+				},
+			);
 			rejected = [...rejected, ...validatePlan.rejected].slice(-20);
 
 			// 사후검사에서 전멸했으면 검증할 게 없다. 다음 라운드로.
-			if (validatePlan.questions.length === 0) continue;
+			if (validatePlan.questions.length === 0) {
+				report({ phase: "retrying", round, dropped: validatePlan.rejected.length });
+				continue;
+			}
 
-			// 5) 서버가 임계값을 적용하고 통과분만 저장한다
+			// 3) 서버가 임계값을 적용하고 통과분만 저장한다
+			report({ phase: "saving", round });
+
 			last = await post("/api/ai/apply", {
 				kind: "accept",
 				quizId,
@@ -239,7 +276,13 @@ export async function generateQuestions(quizId, onProgress) {
 			});
 			rejected = [...rejected, ...last.rejected].slice(-20);
 
-			onProgress?.({ accepted: last.accepted, target: last.target, phase: "generating" });
+			report({
+				phase: last.done ? "done" : "retrying",
+				round,
+				dropped: last.rejected.length,
+				accepted: last.accepted,
+				target: last.target,
+			});
 			if (last.done) return last;
 		}
 

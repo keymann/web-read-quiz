@@ -1,3 +1,4 @@
+import type { QuestionLanguage } from "../types";
 import type { AiProvider, StructuredRequest } from "./types";
 import { QUESTIONS_SCHEMA } from "./schemas";
 
@@ -62,13 +63,36 @@ export interface GenerateRequest {
 	rejected?: { questionText: string; reason: string }[];
 	/** 근거가 웹 검색이 아니라 모델 지식뿐인 경우. 더 보수적으로 출제하게 한다. */
 	briefIsUnverified?: boolean;
+	/** 문제를 낼 언어. 책이 한국어여도 문제는 영어로 낼 수 있다. */
+	language?: QuestionLanguage;
 }
+
+/**
+ * 출력 언어 지시.
+ *
+ * 프롬프트와 책 정보는 한국어로 주고 **출력만** 영어로 받는다. 지시를 통째로 영어로 바꾸면
+ * §9 의 12개 조건 문구를 옮겨야 하는데, 그 문구는 요구사항에서 그대로 온 것이라 건드리지
+ * 않는 편이 안전하다.
+ *
+ * 어느 필드가 아이 눈에 보이는지를 짚어 준다. 그러지 않으면 문제만 영어로 쓰고 선택지는
+ * 한국어로 남기는 식으로 섞인다.
+ */
+const LANGUAGE_RULE: Record<QuestionLanguage, string> = {
+	en: [
+		"출력 언어: **영어**.",
+		"questionText · choices · explanation · evidence 를 모두 자연스러운 영어로 씁니다.",
+		"초등학생이 읽을 영어이므로 쉬운 낱말과 짧은 문장을 씁니다.",
+		"등장인물 이름은 책에 쓰인 표기를 로마자로 옮겨 일관되게 씁니다.",
+	].join(" "),
+	ko: "출력 언어: **한국어**. questionText · choices · explanation · evidence 를 모두 한국어로 씁니다.",
+};
 
 export function buildGenerateRequest(request: GenerateRequest): StructuredRequest {
 	const parts = [
 		request.brief,
 		"",
 		`위 책 정보로 4지선다 문제 ${request.count}개를 만들어 주세요.`,
+		LANGUAGE_RULE[request.language ?? "en"],
 	];
 
 	// 분배는 서버가 사후에 강제하지 못하는 부분(유형·난이도)만 프롬프트로 요구한다.

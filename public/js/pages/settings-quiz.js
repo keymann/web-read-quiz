@@ -1,14 +1,15 @@
 import { put } from "../api.js";
-import { el, field } from "../ui.js";
+import { el, field, selectField } from "../ui.js";
 
 /**
- * 출제 설정 탭 — 한 번에 낼 문제 개수와 통과 개수(§17·§21.1).
+ * 출제 설정 탭 — 한 번에 낼 문제 개수·통과 개수·문제 언어(§17·§21.1).
  *
  * 여기서 바꾼 값은 **앞으로 만드는 퀴즈**에만 적용된다. 이미 만들어진 퀴즈는 만들 때의
  * 기준을 그대로 들고 있어, 아이가 이미 푼 결과의 합격 여부가 나중에 뒤바뀌지 않는다.
  */
 export function quizSettingsCard(view, { onMessage }) {
-	const { questionCount, passCount, minQuestions, maxQuestions } = view.quiz;
+	const { questionCount, passCount, questionLanguage, languages, minQuestions, maxQuestions } =
+		view.quiz;
 
 	const count = field(`한 번에 낼 문제 개수 (${minQuestions}~${maxQuestions})`, {
 		type: "number",
@@ -24,6 +25,9 @@ export function quizSettingsCard(view, { onMessage }) {
 		value: passCount,
 		required: true,
 	});
+
+	// 책이 한국어여도 문제는 영어로 낼 수 있다(영어 독해 겸용).
+	const language = selectField("문제 언어", languages, questionLanguage);
 
 	const summary = el("p", { class: "status status--ok" });
 	const updateSummary = () => {
@@ -48,6 +52,11 @@ export function quizSettingsCard(view, { onMessage }) {
 		count.wrap,
 		pass.wrap,
 		summary,
+		language.wrap,
+		el("p", {
+			class: "hint",
+			text: "문제·선택지·해설을 이 언어로 만듭니다. 퀴즈를 만들 때 그 판만 다른 언어로 바꿀 수도 있습니다.",
+		}),
 		el("p", {
 			class: "hint",
 			text: "여기서 바꾼 값은 앞으로 만드는 퀴즈에만 적용됩니다. 이미 만든 퀴즈의 기준은 그대로 유지되어, 아이가 이미 푼 결과의 합격 여부가 뒤바뀌지 않습니다.",
@@ -61,6 +70,7 @@ export function quizSettingsCard(view, { onMessage }) {
 			await put("/api/settings/quiz", {
 				questionCount: Number(count.input.value),
 				passCount: Number(pass.input.value),
+				questionLanguage: language.select.value,
 			});
 			onMessage("출제 설정을 저장했습니다.", "info");
 		} catch (err) {

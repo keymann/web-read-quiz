@@ -1,6 +1,6 @@
 import { buildGenerateRequest, type GeneratedQuestion } from "../ai/generate";
 import { buildGeminiCall } from "../ai/gemini";
-import { parseGenerateContentResponse } from "../ai/google-shared";
+import { extractGroundingSources, parseGenerateContentResponse } from "../ai/google-shared";
 import { buildValidateRequest, type Verdict } from "../ai/validate";
 import { buildIdentifyRequest, type BookIdentity } from "../ai/vision";
 import * as booksRepo from "../repositories/books";
@@ -217,12 +217,18 @@ export async function applyResearch(
 	await assertRelayProvider(env, userId);
 
 	const raw = parseGenerateContentResponse<BookResearch>("gemini", response as never);
+	// 모델이 sources 를 비워 보내도 제공자가 알려준 참고 페이지는 남는다.
+	const groundingSources = extractGroundingSources(response as never);
+	const { model } = await settings.getRuntime(env, userId);
+
 	return book.applyResearch(env, userId, bookId, normalizeResearch(raw), {
 		groundingUsed,
 		searchNotice: groundingUsed
 			? null
 			: "이 키로는 웹 검색을 쓸 수 없어 모델이 아는 지식으로 정리했습니다. 책 정보를 꼭 직접 확인해 주세요.",
 		modelNotice: null,
+		model,
+		groundingSources,
 	});
 }
 
@@ -272,6 +278,7 @@ export async function planGenerate(
 			existing: existing.map((q) => q.question_text),
 			rejected: rejected.slice(-10),
 			briefIsUnverified: !hasWeb,
+			language: quiz.language,
 		}),
 	);
 
@@ -341,6 +348,7 @@ export async function planValidate(
 			model,
 			brief,
 			questions: screened.passed,
+			language: quiz.language,
 		}),
 	);
 
@@ -398,10 +406,24 @@ export async function applyAccept(
 	}
 
 	if (accepted.length > 0) {
-		await generation.persistAccepted(env, quizId, existing.length, accepted);
+		await generation.persistAccepted(env, quizId, accepted);
 	}
 
 	const total = existing.length + accepted.length;
+
+	// 서버가 도는 경로는 runGeneration 이 상태를 옮긴다. 릴레이는 여기가 그 자리다.
+	// 상태가 DRAFT 에 머물면 "검수 대기" 인 퀴즈를 목록에서 구분할 수 없다.
+	if (total > 0) {
+		await quizzesRepo.setStatus(
+			env,
+			quizId,
+			"REVIEW",
+			total >= quiz.question_count
+				? null
+				: `${quiz.question_count}문제 중 ${total}개만 검수를 통과했습니다. 다시 만들면 나머지를 채웁니다.`,
+		);
+	}
+
 	return {
 		accepted: total,
 		target: quiz.question_count,

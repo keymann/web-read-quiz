@@ -54,8 +54,36 @@ export interface GenerateContentResponse {
 	candidates?: {
 		content?: { parts?: { text?: string }[] };
 		finishReason?: string;
+		/** 그라운딩(구글 검색)을 썼을 때 실제로 참고한 페이지들. */
+		groundingMetadata?: {
+			groundingChunks?: { web?: { uri?: string; title?: string } }[];
+		};
 	}[];
 	promptFeedback?: { blockReason?: string };
+}
+
+/**
+ * 그라운딩으로 실제 참고한 페이지.
+ *
+ * 모델에게 `sources` 를 채우라고 시켜 두었지만 자주 비워서 보낸다. 그럴 때도 응답에는
+ * `groundingMetadata` 가 붙어 오므로, 무엇을 보고 답했는지는 여기서 확실히 알 수 있다.
+ * 부모가 "이 정보 어디서 왔나" 를 확인할 수 있어야 문제를 검수할 수 있다.
+ */
+export function extractGroundingSources(
+	body: GenerateContentResponse,
+): { url: string; title: string }[] {
+	const chunks = body.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+	const seen = new Set<string>();
+	const sources: { url: string; title: string }[] = [];
+
+	for (const chunk of chunks) {
+		const url = chunk.web?.uri;
+		if (!url?.startsWith("http") || seen.has(url)) continue;
+		seen.add(url);
+		sources.push({ url, title: chunk.web?.title ?? url });
+	}
+
+	return sources;
 }
 
 /** `generateContent` 요청 본문. 두 서비스가 같은 모양을 받는다. */
@@ -126,10 +154,16 @@ const EXCLUDED_SUBSTRINGS = [
 	"omni", // 실시간 멀티모달 대화
 ];
 
-/** 세대. 앞에 있을수록 우선. 더 구체적인 접두사를 먼저 둔다. */
+/**
+ * 세대. 앞에 있을수록 우선. 더 구체적인 접두사를 먼저 둔다.
+ *
+ * 최신인 3.7 이 아니라 3.6 이 먼저다. 실측: 무료 등급 키에서 3.7-flash 는 사실상 상시
+ * `429 RESOURCE_EXHAUSTED` 라 매 호출이 헛걸음 한 번과 모델 교체를 치른다. 한 세대 아래는
+ * 잘 나가고 품질 차이도 이 용도에서는 드러나지 않는다. 유료 키라면 설정에서 바꾸면 된다.
+ */
 const FAMILY_PREFERENCE = [
-	"gemini-3.7",
 	"gemini-3.6",
+	"gemini-3.7",
 	"gemini-3.5",
 	"gemini-3.1",
 	"gemini-3",

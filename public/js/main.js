@@ -9,6 +9,8 @@ import { childHomePage } from "./pages/child-home.js";
 import { childManagementPage } from "./pages/child-management.js";
 import { loginPage } from "./pages/login.js";
 import { parentHomePage } from "./pages/parent-home.js";
+import { quizPlayPage } from "./pages/quiz-play.js";
+import { quizResultPage } from "./pages/quiz-result.js";
 import { quizReviewPage } from "./pages/quiz-review.js";
 import { settingsPage } from "./pages/settings.js";
 import { navigate, register, setNotFound, start } from "./router.js";
@@ -25,6 +27,8 @@ register("/parent/books", bookListPage);
 register("/parent/books/:id", bookDetailPage);
 register("/parent/quizzes/:id", quizReviewPage);
 register("/child", childHomePage);
+register("/child/quizzes/:id", quizPlayPage);
+register("/child/results/:id", quizResultPage);
 
 // 루트는 로그인 상태에 따라 갈라진다.
 register("/", async () => {

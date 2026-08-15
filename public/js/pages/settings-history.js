@@ -148,6 +148,33 @@ export function historyPanel({ onMessage }) {
 		]);
 	}
 
+	/**
+	 * 선택지 목록. 정답에 표시를 남기고, 아이가 고른 답이 있으면 그것도 함께 표시한다.
+	 *
+	 * 문항 본문만으로는 부모가 "이게 맞는 문제인가" 를 판단할 수 없다. 번호만 적어 두는 것도
+	 * 마찬가지다 — "고른 답 2, 정답 4" 를 보려면 문제를 다시 찾아 대조해야 한다.
+	 */
+	function choiceList(choices, { correct, selected } = {}) {
+		if (!choices?.length) return null;
+
+		return el(
+			"ol",
+			{ class: "history__choices" },
+			choices.map((choice, index) => {
+				const number = index + 1;
+				const isCorrect = number === correct;
+				const isSelected = number === selected;
+
+				return el("li", { class: isCorrect ? "is-answer" : isSelected ? "is-picked" : "" }, [
+					el("span", { text: choice }),
+					isCorrect ? el("span", { class: "tag tag--ok", text: "정답" }) : null,
+					isSelected && !isCorrect ? el("span", { class: "tag tag--warn", text: "고른 답" }) : null,
+					isSelected && isCorrect ? el("span", { class: "tag tag--ok", text: "고른 답" }) : null,
+				]);
+			}),
+		);
+	}
+
 	function questionEntry(entry) {
 		const changed =
 			entry.before?.questionText && entry.before.questionText !== entry.after?.questionText;
@@ -164,6 +191,7 @@ export function historyPanel({ onMessage }) {
 				class: `tag ${ACTION_CLASS[entry.action] ?? ""}`.trim(),
 				text: ACTION_LABEL[entry.action] ?? entry.action,
 			}),
+			choiceList(entry.choices, { correct: entry.correctChoice }),
 			changed
 				? el("p", { class: "source-excerpt", text: `수정 전 · ${entry.before.questionText}` })
 				: null,
@@ -181,8 +209,9 @@ export function historyPanel({ onMessage }) {
 			]),
 			el("span", {
 				class: entry.isCorrect ? "tag tag--ok" : "tag tag--warn",
-				text: entry.isCorrect ? "정답" : `오답 (고른 답 ${entry.selectedChoice}, 정답 ${entry.correctChoice})`,
+				text: entry.isCorrect ? "정답" : "오답",
 			}),
+			choiceList(entry.choices, { correct: entry.correctChoice, selected: entry.selectedChoice }),
 		]);
 	}
 }

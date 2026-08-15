@@ -37,7 +37,7 @@
 | GET | `/api/settings` | PARENT | ✅ `{ provider, providers, ai: { configured, last4, model, visionModel } }` — **키 원문 미포함** |
 | PUT | `/api/settings/ai-key` | PARENT | ✅ `{ provider, apiKey, models? }` 저장(암호화). 저장 전 제공자로 유효성 검증 |
 | DELETE | `/api/settings/ai-key` | PARENT | ✅ 키 삭제 |
-| GET | `/api/settings/ai/models` | PARENT | ✅ 저장된 키로 사용 가능한 모델 목록 조회 (gemini 는 400 — 브라우저가 직접 조회) |
+| GET | `/api/settings/ai/models` | PARENT | ✅ 사용 가능한 모델 목록 (gemini 는 키 등록 때 받아 둔 목록) |
 | PUT | `/api/settings/ai/models` | PARENT | ✅ 사용할 모델 저장 (계정에 실제 존재하는지 확인) |
 | PUT | `/api/settings/quiz` | PARENT | ✅ `{ questionCount, passCount }` — 한 번에 낼 문제 수와 통과 기준 |
 

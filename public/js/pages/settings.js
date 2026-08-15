@@ -86,14 +86,9 @@ export async function settingsPage(params = {}) {
 			if (draftProvider === null) draftProvider = view.provider;
 			// 제공자를 바꾸는 중이면 이전 제공자의 모델 목록은 의미가 없다.
 			// 모델 목록은 AI 탭에서만 쓰므로 다른 탭에서는 불필요한 호출을 하지 않는다.
+			// Gemini 도 키 등록 때 받아 둔 목록이 서버에 있어 여기서는 제공자를 가리지 않는다.
 			if (tab === "ai" && view.ai.configured && draftProvider === view.provider && models.length === 0) {
-				if (view.provider === "gemini") {
-					// 서버가 Gemini 를 부를 수 없으므로 저장된 키를 받아 브라우저가 조회한다.
-					const credential = await get("/api/ai/credential");
-					models = await fetchGeminiModels(credential.apiKey);
-				} else {
-					({ models } = await get("/api/settings/ai/models"));
-				}
+				({ models } = await get("/api/settings/ai/models"));
 			}
 		} catch (err) {
 			message = err.message;

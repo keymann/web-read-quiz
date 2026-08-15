@@ -11,6 +11,8 @@ export interface ParentSettingsRow {
 	api_key_last4: string | null;
 	text_model: string | null;
 	vision_model: string | null;
+	/** 이 계정에서 쓸 수 있는 모델 목록(JSON 배열). 키 등록 때 받아 둔다. */
+	available_models: string | null;
 	question_count: number;
 	pass_count: number;
 	created_at: string;
@@ -28,6 +30,8 @@ export interface StoredKey {
 	cipher: string;
 	iv: string;
 	last4: string;
+	/** 이 키로 쓸 수 있는 모델. 폴백 후보이자 설정 화면의 선택지가 된다. */
+	models: string[];
 }
 
 /**
@@ -36,32 +40,35 @@ export interface StoredKey {
  */
 export async function saveKey(env: AppEnv, userId: string, key: StoredKey): Promise<void> {
 	await env.DB.prepare(
-		`INSERT INTO parent_settings (user_id, ai_provider, api_key_cipher, api_key_iv, api_key_last4)
-		 VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO parent_settings
+		   (user_id, ai_provider, api_key_cipher, api_key_iv, api_key_last4, available_models)
+		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(user_id) DO UPDATE SET
-		   ai_provider    = excluded.ai_provider,
-		   api_key_cipher = excluded.api_key_cipher,
-		   api_key_iv     = excluded.api_key_iv,
-		   api_key_last4  = excluded.api_key_last4,
+		   ai_provider      = excluded.ai_provider,
+		   api_key_cipher   = excluded.api_key_cipher,
+		   api_key_iv       = excluded.api_key_iv,
+		   api_key_last4    = excluded.api_key_last4,
+		   available_models = excluded.available_models,
 		   text_model     = CASE WHEN parent_settings.ai_provider = excluded.ai_provider
 		                         THEN parent_settings.text_model ELSE NULL END,
 		   vision_model   = CASE WHEN parent_settings.ai_provider = excluded.ai_provider
 		                         THEN parent_settings.vision_model ELSE NULL END,
 		   updated_at     = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
 	)
-		.bind(userId, key.provider, key.cipher, key.iv, key.last4)
+		.bind(userId, key.provider, key.cipher, key.iv, key.last4, JSON.stringify(key.models))
 		.run();
 }
 
 export async function clearKey(env: AppEnv, userId: string): Promise<void> {
 	await env.DB.prepare(
 		`UPDATE parent_settings
-		    SET api_key_cipher = NULL,
-		        api_key_iv     = NULL,
-		        api_key_last4  = NULL,
-		        text_model     = NULL,
-		        vision_model   = NULL,
-		        updated_at     = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		    SET api_key_cipher   = NULL,
+		        api_key_iv       = NULL,
+		        api_key_last4    = NULL,
+		        text_model       = NULL,
+		        vision_model     = NULL,
+		        available_models = NULL,
+		        updated_at       = strftime('%Y-%m-%dT%H:%M:%fZ','now')
 		  WHERE user_id = ?`,
 	)
 		.bind(userId)

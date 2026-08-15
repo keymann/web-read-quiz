@@ -31,9 +31,12 @@ async function plan({ request, env, principal }: RouteCtx): Promise<Response> {
 	const body = await v.readJson(request);
 	const kind = v.str(body, "kind", "단계");
 
+	// 브라우저가 "이 모델은 응답하지 않더라" 고 알려준 목록. 다음에 무엇을 쓸지는 서버가 정한다.
+	const avoid = Array.isArray(body.avoid) ? (body.avoid as unknown[]).map(String) : [];
+
 	switch (kind) {
 		case "identify":
-			return ok(await relay.planIdentify(env, parent.userId, v.str(body, "bookId", "책")));
+			return ok(await relay.planIdentify(env, parent.userId, v.str(body, "bookId", "책"), avoid));
 
 		case "research":
 			return ok(
@@ -42,6 +45,7 @@ async function plan({ request, env, principal }: RouteCtx): Promise<Response> {
 					parent.userId,
 					v.str(body, "bookId", "책"),
 					body.webSearch !== false,
+					avoid,
 				),
 			);
 
@@ -52,12 +56,19 @@ async function plan({ request, env, principal }: RouteCtx): Promise<Response> {
 					parent.userId,
 					v.str(body, "quizId", "퀴즈"),
 					Array.isArray(body.rejected) ? (body.rejected as never[]) : [],
+					avoid,
 				),
 			);
 
 		case "validate":
 			return ok(
-				await relay.planValidate(env, parent.userId, v.str(body, "quizId", "퀴즈"), body.response),
+				await relay.planValidate(
+					env,
+					parent.userId,
+					v.str(body, "quizId", "퀴즈"),
+					body.response,
+					avoid,
+				),
 			);
 
 		default:

@@ -42,6 +42,11 @@ async function withCredential(run) {
 	}
 }
 
+/** 잠깐 기다리면 풀리는 상태들. 서버 호출 경로(`src/ai/http.ts`)와 같은 기준이다. */
+const TRANSIENT = new Set([429, 500, 502, 503, 504]);
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** 서버가 만들어 준 요청을 Gemini 로 보낸다. 실패해도 키가 로그에 남지 않게 한다. */
 async function callGemini(apiKey, plan) {
 	let response;
@@ -68,6 +73,43 @@ async function callGemini(apiKey, plan) {
 	}
 
 	return payload;
+}
+
+/**
+ * 한 단계를 끝까지 밀어붙인다 — 계획 받기 → 호출 → (필요하면) 재시도 → 모델 교체.
+ *
+ * Gemini 는 인기 모델이 자주 `503 UNAVAILABLE` 을 낸다(실측). 서버 호출 경로에는 재시도와
+ * 모델 폴백이 있는데 릴레이 경로에만 없으면, 같은 상황에서 부모에게 그냥 실패로 보인다.
+ *
+ * **브라우저는 모델을 고르지 않는다.** "이 모델은 응답하지 않더라" 만 `avoid` 로 알려주고,
+ * 다음에 무엇을 쓸지는 서버가 정한다. 후보가 떨어지면 서버가 거절한다.
+ *
+ * `fatal` 은 재시도해도 소용없는 실패를 가려낸다(예: 웹 검색 권한이 없는 키의 429).
+ */
+async function runStep(apiKey, request, { fatal } = {}) {
+	const avoid = [];
+
+	for (;;) {
+		const plan = await post("/api/ai/plan", { ...request, avoid });
+		// 서버가 "더 할 일 없음" 이라고 하면 호출할 것도 없다.
+		if (plan.done || plan.url === undefined) return { plan, response: null };
+
+		let lastError;
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			try {
+				return { plan, response: await callGemini(apiKey, plan) };
+			} catch (err) {
+				if (fatal?.(err)) throw err;
+				if (!TRANSIENT.has(err.status)) throw err;
+				lastError = err;
+				if (attempt < 3) await wait(attempt * 1500);
+			}
+		}
+
+		// 재시도로 안 풀렸다. 이 모델은 빼고 서버에게 다시 물어본다.
+		avoid.push(plan.model);
+		if (avoid.length >= 3) throw lastError;
+	}
 }
 
 /* ── 키 등록 ─────────────────────────────────────────── */
@@ -107,9 +149,9 @@ export async function fetchGeminiModels(apiKey) {
 
 export async function identifyBook(bookId) {
 	return withCredential(async ({ apiKey }) => {
-		const plan = await post("/api/ai/plan", { kind: "identify", bookId });
-		const response = await callGemini(apiKey, plan);
-		return post("/api/ai/apply", { kind: "identify", bookId, response });
+		const { plan, response } = await runStep(apiKey, { kind: "identify", bookId });
+		const result = await post("/api/ai/apply", { kind: "identify", bookId, response });
+		return { ...result, modelNotice: plan.modelNotice ?? result.modelNotice ?? null };
 	});
 }
 
@@ -119,15 +161,20 @@ export async function researchBook(bookId) {
 	return withCredential(async ({ apiKey }) => {
 		// 먼저 웹 검색을 켜고 시도한다. 무료 등급 키는 그라운딩이 막혀 있어 429 가 온다.
 		for (const webSearch of [true, false]) {
-			const plan = await post("/api/ai/plan", { kind: "research", bookId, webSearch });
 			try {
-				const response = await callGemini(apiKey, plan);
-				return await post("/api/ai/apply", {
+				const { plan, response } = await runStep(
+					apiKey,
+					{ kind: "research", bookId, webSearch },
+					// 검색을 켠 상태의 429 는 계정 등급 문제다. 재시도도 모델 교체도 소용없다.
+					{ fatal: (err) => webSearch && err.status === 429 },
+				);
+				const result = await post("/api/ai/apply", {
 					kind: "research",
 					bookId,
 					response,
 					groundingUsed: webSearch,
 				});
+				return { ...result, modelNotice: plan.modelNotice ?? result.modelNotice ?? null };
 			} catch (err) {
 				// 그라운딩 권한 문제일 때만 검색 없이 한 번 더. 그 외에는 그대로 알린다.
 				const groundingBlocked = webSearch && err.status === 429;
@@ -149,17 +196,19 @@ export async function generateQuestions(quizId, onProgress) {
 		let last = null;
 
 		for (let round = 1; round <= MAX_ROUNDS; round++) {
-			// 1) 이번 라운드에 몇 개가 더 필요한지 서버가 정한다
-			const plan = await post("/api/ai/plan", { kind: "generate", quizId, rejected });
+			// 1~2) 몇 개가 더 필요한지 서버가 정하고, 브라우저가 그 요청을 보낸다
+			const { plan, response: generated } = await runStep(apiKey, {
+				kind: "generate",
+				quizId,
+				rejected,
+			});
 			if (plan.done) return { accepted: plan.accepted, target: plan.target, done: true };
 
 			onProgress?.({ accepted: plan.accepted, target: plan.target, phase: "generating" });
 
-			// 2) 문제를 만든다
-			const generated = await callGemini(apiKey, plan);
-
-			// 3) 서버가 사후검사를 돌리고 검증 요청을 만들어 준다
-			const validatePlan = await post("/api/ai/plan", {
+			// 3~4) 서버가 사후검사를 돌리고 검증 요청을 만들어 주면 그것도 보낸다
+			onProgress?.({ accepted: last?.accepted ?? 0, target: plan.target, phase: "validating" });
+			const { plan: validatePlan, response: verdicts } = await runStep(apiKey, {
 				kind: "validate",
 				quizId,
 				response: generated,
@@ -168,11 +217,6 @@ export async function generateQuestions(quizId, onProgress) {
 
 			// 사후검사에서 전멸했으면 검증할 게 없다. 다음 라운드로.
 			if (validatePlan.questions.length === 0) continue;
-
-			onProgress?.({ accepted: last?.accepted ?? 0, target: validatePlan.target, phase: "validating" });
-
-			// 4) 검수한다
-			const verdicts = await callGemini(apiKey, validatePlan);
 
 			// 5) 서버가 임계값을 적용하고 통과분만 저장한다
 			last = await post("/api/ai/apply", {

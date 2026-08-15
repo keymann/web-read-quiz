@@ -11,7 +11,7 @@ import { buildResearchRequest, normalizeResearch, type BookResearch } from "../s
 import * as bibliographic from "../search/bibliographic";
 import type { AppEnv } from "../types";
 import { unseal } from "../utils/crypto";
-import { forbidden, invalid, notFound } from "../utils/response";
+import { ApiError, forbidden, invalid, notFound } from "../utils/response";
 import * as book from "./book";
 import { screen } from "./question-checks";
 import * as generation from "./generation";
@@ -70,7 +70,51 @@ export async function credential(env: AppEnv, userId: string): Promise<Credentia
 export interface PlannedCall {
 	url: string;
 	body: unknown;
+	/** 이 요청이 쓰는 모델. 브라우저는 실패했을 때 이 값을 avoid 로 되돌려준다. */
+	model: string;
+	/** 부모가 고른 모델이 아닌 다른 모델을 쓰게 됐으면 그 사실. 정상이면 null. */
+	modelNotice: string | null;
 }
+
+/**
+ * 이번 호출에 쓸 모델을 고른다.
+ *
+ * 브라우저는 **모델을 고르지 않는다.** 실패했을 때 "이건 안 되더라"만 알려주고, 다음으로
+ * 무엇을 쓸지는 여기서 정한다. 서버 호출 경로의 `withModelFallback` 과 같은 역할이고
+ * 후보 순서도 같다(키 등록 때 받아 둔 목록).
+ *
+ * `avoid` 를 다 소진하면 던진다 — 브라우저가 무한히 되물어 보지 못하게 한다.
+ */
+async function chooseModel(
+	env: AppEnv,
+	userId: string,
+	kind: "text" | "vision",
+	avoid: string[],
+): Promise<{ model: string; modelNotice: string | null }> {
+	const runtime = await settings.getRuntime(env, userId);
+	const preferred = kind === "vision" ? runtime.visionModel : runtime.model;
+
+	if (!avoid.includes(preferred)) return { model: preferred, modelNotice: null };
+
+	const candidates = (await settings.storedModels(env, userId)).filter((m) => !avoid.includes(m));
+	// 원래 모델까지 포함해 최대 3개. 더 돌면 부모는 하염없이 기다리기만 한다.
+	if (candidates.length === 0 || avoid.length >= MAX_MODELS) {
+		throw new ApiError(
+			"ai_failed",
+			"지금은 Gemini 모델이 모두 응답하지 않습니다. 잠시 후 다시 시도해 주세요.",
+			502,
+		);
+	}
+
+	const model = candidates[0]!;
+	return {
+		model,
+		modelNotice: `${preferred} 모델이 응답하지 않아 ${model} 로 바꿔 만들었습니다.`,
+	};
+}
+
+/** 원래 모델까지 포함해 최대 몇 개를 시도할지. `ai/fallback.ts` 와 같은 기준이다. */
+const MAX_MODELS = 3;
 
 async function assertRelayProvider(env: AppEnv, userId: string): Promise<void> {
 	const row = await settingsRepo.find(env, userId);
@@ -85,6 +129,7 @@ export async function planIdentify(
 	env: AppEnv,
 	userId: string,
 	bookId: string,
+	avoid: string[] = [],
 ): Promise<PlannedCall> {
 	await assertRelayProvider(env, userId);
 
@@ -94,13 +139,17 @@ export async function planIdentify(
 	const stored = await env.IMAGES.get(row.cover_key, "arrayBuffer");
 	if (!stored) throw invalid("표지 이미지를 찾을 수 없습니다.");
 
-	const { visionModel } = await settings.getRuntime(env, userId);
-	return buildGeminiCall(
-		buildIdentifyRequest(visionModel, {
-			bytes: new Uint8Array(stored),
-			mime: row.cover_mime ?? "image/jpeg",
-		}),
-	);
+	const { model, modelNotice } = await chooseModel(env, userId, "vision", avoid);
+	return {
+		...buildGeminiCall(
+			buildIdentifyRequest(model, {
+				bytes: new Uint8Array(stored),
+				mime: row.cover_mime ?? "image/jpeg",
+			}),
+		),
+		model,
+		modelNotice,
+	};
 }
 
 export async function applyIdentify(
@@ -122,6 +171,7 @@ export async function planResearch(
 	userId: string,
 	bookId: string,
 	useWebSearch: boolean,
+	avoid: string[] = [],
 ): Promise<PlannedCall> {
 	await assertRelayProvider(env, userId);
 
@@ -130,7 +180,7 @@ export async function planResearch(
 		throw invalid("먼저 책 정보를 분석하거나 제목을 입력해 주세요.");
 	}
 
-	const { model } = await settings.getRuntime(env, userId);
+	const { model, modelNotice } = await chooseModel(env, userId, "text", avoid);
 	const bib = await bibliographic.lookup({
 		isbn: row.isbn13 ?? row.isbn10 ?? "",
 		title: row.title,
@@ -138,19 +188,23 @@ export async function planResearch(
 		publisher: row.publisher ?? "",
 	});
 
-	return buildGeminiCall(
-		buildResearchRequest(
-			model,
-			{
-				title: row.title,
-				author: row.author ?? "",
-				publisher: row.publisher ?? "",
-				isbn: row.isbn13 ?? row.isbn10 ?? "",
-				bib,
-			},
-			useWebSearch,
+	return {
+		...buildGeminiCall(
+			buildResearchRequest(
+				model,
+				{
+					title: row.title,
+					author: row.author ?? "",
+					publisher: row.publisher ?? "",
+					isbn: row.isbn13 ?? row.isbn10 ?? "",
+					bib,
+				},
+				useWebSearch,
+			),
 		),
-	);
+		model,
+		modelNotice,
+	};
 }
 
 export async function applyResearch(
@@ -187,6 +241,7 @@ export async function planGenerate(
 	userId: string,
 	quizId: string,
 	rejected: { questionText: string; reason: string }[],
+	avoid: string[] = [],
 ): Promise<GeneratePlan> {
 	await assertRelayProvider(env, userId);
 
@@ -203,7 +258,7 @@ export async function planGenerate(
 		return { done: true, need: 0, target: quiz.question_count, accepted: existing.length };
 	}
 
-	const { model } = await settings.getRuntime(env, userId);
+	const { model, modelNotice } = await chooseModel(env, userId, "text", avoid);
 	const hasWeb = await hasWebSource(env, quiz.book_id);
 
 	const call = buildGeminiCall(
@@ -220,7 +275,15 @@ export async function planGenerate(
 		}),
 	);
 
-	return { done: false, need, target: quiz.question_count, accepted: existing.length, ...call };
+	return {
+		done: false,
+		need,
+		target: quiz.question_count,
+		accepted: existing.length,
+		...call,
+		model,
+		modelNotice,
+	};
 }
 
 export interface ValidatePlan extends Partial<PlannedCall> {
@@ -238,6 +301,7 @@ export async function planValidate(
 	userId: string,
 	quizId: string,
 	response: unknown,
+	avoid: string[] = [],
 ): Promise<ValidatePlan> {
 	await assertRelayProvider(env, userId);
 
@@ -269,7 +333,7 @@ export async function planValidate(
 
 	if (screened.passed.length === 0) return { questions: [], rejected };
 
-	const { model } = await settings.getRuntime(env, userId);
+	const { model, modelNotice } = await chooseModel(env, userId, "text", avoid);
 	const call = buildGeminiCall(
 		buildValidateRequest({
 			provider: null as never,
@@ -280,7 +344,7 @@ export async function planValidate(
 		}),
 	);
 
-	return { questions: screened.passed, rejected, ...call };
+	return { questions: screened.passed, rejected, ...call, model, modelNotice };
 }
 
 export interface AcceptResult {

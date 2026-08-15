@@ -29,6 +29,8 @@ export async function bookDetailPage({ id }) {
 	let busy = null;
 	/** 부모의 기본 출제 설정. 문제 언어를 이 판만 바꿀 수 있게 화면에 띄운다. */
 	let quizDefaults = null;
+	/** 이 책의 퀴즈 회차. 재도전으로 생긴 "만들다 만 회차" 를 여기서 찾는다. */
+	let quizzes = [];
 
 	await refresh();
 
@@ -37,6 +39,7 @@ export async function bookDetailPage({ id }) {
 		try {
 			if (quizDefaults === null) quizDefaults = (await get("/api/settings")).quiz;
 			data = await get(`/api/books/${id}`);
+			({ quizzes } = await get(`/api/books/${id}/quizzes`));
 		} catch (err) {
 			message = err.message;
 			messageKind = "error";
@@ -58,6 +61,7 @@ export async function bookDetailPage({ id }) {
 				coverCard(book),
 				infoCard(book),
 				sourcesCard(sources, evidenceWeak),
+				quizzes.length > 0 ? roundsCard() : null,
 				quizCard(book, readyForQuiz, evidenceWeak),
 			].filter(Boolean),
 		);
@@ -193,6 +197,48 @@ export async function bookDetailPage({ id }) {
 							]),
 						),
 					),
+		]);
+	}
+
+	/**
+	 * 이 책의 회차 목록.
+	 *
+	 * 재도전(§18)은 아이가 눌러 새 회차를 만든다. 그런데 Gemini 를 쓰는 경우 서버가 문제를
+	 * 만들 수 없어(지역 차단) **부모의 브라우저가 만들어 줘야 한다.** 그 회차를 여기서 찾아
+	 * 들어갈 수 있게 한다.
+	 */
+	function roundsCard() {
+		const LANGUAGE = { en: "영어", ko: "한국어" };
+
+		return el("section", { class: "card" }, [
+			el("h2", { class: "section-title", text: `퀴즈 회차 ${quizzes.length}개` }),
+			el(
+				"ul",
+				{ class: "list" },
+				quizzes.map((quiz) => {
+					const pending = quiz.generated < quiz.questionCount;
+
+					return el("li", { class: "list__item" }, [
+						el("div", { class: "list__main" }, [
+							el("span", {
+								class: "list__title",
+								text: `${quiz.round}회차 · ${LANGUAGE[quiz.language] ?? quiz.language}`,
+							}),
+							el("span", {
+								class: "list__meta",
+								text: `${quiz.generated} / ${quiz.questionCount} 문제`,
+							}),
+						]),
+						pending ? el("span", { class: "tag tag--warn", text: "문제 부족" }) : null,
+						el("a", {
+							class: pending ? "btn" : "btn btn--ghost",
+							href: `/parent/quizzes/${quiz.id}`,
+							"data-link": true,
+							text: pending ? "문제 만들기" : "보기",
+						}),
+					]);
+				}),
+			),
 		]);
 	}
 

@@ -1,5 +1,8 @@
 import { requireChild } from "../auth/guards";
 import * as attempt from "../services/attempt";
+import * as generation from "../services/generation";
+import * as retry from "../services/retry";
+import { rateLimit } from "../utils/ratelimit";
 import { ok } from "../utils/response";
 import * as v from "../utils/validate";
 import { route, type Route, type RouteCtx } from "./router";
@@ -22,7 +25,36 @@ async function start({ request, env, principal }: RouteCtx): Promise<Response> {
 
 async function detail({ env, principal, params }: RouteCtx): Promise<Response> {
 	const child = requireChild(principal);
-	return ok({ attempt: await attempt.detail(env, child.childId, params.id!) });
+
+	// 재도전 상태를 함께 준다. 결과 화면이 카운트다운을 그리려면 매번 필요하다.
+	const [view, retryState] = await Promise.all([
+		attempt.detail(env, child.childId, params.id!),
+		retry.state(env, child.childId, params.id!),
+	]);
+
+	return ok({ attempt: view, retry: retryState });
+}
+
+/**
+ * 다시 도전한다(§18) — 같은 책의 새 회차를 만든다.
+ *
+ * 문제 생성은 부모의 AI 키로 돈다. 서버가 그 제공자를 부를 수 있으면 여기서 백그라운드로
+ * 시작하고, Gemini 처럼 부를 수 없으면 부모의 브라우저가 만들어 줘야 한다(`NEEDS_PARENT`).
+ */
+async function retryQuiz({ env, ctx, principal, params }: RouteCtx): Promise<Response> {
+	const child = requireChild(principal);
+	// 재도전마다 AI 생성이 다시 돈다. 부모 키로 결제되므로 횟수를 묶어 둔다(§리스크).
+	await rateLimit(env, "retry", child.childId, 10, 60 * 60);
+
+	const result = await retry.start(env, child.childId, params.id!);
+
+	if (result.generateQuizId) {
+		const quizId = result.generateQuizId;
+		const parentUserId = await retry.parentOf(env, quizId);
+		ctx.waitUntil(generation.runGeneration(env, parentUserId, quizId));
+	}
+
+	return ok({ retry: result.state }, 201);
 }
 
 /** 한 문제에 답한다. 채점은 서버가 한다 — 클라이언트가 보낸 정답은 쓰지 않는다. */
@@ -57,5 +89,6 @@ export const attemptRoutes: Route[] = [
 	route("GET", "/api/attempts/:id", detail),
 	route("POST", "/api/attempts/:id/answers", answer),
 	route("POST", "/api/attempts/:id/submit", submit),
+	route("POST", "/api/attempts/:id/retry", retryQuiz),
 	route("GET", "/api/my/attempts", history),
 ];

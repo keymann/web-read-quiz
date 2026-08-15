@@ -143,6 +143,20 @@ Attempt 는 시작할 때 그 시점의 활성 문항을 **버전 단위로 고�
 점수는 `round(정답 수 / 통과 기준 × 100)`, 최대 100 — 문항 수 대비 백분율이 아니라 **통과 기준
 대비 진척도**다(§17).
 
+`GET /api/attempts/:id` 는 `retry` 를 함께 준다.
+
+| `retry.status` | 뜻 |
+| --- | --- |
+| `PASSED` | 통과했다. 재도전할 이유가 없다 |
+| `COOLDOWN` | 아직 기다려야 한다 (`waitSeconds`) |
+| `READY` | 지금 재도전을 시작할 수 있다 |
+| `PREPARING` | 새 회차를 만들었고 서버가 문제를 만드는 중 (`prepared` / `total`) |
+| `NEEDS_PARENT` | 새 회차는 만들었지만 문제는 **부모의 브라우저**가 만들어야 한다(Gemini) |
+| `WAITING` | 새 회차의 문제가 준비됐다 (`nextAssignmentId` 로 시작) |
+
+`GET /api/my/quizzes` 의 `ready` 는 문항이 다 찼는지다. 재도전은 배정을 먼저 만들고 문제를
+나중에 만들기 때문에, 이 값이 false 인 동안 아이는 그 퀴즈를 시작할 수 없다.
+
 | Method | Path | Role | 설명 |
 | --- | --- | --- | --- |
 | GET | `/api/my/quizzes` | CHILD | ✅ 내가 받은 퀴즈 (아직 안 끝난 것만) |
@@ -151,6 +165,7 @@ Attempt 는 시작할 때 그 시점의 활성 문항을 **버전 단위로 고�
 | GET | `/api/attempts/:id` | CHILD | ✅ 진행 상태 + 문항 (**안 푼 문항에는 정답이 실리지 않는다**) |
 | POST | `/api/attempts/:id/answers` | CHILD | ✅ `{ questionNumber, selectedChoice }` → 채점 결과 즉시 반환 |
 | POST | `/api/attempts/:id/submit` | CHILD | ✅ 남은 문항을 두고 그만두기 → 점수·통과 확정 |
+| POST | `/api/attempts/:id/retry` | CHILD | ✅ 재도전 — 같은 책의 `round+1` 회차 + 새 배정 생성 |
 | GET | `/api/children/:id/quizzes` | PARENT·CHILD | 제출된 퀴즈 목록 (CHILD 는 자기 것만) |
 | GET | `/api/children/:id/history` | PARENT·CHILD | 과거 Attempt 목록 |
 | GET | `/api/children/:id/summary` | PARENT | 대시보드 집계 (총 퀴즈·통과·재도전) |

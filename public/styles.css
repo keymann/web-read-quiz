@@ -256,6 +256,15 @@ body {
 	color: var(--primary);
 }
 
+/* 재도전까지 남은 시간. 숫자가 흐르는 게 보여야 기다릴 수 있다. */
+.kid-countdown {
+	margin: 0 0 8px;
+	font-size: 40px;
+	font-weight: 800;
+	color: var(--primary);
+	font-variant-numeric: tabular-nums;
+}
+
 /* ── 폼 ──────────────────────────────────────────────── */
 
 .field {

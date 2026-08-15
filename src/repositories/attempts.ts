@@ -110,9 +110,11 @@ export async function start(env: AppEnv, attempt: NewAttempt): Promise<string> {
 			  WHERE id = ?`,
 		).bind(attempt.assignmentId),
 
+		// 재도전으로 만들어진 퀴즈는 배정만 먼저 생기고 상태는 REVIEW 에 머문다.
+		// 두 경우를 모두 받아 준다.
 		env.DB.prepare(
 			`UPDATE quizzes SET status = 'IN_PROGRESS', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-			  WHERE id = ? AND status = 'ASSIGNED'`,
+			  WHERE id = ? AND status IN ('ASSIGNED', 'REVIEW')`,
 		).bind(attempt.quizId),
 	]);
 

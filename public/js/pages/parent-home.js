@@ -19,6 +19,7 @@ export async function parentHomePage() {
 
 	mount(
 		header(`${s.displayName} 님`, [
+			el("a", { class: "btn btn--secondary", href: "/parent/books", "data-link": true, text: "내 책장" }),
 			el("a", { class: "btn btn--secondary", href: "/parent/children", "data-link": true, text: "아이 관리" }),
 			el("a", { class: "btn btn--secondary", href: "/parent/settings", "data-link": true, text: "설정" }),
 			el("button", { class: "btn btn--ghost", text: "로그아웃", onClick: logout }),
@@ -50,7 +51,10 @@ export async function parentHomePage() {
 		el("section", { class: "card card--muted" }, [
 			el("h2", { class: "section-title", text: "다음 단계" }),
 			settings?.openai.configured
-				? el("p", { class: "hint", text: "OpenAI API Key 가 등록되어 있습니다. 책 등록과 문제 생성은 Phase 3·4 에서 열립니다." })
+				? el("div", { class: "empty" }, [
+						el("p", { text: "책 표지를 찍으면 AI 가 책을 알아보고 정보를 모읍니다." }),
+						el("a", { class: "btn", href: "/parent/books/new", "data-link": true, text: "책 등록하기" }),
+					])
 				: el("div", { class: "empty" }, [
 						el("p", { text: "문제를 만들려면 먼저 OpenAI API Key 를 등록해야 합니다." }),
 						el("a", { class: "btn", href: "/parent/settings", "data-link": true, text: "설정으로 가기" }),

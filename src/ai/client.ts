@@ -49,10 +49,7 @@ export async function callOpenAi<T>(
 
 		if (response.ok) return (await response.json()) as T;
 
-		const error = await toApiError(response);
-
-		// 4xx 는 다시 보내도 같은 결과다. 429 와 5xx 만 재시도한다.
-		const retryable = response.status === 429 || response.status >= 500;
+		const { error, retryable } = await toApiError(response);
 		if (!retryable || attempt === maxAttempts) throw error;
 
 		lastError = error;
@@ -62,27 +59,71 @@ export async function callOpenAi<T>(
 	throw lastError ?? new ApiError("ai_failed", "AI 호출에 실패했습니다.", 502);
 }
 
-async function toApiError(response: Response): Promise<ApiError> {
-	let detail = "";
+interface Classified {
+	error: ApiError;
+	/** 다시 보내면 성공할 가능성이 있는가. 없으면 백오프 시간만 낭비한다. */
+	retryable: boolean;
+}
+
+async function toApiError(response: Response): Promise<Classified> {
+	let message = "";
+	let code = "";
 	try {
-		const body = (await response.json()) as { error?: { message?: string } };
-		detail = body.error?.message ?? "";
+		const body = (await response.json()) as { error?: { message?: string; code?: string; type?: string } };
+		message = body.error?.message ?? "";
+		code = body.error?.code ?? body.error?.type ?? "";
 	} catch {
 		/* 본문이 JSON 이 아니면 상태 코드만으로 판단한다 */
 	}
 
+	// 원인 진단에 필요하다. 키는 헤더에만 있으므로 본문을 남겨도 유출되지 않는다.
+	console.error(`openai ${response.status} ${code}: ${message.slice(0, 300)}`);
+
 	if (response.status === 401) {
-		return new ApiError("invalid", "OpenAI API Key 가 올바르지 않습니다. 다시 확인해 주세요.", 400);
-	}
-	if (response.status === 429) {
-		return new ApiError("ai_failed", "OpenAI 사용 한도에 도달했습니다. 잠시 후 다시 시도해 주세요.", 502);
-	}
-	if (response.status === 403) {
-		return new ApiError("invalid", "이 API Key 로는 사용할 수 없는 요청입니다.", 400);
+		return {
+			error: new ApiError("invalid", "OpenAI API Key 가 올바르지 않습니다. 다시 확인해 주세요.", 400),
+			retryable: false,
+		};
 	}
 
-	console.error("openai error", response.status, detail);
-	return new ApiError("ai_failed", "AI 호출에 실패했습니다.", 502);
+	if (response.status === 429) {
+		// 429 는 두 가지가 섞여 있다. 크레딧 소진은 기다려도 풀리지 않으므로 재시도하지 않고
+		// 결제 설정을 안내한다. 잠깐의 호출량 초과와 구분해서 알려야 부모가 대응할 수 있다.
+		if (code === "insufficient_quota" || message.includes("quota")) {
+			return {
+				error: new ApiError(
+					"invalid",
+					"OpenAI 크레딧이 부족합니다. platform.openai.com 의 Billing 에서 결제 수단과 잔액을 확인해 주세요.",
+					400,
+				),
+				retryable: false,
+			};
+		}
+		return {
+			error: new ApiError("ai_failed", "OpenAI 호출량 한도에 걸렸습니다. 잠시 후 다시 시도해 주세요.", 502),
+			retryable: true,
+		};
+	}
+
+	if (response.status === 403) {
+		return {
+			error: new ApiError("invalid", "이 API Key 로는 사용할 수 없는 요청입니다.", 400),
+			retryable: false,
+		};
+	}
+
+	if (response.status === 400) {
+		return {
+			error: new ApiError("ai_failed", `AI 요청이 거부되었습니다. (${code || "bad_request"})`, 502),
+			retryable: false,
+		};
+	}
+
+	return {
+		error: new ApiError("ai_failed", "AI 호출에 실패했습니다.", 502),
+		// 5xx 만 일시적 장애로 본다.
+		retryable: response.status >= 500,
+	};
 }
 
 /** 1초 → 2초 → 4초. Retry-After 가 오면 그 값을 우선한다. */

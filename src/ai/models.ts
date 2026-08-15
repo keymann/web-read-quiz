@@ -101,3 +101,27 @@ export const pickDefault = (models: string[]): string | null => models[0] ?? nul
  * 키가 틀리면 callOpenAi 가 401 을 `invalid` 로 바꿔 던진다.
  */
 export const verifyKey = (apiKey: string): Promise<string[]> => listUsableModels(apiKey);
+
+/**
+ * 실제로 추론 호출이 되는지 확인한다.
+ *
+ * `/v1/models` 는 **인증만** 검증한다. 크레딧이 없는 계정도 목록 조회는 통과하고,
+ * 정작 문제를 만들 때가 되어서야 429 insufficient_quota 로 실패한다. 그 시점에는
+ * 부모가 원인을 알기 어렵다. 그래서 키를 등록할 때 아주 작은 호출을 한 번 보내 본다.
+ *
+ * 실패해도 키 저장 자체는 막지 않는다. 결제 수단을 등록하러 가는 중일 수 있으므로
+ * 경고만 돌려주고 저장은 진행한다.
+ */
+export async function probeInference(apiKey: string, model: string): Promise<string | null> {
+	try {
+		await callOpenAi(
+			apiKey,
+			"/responses",
+			{ method: "POST", body: JSON.stringify({ model, input: "ping", max_output_tokens: 16 }) },
+			{ timeoutMs: 20_000, maxAttempts: 1 },
+		);
+		return null;
+	} catch (err) {
+		return err instanceof Error ? err.message : "AI 호출을 확인하지 못했습니다.";
+	}
+}

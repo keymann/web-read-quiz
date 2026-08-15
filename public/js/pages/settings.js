@@ -97,8 +97,9 @@ export async function settingsPage() {
 			try {
 				const result = await put("/api/settings/openai-key", { apiKey: apiKey.input.value });
 				models = result.models;
-				message = "API Key 를 확인하고 저장했습니다.";
-				messageKind = "info";
+				// 키는 저장됐지만 실제 호출이 막혀 있는 경우(크레딧 부족 등)는 경고로 알린다.
+				message = result.warning ?? "API Key 를 확인하고 저장했습니다.";
+				messageKind = result.warning ? "error" : "info";
 			} catch (err) {
 				message = err.message;
 				messageKind = "error";

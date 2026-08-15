@@ -41,6 +41,15 @@ export class Client {
 	post = (path: string, body?: unknown) => this.request(path, { method: "POST", body });
 	patch = (path: string, body?: unknown) => this.request(path, { method: "PATCH", body });
 	del = (path: string) => this.request(path, { method: "DELETE" });
+
+	/** multipart 업로드. Content-Type 을 직접 정하면 경계 문자열이 빠져 파싱에 실패한다. */
+	async upload(path: string, form: FormData): Promise<{ status: number; body: any }> {
+		const headers: Record<string, string> = { "CF-Connecting-IP": this.ip, Origin: ORIGIN };
+		if (this.cookie) headers["Cookie"] = this.cookie;
+
+		const res = await SELF.fetch(`${ORIGIN}${path}`, { method: "POST", headers, body: form });
+		return { status: res.status, body: await res.json().catch(() => null) };
+	}
 }
 
 let counter = 0;

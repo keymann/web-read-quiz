@@ -1,4 +1,4 @@
-import { listUsableModels, pickDefault, verifyKey } from "../ai/models";
+import { listUsableModels, pickDefault, probeInference, verifyKey } from "../ai/models";
 import * as settingsRepo from "../repositories/settings";
 import type { AppEnv } from "../types";
 import { seal, unseal } from "../utils/crypto";
@@ -37,6 +37,8 @@ export interface SaveKeyResult {
 	last4: string;
 	models: string[];
 	model: string | null;
+	/** 키는 유효하지만 실제 호출이 안 되는 경우(크레딧 부족 등)의 안내. 정상이면 null. */
+	warning: string | null;
 }
 
 /**
@@ -67,7 +69,11 @@ export async function saveKey(env: AppEnv, userId: string, apiKey: string): Prom
 		await settingsRepo.saveModels(env, userId, { model, visionModel: model });
 	}
 
-	return { last4, models, model };
+	// 목록 조회는 인증만 확인한다. 실제로 추론이 되는지는 따로 확인해야 크레딧 문제를
+	// 문제 생성 단계가 아니라 지금 이 화면에서 알려줄 수 있다.
+	const warning = model ? await probeInference(trimmed, model) : null;
+
+	return { last4, models, model, warning };
 }
 
 export async function clearKey(env: AppEnv, userId: string): Promise<void> {

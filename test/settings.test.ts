@@ -75,6 +75,24 @@ function mockModels(times = 1, status = 200, body: unknown = MODEL_LIST) {
 		.times(times);
 }
 
+/**
+ * 키 저장은 목록 조회 뒤에 아주 작은 추론 호출을 한 번 더 보낸다.
+ * 목록 조회만으로는 크레딧이 없는 계정을 걸러낼 수 없기 때문이다.
+ */
+function mockProbe(times = 1, status = 200, body: unknown = { status: "completed", output: [] }) {
+	fetchMock
+		.get("https://api.openai.com")
+		.intercept({ path: "/v1/responses", method: "POST" })
+		.reply(status, body)
+		.times(times);
+}
+
+/** 키 저장 한 번에 필요한 인터셉터(목록 + 추론 확인)를 함께 건다. */
+function mockKeySave(times = 1) {
+	mockModels(times);
+	mockProbe(times);
+}
+
 describe("OpenAI API Key 설정", () => {
 	it("등록 전에는 configured=false", async () => {
 		const { client } = await signupParent();
@@ -98,7 +116,7 @@ describe("OpenAI API Key 설정", () => {
 
 	it("유효한 키는 검증 후 저장되고 기본 모델이 잡힌다", async () => {
 		const { client } = await signupParent();
-		mockModels(1);
+		mockKeySave(1);
 
 		const saved = await client.request("/api/settings/openai-key", {
 			method: "PUT",
@@ -121,6 +139,7 @@ describe("OpenAI API Key 설정", () => {
 	it("실제 모델 목록에서 쓸 수 없는 모델과 날짜 스냅샷을 걸러낸다", async () => {
 		const { client } = await signupParent();
 		mockModels(1, 200, { data: REAL_WORLD_MODELS.map((id) => ({ id })) });
+		mockProbe(1);
 
 		const saved = await client.request("/api/settings/openai-key", {
 			method: "PUT",
@@ -156,7 +175,7 @@ describe("OpenAI API Key 설정", () => {
 
 	it("어떤 응답에도 키 원문이 담기지 않는다", async () => {
 		const { client } = await signupParent();
-		mockModels(1);
+		mockKeySave(1);
 		const saved = await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
 		const view = await client.get("/api/settings");
 
@@ -166,7 +185,7 @@ describe("OpenAI API Key 설정", () => {
 
 	it("DB 에는 평문이 아니라 암호문이 저장된다", async () => {
 		const { client } = await signupParent();
-		mockModels(1);
+		mockKeySave(1);
 		await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
 
 		const rows = await env.DB.prepare(
@@ -183,7 +202,7 @@ describe("OpenAI API Key 설정", () => {
 
 	it("같은 키를 두 번 저장해도 암호문이 달라진다", async () => {
 		const { client } = await signupParent();
-		mockModels(2);
+		mockKeySave(2);
 
 		await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
 		const first = await currentCipher(client);
@@ -205,6 +224,40 @@ describe("OpenAI API Key 설정", () => {
 		expect((await client.get("/api/settings")).body.data.openai.configured).toBe(false);
 	});
 
+	// 크레딧이 없는 계정도 /v1/models 는 통과한다. 문제 생성 단계가 아니라 지금 알려줘야 한다.
+	it("키는 유효하지만 크레딧이 없으면 저장하되 경고를 함께 준다", async () => {
+		const { client } = await signupParent();
+		mockModels(1);
+		mockProbe(1, 429, {
+			error: {
+				code: "insufficient_quota",
+				message: "You exceeded your current quota, please check your plan and billing details.",
+			},
+		});
+
+		const saved = await client.request("/api/settings/openai-key", {
+			method: "PUT",
+			body: { apiKey: API_KEY },
+		});
+
+		expect(saved.status).toBe(200);
+		expect(saved.body.data.warning).toContain("크레딧");
+		// 결제 수단을 등록하러 가는 중일 수 있으므로 저장 자체는 막지 않는다.
+		expect((await client.get("/api/settings")).body.data.openai.configured).toBe(true);
+	});
+
+	it("추론 호출이 정상이면 경고가 없다", async () => {
+		const { client } = await signupParent();
+		mockKeySave(1);
+
+		const saved = await client.request("/api/settings/openai-key", {
+			method: "PUT",
+			body: { apiKey: API_KEY },
+		});
+
+		expect(saved.body.data.warning).toBeNull();
+	});
+
 	it("쓸 수 있는 모델이 없으면 저장하지 않는다", async () => {
 		const { client } = await signupParent();
 		mockModels(1, 200, { data: [{ id: "text-embedding-3-small" }] });
@@ -216,7 +269,7 @@ describe("OpenAI API Key 설정", () => {
 
 	it("삭제하면 configured 가 false 로 돌아간다", async () => {
 		const { client } = await signupParent();
-		mockModels(1);
+		mockKeySave(1);
 		await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
 
 		expect((await client.del("/api/settings/openai-key")).status).toBe(200);
@@ -227,7 +280,8 @@ describe("OpenAI API Key 설정", () => {
 describe("모델 선택", () => {
 	it("계정에 없는 모델은 저장할 수 없다", async () => {
 		const { client } = await signupParent();
-		mockModels(2); // 키 저장 1회 + 모델 검증 1회
+		mockKeySave(1); // 키 저장(목록 + 추론 확인)
+		mockModels(1); // 모델 저장 시 목록 재확인
 
 		await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
 
@@ -240,7 +294,8 @@ describe("모델 선택", () => {
 
 	it("계정에 있는 모델은 저장된다", async () => {
 		const { client } = await signupParent();
-		mockModels(2);
+		mockKeySave(1);
+		mockModels(1);
 
 		await client.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
 		const res = await client.request("/api/settings/openai/models", {
@@ -277,7 +332,7 @@ describe("설정 권한", () => {
 
 	it("다른 부모의 키는 보이지 않는다", async () => {
 		const { client: parentA } = await signupParent();
-		mockModels(1);
+		mockKeySave(1);
 		await parentA.request("/api/settings/openai-key", { method: "PUT", body: { apiKey: API_KEY } });
 
 		const { client: parentB } = await signupParent();

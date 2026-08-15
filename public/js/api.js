@@ -43,6 +43,25 @@ export async function api(path, { method = "GET", body } = {}) {
 	);
 }
 
+/** 파일 업로드. FormData 를 쓸 때는 Content-Type 을 직접 정하지 않는다(경계 문자열이 필요하다). */
+export async function upload(path, formData) {
+	let res;
+	try {
+		res = await fetch(path, { method: "POST", credentials: "same-origin", body: formData });
+	} catch {
+		throw new ApiError("network", "네트워크에 연결할 수 없습니다.", 0);
+	}
+
+	const payload = await res.json().catch(() => null);
+	if (payload && payload.ok === true) return payload.data;
+
+	throw new ApiError(
+		payload?.error?.code ?? "internal",
+		payload?.error?.message ?? "업로드하지 못했습니다.",
+		res.status,
+	);
+}
+
 export const get = (path) => api(path);
 export const post = (path, body) => api(path, { method: "POST", body });
 export const patch = (path, body) => api(path, { method: "PATCH", body });

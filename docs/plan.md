@@ -116,23 +116,39 @@ Phase 2 에서 확정한 사항:
 
 ---
 
-### Phase 3 — 책 등록 · 식별 · 정보 수집
+### Phase 3 — 책 등록 · 식별 · 정보 수집 ✅ 완료
 
 | 파일 | 내용 |
 | --- | --- |
-| `src/utils/image.ts` | MIME 매직바이트 검사, 크기 제한, 축소 |
+| `migrations/0002_book_analysis.sql` | `cover_mime` · `brief` · `analyzed_at` · `searched_at` 추가 |
+| `src/utils/image.ts` | 매직 바이트 포맷 판정, 8MB 상한, data URL 변환 |
 | `src/repositories/books.ts` | `books` · `book_sources` |
-| `src/ai/vision.ts` | 표지 → 서지정보 추출 (Structured Output) |
-| `src/search/bibliographic.ts` | Open Library / Google Books ISBN 조회 |
+| `src/ai/responses.ts` | Responses API + Structured Output 공통 호출부 |
+| `src/ai/schemas.ts` | 식별·조사 JSON Schema |
+| `src/ai/vision.ts` | 표지 → 서지정보 추출 |
+| `src/search/bibliographic.ts` | Google Books / Open Library ISBN 조회 (키 불필요) |
 | `src/search/web.ts` | OpenAI `web_search` 기반 줄거리·서평 수집 |
 | `src/services/book.ts` | 식별 → 검색 → 병합 → **Book Brief** 생성 |
-| `src/routes/books.ts` | 업로드 / analyze / search / cover 프록시 |
-| `public/js/pages/book-add.js` · `book-analysis.js` | 카메라·갤러리·파일 업로드 + 결과 확인/보정 |
+| `src/routes/books.ts` | 업로드 / 목록 / 상세 / analyze / search / cover 프록시 |
+| `public/js/image.js` | 브라우저 canvas 축소 (긴 변 1600px, JPEG) |
+| `public/js/pages/book-add.js` · `book-detail.js` · `book-list.js` | 화면 |
+| `test/books.test.ts` | 통합 테스트 16개 |
 
-카메라 입력은 `<input type="file" accept="image/*" capture="environment">` 로 처리한다(빌드 없는 환경에서 가장 단순하고 전 기기에서 동작).
+카메라 입력은 `<input type="file" accept="image/*" capture="environment">` 로 처리한다
+(빌드 없는 환경에서 가장 단순하고 전 기기에서 동작).
 
-**완료 기준** — 표지 촬영 → 제목·저자·출판사·ISBN 이 채워지고, 부모가 틀린 값을 고칠 수 있고,
-`book_sources` 에 출처 URL 이 2건 이상 쌓인다.
+**완료 기준 달성** — 표지 업로드 → R2 저장 → AI 식별 → 부모 보정 → 웹 검색 → `book_sources` 적재 →
+Book Brief 생성까지 동작. 자료가 2건 미만이면 `readyForQuiz = false` 로 문제 생성을 막는다.
+
+Phase 3 에서 확정한 사항:
+
+- **이미지 축소는 브라우저에서 한다.** Workers 런타임에 이미지 디코더가 없다. 클라이언트가
+  긴 변 1600px 로 줄여 올리고, 서버는 매직 바이트로 포맷을 다시 판정한다 — 축소는 최적화일 뿐
+  신뢰 경계가 아니다.
+- **책을 특정하지 못한(`found: false`) 검색 결과의 서지정보는 받아들이지 않는다.** 엉뚱한 책의
+  정보가 섞이면 부모가 알아채기 어렵고 그대로 문제 생성 입력이 된다.
+- **부모가 고친 값을 검색 결과가 덮어쓰지 않는다.** 우선순위는 기존 값 > 공개 서지 API > 웹 검색.
+- 검색을 다시 돌리면 이전 출처를 지우고 새로 쌓는다. 오래된 근거가 섞이지 않게.
 
 ---
 

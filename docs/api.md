@@ -58,11 +58,13 @@
 
 | Method | Path | Role | 설명 |
 | --- | --- | --- | --- |
-| POST | `/api/books` | PARENT | 표지 이미지 업로드(multipart) → R2 저장 → book 행 생성 |
-| GET | `/api/books/:id/cover` | PARENT | R2 이미지 프록시 서빙 (소유권 확인) |
-| POST | `/api/books/:id/analyze` | PARENT | Vision 으로 제목/저자/출판사/ISBN 추출 |
-| POST | `/api/books/:id/search` | PARENT | 웹 검색으로 책 정보 보강 + `book_sources` 적재 |
-| PATCH | `/api/books/:id` | PARENT | 부모가 책 정보 직접 수정 (AI 오인식 보정) |
+| POST | `/api/books` | PARENT | ✅ 표지 이미지 업로드(multipart) → R2 저장 → book 행 생성 |
+| GET | `/api/books` | PARENT | ✅ 내가 등록한 책 목록 |
+| GET | `/api/books/:id` | PARENT | ✅ 책 + 출처 + 문제 생성 준비 여부 |
+| GET | `/api/books/:id/cover` | PARENT | ✅ R2 이미지 프록시 서빙 (소유권 확인) |
+| POST | `/api/books/:id/analyze` | PARENT | ✅ Vision 으로 제목/저자/출판사/ISBN 추출 |
+| POST | `/api/books/:id/search` | PARENT | ✅ 웹 검색으로 책 정보 보강 + `book_sources` 적재 |
+| PATCH | `/api/books/:id` | PARENT | ✅ 부모가 책 정보 직접 수정 (AI 오인식 보정) |
 | GET | `/api/books/:id/history` | PARENT | 이 책의 퀴즈·풀이 이력 |
 
 ## 퀴즈 생성 · 검수

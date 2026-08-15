@@ -1,3 +1,4 @@
+import * as usersRepo from "../repositories/users";
 import type { AppEnv, Principal, Role } from "../types";
 import { fromBase64Url, timingSafeEqual, toBase64Url, utf8 } from "../utils/base64";
 import { newId } from "../utils/id";
@@ -126,10 +127,19 @@ export async function readSession(
 	// KV 레코드가 사라졌으면 로그아웃되었거나 만료된 세션이다.
 	if ((await env.SESSIONS.get(`session:${claims.jti}`)) === null) return null;
 
+	// 토큰이 유효해도 계정이 사라졌거나 비활성화되었을 수 있다. 이 확인이 없으면
+	// 부모가 아이를 삭제해도 그 아이의 기존 로그인이 토큰 만료(14일)까지 살아 있게 된다.
+	const user = await usersRepo.findById(env, claims.sub);
+	if (!user || user.is_active !== 1) {
+		// 다음 요청에서 D1 까지 가지 않도록 세션 레코드를 정리한다.
+		await env.SESSIONS.delete(`session:${claims.jti}`);
+		return null;
+	}
+
 	return {
-		userId: claims.sub,
-		role: claims.role,
-		displayName: claims.name,
+		userId: user.id,
+		role: user.role,
+		displayName: user.display_name,
 		...(claims.cid ? { childId: claims.cid } : {}),
 	};
 }

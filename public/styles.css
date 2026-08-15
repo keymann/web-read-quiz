@@ -349,6 +349,72 @@ body {
 	display: none;
 }
 
+/* ── 책 ──────────────────────────────────────────────── */
+
+/* 파일 input 은 감추고 label 을 버튼처럼 쓴다. display:none 이면 접근성 트리에서도 사라진다. */
+.visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+.preview {
+	margin: var(--space) 0;
+}
+
+.preview__img {
+	display: block;
+	width: 100%;
+	max-width: 320px;
+	border-radius: var(--radius-lg);
+	border: 1px solid var(--border);
+}
+
+.book-head {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space);
+	align-items: flex-start;
+}
+
+.book-cover {
+	width: 140px;
+	max-width: 40%;
+	border-radius: var(--radius);
+	border: 1px solid var(--border);
+}
+
+.book-head__body {
+	flex: 1 1 240px;
+}
+
+.book-thumb {
+	width: 44px;
+	height: 60px;
+	object-fit: cover;
+	border-radius: 6px;
+	border: 1px solid var(--border);
+	background: var(--bg-subtle);
+}
+
+.source-excerpt {
+	flex-basis: 100%;
+	margin: 8px 0 0;
+	padding: 10px 14px;
+	border-radius: var(--radius);
+	background: var(--bg-subtle);
+	color: var(--text-muted);
+	font-size: 14px;
+	/* 발췌가 길어도 목록이 무너지지 않게 접어 둔다 */
+	max-height: 7.5em;
+	overflow-y: auto;
+}
+
 /* ── 설정 ────────────────────────────────────────────── */
 
 .status {

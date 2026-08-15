@@ -608,3 +608,11 @@ body {
 	border-color: var(--warning);
 	color: var(--warning);
 }
+
+.textarea {
+	min-height: 160px;
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 13px;
+	line-height: 1.5;
+	resize: vertical;
+}

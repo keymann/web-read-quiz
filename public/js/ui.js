@@ -43,6 +43,13 @@ export function field(label, inputProps) {
 	return { wrap, input };
 }
 
+/** 여러 줄 입력. 서비스 계정 JSON 처럼 긴 값을 붙여넣을 때 쓴다. */
+export function textareaField(label, props) {
+	const input = el("textarea", { class: "textarea", ...props });
+	const wrap = el("label", { class: "field" }, [el("span", { class: "field__label", text: label }), input]);
+	return { wrap, input };
+}
+
 export function selectField(label, options, selected) {
 	const select = el("select", { class: "select" });
 	for (const value of options) {

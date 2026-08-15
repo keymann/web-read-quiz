@@ -35,12 +35,18 @@ docs/               설계 문서
 
 AI 호출은 **전부 Worker 안에서만** 일어난다. API Key 는 클라이언트로 나가지 않는다.
 
-AI 제공자는 **OpenAI** 와 **Google Gemini** 중에 부모가 고른다.
+AI 제공자는 부모가 셋 중에 고른다.
 
-> ⚠️ **배포 환경(Cloudflare Workers)에서는 Gemini 를 쓸 수 없다.** Google 이 요청을 보낸 서버의
-> 위치를 보고 막는다(`FAILED_PRECONDITION: User location is not supported`). 같은 키라도 로컬
-> 개발 환경에서는 잘 동작하므로, **배포된 서비스는 OpenAI 키를 써야 한다.**
-> 자세한 내용은 [docs/plan.md](docs/plan.md) 의 Phase 3.5 참고.
+| 제공자 | 자격증명 | 배포 환경 | 비고 |
+| --- | --- | --- | --- |
+| **OpenAI** | API Key (`sk-…`) | ✅ | 결제 수단 필요 |
+| **Google Gemini** | API Key (AI Studio) | ❌ | 무료 등급 가능하지만 **로컬 개발 전용** |
+| **Google Vertex AI** | 서비스 계정 JSON | ✅ | 같은 Gemini 모델, GCP 결제 계정 필요 |
+
+> ⚠️ AI Studio 의 Gemini 키는 **배포 환경에서 쓸 수 없다.** Google 이 요청을 보낸 서버의 위치를
+> 보고 막는다(`FAILED_PRECONDITION: User location is not supported`). 같은 키라도 로컬에서는 잘
+> 동작한다. 배포된 서비스에서 Gemini 모델을 쓰려면 **Vertex AI** 를 고르면 된다.
+> 자세한 내용은 [docs/plan.md](docs/plan.md) 의 Phase 3.5·3.6 참고.
 
 ## 문서
 

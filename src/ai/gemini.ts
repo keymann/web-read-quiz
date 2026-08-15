@@ -1,6 +1,12 @@
-import { toBase64 } from "../utils/base64";
 import { ApiError } from "../utils/response";
-import { logAiError, parseStructured, requestJson } from "./http";
+import {
+	buildGenerateContentBody,
+	isUsableGeminiModel,
+	parseGenerateContentResponse,
+	sortGeminiModels,
+	type GenerateContentResponse,
+} from "./google-shared";
+import { logAiError, requestJson } from "./http";
 import { assertGeminiKeyShape } from "./keyshape";
 import type { AiProvider, CallOptions, Classify, StructuredRequest } from "./types";
 
@@ -19,47 +25,6 @@ import type { AiProvider, CallOptions, Classify, StructuredRequest } from "./typ
 
 const BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
-/** 문제 생성에 쓸 수 없는 계열. */
-const EXCLUDED_SUBSTRINGS = [
-	"embedding",
-	"aqa",
-	"imagen",
-	"veo",
-	"tts",
-	"native-audio",
-	"live",
-	"image",
-	"learnlm",
-	"gemma",
-	// 영상 이해 전용 EAP 모델. 목록에는 뜨지만 이 서비스에는 쓸 수 없다.
-	"video-understanding",
-	"-eap",
-	"customtools",
-];
-
-/** 세대. 앞에 있을수록 우선. 더 구체적인 접두사를 먼저 둔다. */
-const FAMILY_PREFERENCE = [
-	"gemini-3.7",
-	"gemini-3.6",
-	"gemini-3.5",
-	"gemini-3.1",
-	"gemini-3",
-	"gemini-2.5",
-	"gemini-2.0",
-];
-
-interface ModelListResponse {
-	models?: { name?: string; supportedGenerationMethods?: string[] }[];
-}
-
-interface GenerateContentResponse {
-	candidates?: {
-		content?: { parts?: { text?: string }[] };
-		finishReason?: string;
-	}[];
-	promptFeedback?: { blockReason?: string };
-}
-
 /**
  * 429 의 의미가 웹 검색 여부에 따라 완전히 다르다.
  *
@@ -67,6 +32,10 @@ interface GenerateContentResponse {
  * 돌아온다(실측 확인). 그라운딩 쿼터가 0 이라 기다려도 풀리지 않는다. 이걸 "잠시 후 재시도"로
  * 안내하면 부모는 영원히 되지 않는 일을 계속 시도하게 된다.
  */
+interface ModelListResponse {
+	models?: { name?: string; supportedGenerationMethods?: string[] }[];
+}
+
 const makeClassify = (webSearch: boolean): Classify => (status, body) => {
 	const error = (body as { error?: { message?: string; status?: string } } | null)?.error;
 	const message = error?.message ?? "";
@@ -170,77 +139,6 @@ const call = <T>(
 		options,
 	);
 
-/**
- * JSON Schema → Gemini `responseSchema` (OpenAPI 3.0 방언).
- *
- * 차이가 세 가지 있다.
- *  - type 이 대문자 열거형이다 (OBJECT · STRING · …)
- *  - `additionalProperties` 를 받지 않는다
- *  - `propertyOrdering` 으로 필드 순서를 고정할 수 있다. 순서를 고정하면 출력 품질이 안정된다.
- */
-export function toGeminiSchema(schema: Record<string, unknown>): Record<string, unknown> {
-	const out: Record<string, unknown> = {};
-
-	for (const [key, value] of Object.entries(schema)) {
-		if (key === "additionalProperties") continue;
-
-		if (key === "type" && typeof value === "string") {
-			out.type = value.toUpperCase();
-			continue;
-		}
-
-		if (key === "properties" && value !== null && typeof value === "object") {
-			const properties: Record<string, unknown> = {};
-			for (const [name, child] of Object.entries(value as Record<string, unknown>)) {
-				properties[name] = toGeminiSchema(child as Record<string, unknown>);
-			}
-			out.properties = properties;
-			out.propertyOrdering = Object.keys(properties);
-			continue;
-		}
-
-		if (key === "items" && value !== null && typeof value === "object") {
-			out.items = toGeminiSchema(value as Record<string, unknown>);
-			continue;
-		}
-
-		out[key] = value;
-	}
-
-	return out;
-}
-
-function rank(id: string): number {
-	const family = FAMILY_PREFERENCE.find((prefix) => id.startsWith(prefix));
-	if (family === undefined) return 999;
-
-	const suffix = id.slice(family.length);
-	// 무료 티어에서 쓸 수 있는 flash 를 기본으로 삼는다. pro 는 유료 전용이라 뒤로 민다.
-	const variant = suffix === "-flash"
-		? 0
-		: suffix === "-flash-lite"
-			? 1
-			: suffix.includes("pro")
-				? 3
-				: 2;
-
-	// preview·exp 는 예고 없이 바뀌므로 같은 조건이면 뒤로.
-	const unstable = /preview|exp|eap/.test(id) ? 5 : 0;
-
-	return FAMILY_PREFERENCE.indexOf(family) * 10 + variant + unstable;
-}
-
-function isUsable(model: { name?: string; supportedGenerationMethods?: string[] }): boolean {
-	const id = (model.name ?? "").replace(/^models\//, "");
-	if (!id.startsWith("gemini-")) return false;
-
-	// 목록에는 임베딩·음성 전용도 섞여 온다. generateContent 를 지원하는 것만 남긴다.
-	const methods = model.supportedGenerationMethods;
-	if (methods && !methods.includes("generateContent")) return false;
-
-	return !EXCLUDED_SUBSTRINGS.some((word) => id.includes(word));
-}
-
 export const gemini: AiProvider = {
 	name: "gemini",
 	label: "Google Gemini",
@@ -248,15 +146,20 @@ export const gemini: AiProvider = {
 
 	assertKeyFormat: assertGeminiKeyShape,
 
+	keyLabel: (apiKey) => `끝 4자리 ${apiKey.slice(-4)}`,
+
 	async listModels(apiKey) {
 		const body = await call<ModelListResponse>(apiKey, "/models?pageSize=200", { method: "GET" }, {
 			timeoutMs: 15_000,
 		});
 
-		return (body.models ?? [])
-			.filter(isUsable)
+		const ids = (body.models ?? [])
+			// 목록에는 임베딩·음성 전용도 섞여 온다. generateContent 를 지원하는 것만 남긴다.
+			.filter((m) => !m.supportedGenerationMethods || m.supportedGenerationMethods.includes("generateContent"))
 			.map((m) => (m.name ?? "").replace(/^models\//, ""))
-			.sort((a, b) => rank(a) - rank(b) || a.length - b.length || a.localeCompare(b));
+			.filter(isUsableGeminiModel);
+
+		return sortGeminiModels(ids);
 	},
 
 	async probe(apiKey, model) {
@@ -280,48 +183,14 @@ export const gemini: AiProvider = {
 	},
 
 	async structured<T>(apiKey: string, request: StructuredRequest, options?: CallOptions): Promise<T> {
-		const parts: unknown[] = [{ text: request.prompt }];
-		if (request.image) {
-			parts.push({
-				inline_data: { mime_type: request.image.mime, data: toBase64(request.image.bytes) },
-			});
-		}
-
 		const body = await call<GenerateContentResponse>(
 			apiKey,
 			`/models/${encodeURIComponent(request.model)}:generateContent`,
-			{
-				method: "POST",
-				body: JSON.stringify({
-					contents: [{ role: "user", parts }],
-					...(request.instructions
-						? { systemInstruction: { parts: [{ text: request.instructions }] } }
-						: {}),
-					...(request.webSearch ? { tools: [{ google_search: {} }] } : {}),
-					generationConfig: {
-						responseMimeType: "application/json",
-						responseSchema: toGeminiSchema(request.schema),
-						// Gemini 3.x 는 추론(thinking) 토큰이 출력 예산을 함께 쓴다. 기본값에 맡기면
-						// 20문항처럼 긴 응답이 MAX_TOKENS 로 잘린다. 넉넉히 잡아 둔다.
-						maxOutputTokens: 32_768,
-					},
-				}),
-			},
+			{ method: "POST", body: JSON.stringify(buildGenerateContentBody(request)) },
 			options,
 			request.webSearch === true,
 		);
 
-		const blocked = body.promptFeedback?.blockReason;
-		if (blocked) {
-			throw new ApiError("ai_failed", `AI 가 요청을 차단했습니다. (${blocked})`, 502);
-		}
-
-		const candidate = body.candidates?.[0];
-		if (candidate?.finishReason === "MAX_TOKENS") {
-			throw new ApiError("ai_failed", "AI 응답이 길이 제한으로 끊겼습니다.", 502);
-		}
-
-		const text = candidate?.content?.parts?.map((p) => p.text ?? "").join("") ?? null;
-		return parseStructured<T>("gemini", text);
+		return parseGenerateContentResponse<T>("gemini", body);
 	},
 };

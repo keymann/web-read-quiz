@@ -8,9 +8,9 @@ import type { ApiError } from "../utils/response";
  * 어느 쪽을 쓰든 상위 레이어(services · routes · 화면)는 이 인터페이스만 본다.
  */
 
-export type ProviderName = "openai" | "gemini";
+export type ProviderName = "openai" | "gemini" | "vertex";
 
-export const PROVIDER_NAMES: ProviderName[] = ["openai", "gemini"];
+export const PROVIDER_NAMES: ProviderName[] = ["openai", "gemini", "vertex"];
 
 export const isProviderName = (value: string): value is ProviderName =>
 	(PROVIDER_NAMES as string[]).includes(value);
@@ -46,6 +46,12 @@ export interface AiProvider {
 
 	/** 키 형식이 이 제공자의 것으로 보이는지. 아니면 ApiError 를 던진다. */
 	assertKeyFormat(apiKey: string): void;
+
+	/**
+	 * 설정 화면에 보여줄 짧은 식별자. 키 원문을 노출하지 않으면서 "어떤 걸 등록했는지" 알려준다.
+	 * API Key 는 끝 4자리, 서비스 계정은 프로젝트 이름처럼 제공자마다 다르다.
+	 */
+	keyLabel(apiKey: string): string;
 
 	/** 이 계정에서 문제 생성에 쓸 만한 모델 id. 선호 순서로 정렬해서 돌려준다. */
 	listModels(apiKey: string): Promise<string[]>;

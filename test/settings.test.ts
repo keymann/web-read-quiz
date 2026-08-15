@@ -100,7 +100,7 @@ describe("OpenAI API Key 설정", () => {
 
 		expect(res.status).toBe(200);
 		expect(res.body.data.ai.configured).toBe(false);
-		expect(res.body.data.ai.last4).toBeNull();
+		expect(res.body.data.ai.keyHint).toBeNull();
 	});
 
 	it("Google 계열 키를 OpenAI 로 저장하려 하면 제공자를 바꾸라고 알려준다", async () => {
@@ -125,14 +125,14 @@ describe("OpenAI API Key 설정", () => {
 		});
 
 		expect(saved.status).toBe(200);
-		expect(saved.body.data.last4).toBe("klmn");
+		expect(saved.body.data.keyHint).toBe("끝 4자리 klmn");
 		// 선호 순서상 gpt-5.6 계열이 먼저, 임베딩·이미지·TTS 는 제외
 		expect(saved.body.data.models).toEqual(["gpt-5.6-mini", "gpt-4o"]);
 		expect(saved.body.data.model).toBe("gpt-5.6-mini");
 
 		const view = await client.get("/api/settings");
 		expect(view.body.data.ai.configured).toBe(true);
-		expect(view.body.data.ai.last4).toBe("klmn");
+		expect(view.body.data.ai.keyHint).toBe("끝 4자리 klmn");
 		expect(view.body.data.ai.model).toBe("gpt-5.6-mini");
 	});
 
@@ -343,7 +343,7 @@ describe("설정 권한", () => {
 
 async function currentCipher(client: { get: (p: string) => Promise<{ body: any }> }): Promise<string> {
 	const view = await client.get("/api/settings");
-	const last4 = view.body.data.ai.last4 as string;
+	const last4 = view.body.data.ai.keyHint as string;
 	const row = await env.DB.prepare(
 		"SELECT api_key_cipher AS c FROM parent_settings WHERE api_key_last4 = ? ORDER BY updated_at DESC LIMIT 1",
 	)

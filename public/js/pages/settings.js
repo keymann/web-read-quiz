@@ -1,6 +1,6 @@
 import { del, get, put } from "../api.js";
 import { requireSession } from "../session.js";
-import { banner, confirmAction, el, field, header, mount, selectField, setKidMode } from "../ui.js";
+import { banner, confirmAction, el, field, header, mount, selectField, setKidMode, textareaField } from "../ui.js";
 import { historyPanel } from "./settings-history.js";
 import { quizSettingsCard } from "./settings-quiz.js";
 
@@ -22,6 +22,18 @@ const GUIDES = {
 			"Billing 메뉴에서 결제 수단을 등록해야 실제로 호출이 됩니다. 등록하지 않으면 키가 유효해도 문제 생성이 막힙니다.",
 		],
 		note: "결제 수단 등록이 반드시 필요합니다. 사용한 만큼 청구됩니다.",
+	},
+	vertex: {
+		title: "Vertex AI 서비스 계정 만들기",
+		steps: [
+			"console.cloud.google.com 에 로그인하고 프로젝트를 고릅니다.",
+			"API 및 서비스 → 라이브러리에서 'Vertex AI API' 를 검색해 사용 설정합니다.",
+			"IAM 및 관리자 → 서비스 계정 → '서비스 계정 만들기' 를 누릅니다.",
+			"역할로 'Vertex AI 사용자'(Vertex AI User) 를 부여합니다.",
+			"만든 서비스 계정 → 키 → '키 추가' → JSON 을 선택하면 파일이 내려받아집니다.",
+			"그 JSON 파일을 텍스트 편집기로 열어 내용 전체를 위에 붙여넣으세요.",
+		],
+		note: "Vertex AI 는 요청 위치를 막지 않아 배포된 서버에서도 동작합니다. 사용한 만큼 GCP 프로젝트로 청구되며, 결제 계정 연결이 필요합니다.",
 	},
 	gemini: {
 		title: "Gemini API Key 발급 방법",
@@ -141,7 +153,7 @@ export async function settingsPage(params = {}) {
 			}),
 			el("p", {
 				class: "status status--warn",
-				text: "배포된 서버에서는 Gemini 를 쓸 수 없습니다. Google 이 서버 위치를 기준으로 요청을 막습니다. OpenAI 키를 등록해 주세요. (개인 PC 에서 직접 띄운 경우에는 Gemini 도 동작합니다)",
+				text: "배포된 서버에서는 Gemini(AI Studio 키)를 쓸 수 없습니다. Google 이 서버 위치를 기준으로 요청을 막습니다. 같은 Gemini 모델을 쓰려면 Vertex AI 를 고르세요. (개인 PC 에서 직접 띄운 경우에는 Gemini 도 동작합니다)",
 			}),
 			el(
 				"div",
@@ -177,30 +189,43 @@ export async function settingsPage(params = {}) {
 	}
 
 	function keyCard(view, sameProvider) {
-		const apiKey = field("API Key", {
-			type: "password",
-			autocomplete: "off",
-			placeholder: draftProvider === "gemini" ? "AIza... 또는 AQ...." : "sk-...",
-			required: true,
-		});
+		// Vertex 는 한 줄짜리 키가 아니라 서비스 계정 JSON 파일 전체를 받는다.
+		const apiKey =
+			draftProvider === "vertex"
+				? textareaField("서비스 계정 JSON", {
+						rows: "8",
+						placeholder: '{\n  "type": "service_account",\n  "project_id": "...",\n  ...\n}',
+						required: true,
+					})
+				: field("API Key", {
+						type: "password",
+						autocomplete: "off",
+						placeholder: draftProvider === "gemini" ? "AIza... 또는 AQ...." : "sk-...",
+						required: true,
+					});
 
 		const status =
 			view.ai.configured && sameProvider
 				? el("p", { class: "status status--ok" }, [
 						el("strong", { text: "등록됨" }),
-						` · ${labelOf(view, view.provider)} · 끝 4자리 ${view.ai.last4}`,
+						` · ${labelOf(view, view.provider)} · ${view.ai.keyHint ?? ""}`,
 					])
 				: el("p", {
 						class: "status status--warn",
-						text: `${labelOf(view, draftProvider)} 키가 아직 등록되지 않았습니다.`,
+						text: `${labelOf(view, draftProvider)} 자격증명이 아직 등록되지 않았습니다.`,
 					});
 
 		const form = el("form", { class: "card" }, [
-			el("h2", { class: "section-title", text: `${labelOf(view, draftProvider)} API Key` }),
+			el("h2", {
+				class: "section-title",
+				text: draftProvider === "vertex"
+					? "Vertex AI 서비스 계정"
+					: `${labelOf(view, draftProvider)} API Key`,
+			}),
 			status,
 			el("p", {
 				class: "hint",
-				text: "키는 서버에서 암호화해 보관하며, 저장 후에는 다시 보여드리지 않습니다. AI 호출은 모두 서버에서만 일어납니다.",
+				text: "자격증명은 서버에서 암호화해 보관하며, 저장 후에는 다시 보여드리지 않습니다. AI 호출은 모두 서버에서만 일어납니다.",
 			}),
 			apiKey.wrap,
 			el("div", { class: "row" }, [
@@ -215,11 +240,11 @@ export async function settingsPage(params = {}) {
 							type: "button",
 							text: "삭제",
 							onClick: async () => {
-								if (!confirmAction("등록된 API Key 를 삭제할까요?\n삭제하면 문제를 생성할 수 없습니다.")) return;
+								if (!confirmAction("등록된 자격증명을 삭제할까요?\n삭제하면 문제를 생성할 수 없습니다.")) return;
 								try {
 									await del("/api/settings/ai-key");
 									models = [];
-									message = "API Key 를 삭제했습니다.";
+									message = "자격증명을 삭제했습니다.";
 									messageKind = "info";
 								} catch (err) {
 									message = err.message;
@@ -242,7 +267,7 @@ export async function settingsPage(params = {}) {
 				});
 				models = result.models;
 				// 키는 저장됐지만 실제 호출이 막혀 있는 경우(크레딧 부족 등)는 경고로 알린다.
-				message = result.warning ?? "API Key 를 확인하고 저장했습니다.";
+				message = result.warning ?? "자격증명을 확인하고 저장했습니다.";
 				messageKind = result.warning ? "error" : "info";
 			} catch (err) {
 				message = err.message;

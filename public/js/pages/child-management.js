@@ -96,6 +96,12 @@ export async function childManagementPage() {
 					text: child.grade ? `${child.grade}학년 · 아이디 ${child.loginId}` : `아이디 ${child.loginId}`,
 				}),
 			]),
+			el("a", {
+				class: "btn btn--ghost",
+				href: `/parent/children/${child.id}`,
+				"data-link": true,
+				text: "독서 기록",
+			}),
 			el("button", {
 				class: "btn btn--secondary",
 				type: "button",

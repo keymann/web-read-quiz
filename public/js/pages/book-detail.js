@@ -31,6 +31,8 @@ export async function bookDetailPage({ id }) {
 	let quizDefaults = null;
 	/** 이 책의 퀴즈 회차. 재도전으로 생긴 "만들다 만 회차" 를 여기서 찾는다. */
 	let quizzes = [];
+	/** 이 책에 아이들이 도전한 기록. 몇 번 만에 통과했는지가 여기 보인다. */
+	let attempts = [];
 
 	await refresh();
 
@@ -40,6 +42,7 @@ export async function bookDetailPage({ id }) {
 			if (quizDefaults === null) quizDefaults = (await get("/api/settings")).quiz;
 			data = await get(`/api/books/${id}`);
 			({ quizzes } = await get(`/api/books/${id}/quizzes`));
+			({ attempts } = await get(`/api/books/${id}/history`));
 		} catch (err) {
 			message = err.message;
 			messageKind = "error";
@@ -61,6 +64,7 @@ export async function bookDetailPage({ id }) {
 				coverCard(book),
 				infoCard(book),
 				sourcesCard(sources, evidenceWeak),
+				attempts.length > 0 ? attemptsCard() : null,
 				quizzes.length > 0 ? roundsCard() : null,
 				quizCard(book, readyForQuiz, evidenceWeak),
 			].filter(Boolean),
@@ -197,6 +201,47 @@ export async function bookDetailPage({ id }) {
 							]),
 						),
 					),
+		]);
+	}
+
+	/** 이 책에 누가 몇 번 도전했는지(§19). */
+	function attemptsCard() {
+		const passed = attempts.filter((a) => a.passed).length;
+
+		return el("section", { class: "card" }, [
+			el("h2", { class: "section-title", text: `도전 기록 ${attempts.length}번` }),
+			el("p", {
+				class: passed > 0 ? "status status--ok" : "status status--warn",
+				text: passed > 0 ? `${passed}번 통과했습니다.` : "아직 통과한 도전이 없습니다.",
+			}),
+			el(
+				"ul",
+				{ class: "list" },
+				attempts.map((attempt) =>
+					el("li", { class: "list__item" }, [
+						el("div", { class: "list__main" }, [
+							el("span", {
+								class: "list__title",
+								text: `${attempt.childName} · ${attempt.round}회차`,
+							}),
+							el("span", {
+								class: "list__meta",
+								text: attempt.completedAt
+									? `${attempt.total}문제 중 ${attempt.correctCount}개 정답`
+									: "푸는 중",
+							}),
+						]),
+						el("span", {
+							class: !attempt.completedAt ? "tag" : attempt.passed ? "tag tag--ok" : "tag tag--warn",
+							text: !attempt.completedAt
+								? "푸는 중"
+								: attempt.passed
+									? `통과 · ${attempt.score}점`
+									: `${attempt.score}점`,
+						}),
+					]),
+				),
+			),
 		]);
 	}
 

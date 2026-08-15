@@ -265,6 +265,36 @@ body {
 	font-variant-numeric: tabular-nums;
 }
 
+/* 대시보드 숫자. 가장 큰 것 하나만 강조하고 나머지는 곁들인다. */
+.stat-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 24px;
+}
+
+.stat {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.stat__value {
+	font-size: 28px;
+	font-weight: 700;
+	line-height: 1.1;
+	font-variant-numeric: tabular-nums;
+}
+
+.stat__label {
+	color: var(--text-muted);
+	font-size: 14px;
+}
+
+.stat--primary .stat__value {
+	font-size: 40px;
+	color: var(--primary);
+}
+
 /* ── 폼 ──────────────────────────────────────────────── */
 
 .field {

@@ -1,4 +1,5 @@
 import { get, patch, post } from "../api.js";
+import { navigate } from "../router.js";
 import { requireSession } from "../session.js";
 import { banner, el, field, header, mount, setKidMode } from "../ui.js";
 
@@ -44,6 +45,7 @@ export async function bookDetailPage({ id }) {
 				coverCard(book),
 				infoCard(book),
 				sourcesCard(sources, readyForQuiz),
+				quizCard(book, readyForQuiz),
 			].filter(Boolean),
 		);
 	}
@@ -166,6 +168,42 @@ export async function bookDetailPage({ id }) {
 							]),
 						),
 					),
+		]);
+	}
+
+	/** 문제 생성 진입. 퀴즈를 만들고 생성을 시작한 뒤 검수 화면으로 넘긴다. */
+	function quizCard(book, readyForQuiz) {
+		return el("section", { class: "card" }, [
+			el("h2", { class: "section-title", text: "독서 퀴즈" }),
+			readyForQuiz
+				? el("p", { class: "hint", text: "이 책 정보로 4지선다 20문제를 만듭니다. 1~2분 걸립니다." })
+				: el("p", {
+						class: "status status--warn",
+						text: "먼저 책 정보를 찾아 주세요. 줄거리 없이는 문제를 만들 수 없습니다.",
+					}),
+			el("button", {
+				class: "btn",
+				type: "button",
+				text: "문제 만들기",
+				disabled: !readyForQuiz || busy !== null,
+				onClick: async () => {
+					busy = "quiz";
+					message = "퀴즈를 만드는 중입니다.";
+					messageKind = "info";
+					await refresh();
+					try {
+						const { quiz } = await post("/api/quizzes", { bookId: book.id });
+						await post(`/api/quizzes/${quiz.id}/generate`);
+						await navigate(`/parent/quizzes/${quiz.id}`);
+						return;
+					} catch (err) {
+						message = err.message;
+						messageKind = "error";
+					}
+					busy = null;
+					await refresh();
+				},
+			}),
 		]);
 	}
 

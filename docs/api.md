@@ -77,10 +77,10 @@
 
 | Method | Path | Role | 설명 |
 | --- | --- | --- | --- |
-| POST | `/api/quizzes` | PARENT | 책 기준 퀴즈 생성 (status=DRAFT) |
-| POST | `/api/quizzes/:id/generate` | PARENT | 20문제 생성 시작. **202** 반환 후 백그라운드 실행 |
-| POST | `/api/quizzes/:id/validate` | PARENT | 검증 재실행 (실패 문제만 재생성) |
-| GET | `/api/quizzes/:id` | PARENT | 퀴즈 + 문제 20개 + 진행 상태 |
+| POST | `/api/quizzes` | PARENT | ✅ 책 기준 퀴즈 생성 (status=DRAFT, round 자동 증가) |
+| POST | `/api/quizzes/:id/generate` | PARENT | ✅ 20문제 생성 시작. **202** 반환 후 백그라운드 실행 |
+| GET | `/api/quizzes/:id` | PARENT | ✅ 퀴즈 + 문제 + 진행 상태 |
+| GET | `/api/books/:id/quizzes` | PARENT | ✅ 이 책의 퀴즈 회차 목록 |
 | PATCH | `/api/questions/:id` | PARENT | 문제 수정 → version+1, history=PARENT_EDITED |
 | POST | `/api/questions/:id/regenerate` | PARENT | 이 문제만 AI 재생성 → history=AI_REGENERATED |
 | DELETE | `/api/questions/:id` | PARENT | `is_active=0` + 즉시 대체 문제 1개 생성 (20개 유지) |

@@ -27,7 +27,7 @@ const GUIDES = {
 			"aistudio.google.com/apikey 에 Google 계정으로 로그인합니다.",
 			"‘API 키 만들기’(Create API key) 를 누릅니다.",
 			"기존 Google Cloud 프로젝트를 고르거나 새 프로젝트를 만듭니다.",
-			"AIza 로 시작하는 키를 복사해서 위에 붙여넣으세요.",
+			"만들어진 키를 복사해서 위에 붙여넣으세요. (AIza… 또는 AQ.… 로 시작합니다)",
 			"결제 수단을 등록하지 않아도 무료 등급으로 바로 쓸 수 있습니다.",
 		],
 		note: "무료 등급에서는 입력한 내용이 Google 제품 개선에 사용될 수 있고, Flash 계열 모델만 쓸 수 있습니다. 이것이 신경 쓰이면 Google Cloud 에서 결제 계정을 연결하세요.",
@@ -121,13 +121,16 @@ export async function settingsPage() {
 		]);
 	}
 
-	const labelOf = (view, name) => view.providers.find((p) => p.name === name)?.label ?? name;
+	// 화살표 함수를 const 로 두면 render() 가 먼저 실행될 때 TDZ 에 걸린다. 선언식으로 둔다.
+	function labelOf(view, name) {
+		return view.providers.find((p) => p.name === name)?.label ?? name;
+	}
 
 	function keyCard(view, sameProvider) {
 		const apiKey = field("API Key", {
 			type: "password",
 			autocomplete: "off",
-			placeholder: draftProvider === "gemini" ? "AIza..." : "sk-...",
+			placeholder: draftProvider === "gemini" ? "AIza... 또는 AQ...." : "sk-...",
 			required: true,
 		});
 

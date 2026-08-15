@@ -19,7 +19,7 @@
 		{
 			"binding": "DB",
 			"database_name": "web-read-quiz",
-			"database_id": "00000000-0000-0000-0000-000000000000",
+			"database_id": "af652961-148c-4f2e-9e57-7b55d8150a57",
 			"migrations_dir": "migrations"
 		}
 	],
@@ -32,7 +32,7 @@
 	],
 	// 세션 토큰, Rate Limit 카운터, AI 응답 캐시 등 TTL 기반 휘발성 데이터.
 	"kv_namespaces": [
-		{ "binding": "SESSIONS", "id": "00000000000000000000000000000000" }
+		{ "binding": "SESSIONS", "id": "87ad6de1b2e14742af9ed85c55a8c55c" }
 	],
 	"observability": {
 		"enabled": true

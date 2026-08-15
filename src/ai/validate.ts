@@ -1,6 +1,6 @@
 import type { GeneratedQuestion } from "./generate";
 import { VALIDATION_SCHEMA } from "./schemas";
-import type { AiProvider } from "./types";
+import type { AiProvider, StructuredRequest } from "./types";
 
 /** 파이프라인 5단계 — 생성된 문제를 한 번의 호출로 일괄 검증한다(§10·§28). */
 
@@ -41,7 +41,7 @@ export interface ValidateRequest {
 	questions: GeneratedQuestion[];
 }
 
-export async function validateQuestions(request: ValidateRequest): Promise<Verdict[]> {
+export function buildValidateRequest(request: ValidateRequest): StructuredRequest {
 	const rendered = request.questions
 		.map((q) =>
 			[
@@ -53,15 +53,19 @@ export async function validateQuestions(request: ValidateRequest): Promise<Verdi
 		)
 		.join("\n\n");
 
+	return {
+		model: request.model,
+		instructions: INSTRUCTIONS,
+		prompt: [request.brief, "", "다음 문제들을 검수해 주세요.", "", rendered].join("\n"),
+		schemaName: "question_validation",
+		schema: VALIDATION_SCHEMA as unknown as Record<string, unknown>,
+	};
+}
+
+export async function validateQuestions(request: ValidateRequest): Promise<Verdict[]> {
 	const result = await request.provider.structured<{ results: Verdict[] }>(
 		request.apiKey,
-		{
-			model: request.model,
-			instructions: INSTRUCTIONS,
-			prompt: [request.brief, "", "다음 문제들을 검수해 주세요.", "", rendered].join("\n"),
-			schemaName: "question_validation",
-			schema: VALIDATION_SCHEMA as unknown as Record<string, unknown>,
-		},
+		buildValidateRequest(request),
 		{ timeoutMs: 180_000, maxAttempts: 3 },
 	);
 

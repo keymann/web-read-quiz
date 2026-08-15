@@ -102,8 +102,14 @@ export function historyPanel({ onMessage }) {
 		]);
 	}
 
-	const titleOf = (books, id) => books.find((b) => b.id === id)?.title ?? "전체 책";
-	const nameOf = (children, id) => children.find((c) => c.id === id)?.name ?? "전체 아이";
+	// 화살표 함수를 const 로 두면 render() 가 먼저 실행될 때 TDZ 에 걸린다. 선언식으로 둔다.
+	function titleOf(books, id) {
+		return books.find((b) => b.id === id)?.title ?? "전체 책";
+	}
+
+	function nameOf(children, id) {
+		return children.find((c) => c.id === id)?.name ?? "전체 아이";
+	}
 
 	function kindButton(kind, label) {
 		return el("button", {

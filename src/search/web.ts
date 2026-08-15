@@ -1,5 +1,5 @@
 import { BOOK_RESEARCH_SCHEMA } from "../ai/schemas";
-import type { AiProvider } from "../ai/types";
+import type { AiProvider, StructuredRequest } from "../ai/types";
 import type { BibRecord } from "./bibliographic";
 
 /**
@@ -63,14 +63,20 @@ const RECALL_INSTRUCTIONS = `당신은 어린이 책에 밝은 사서입니다.
 - characters 와 keyEvents 도 최대한 구체적으로 채웁니다. keyEvents 는 일어난 순서대로 씁니다.
 - 참고한 웹 페이지가 없으므로 **sources 는 빈 배열로 둡니다.**`;
 
-export async function research(
-	provider: AiProvider,
-	apiKey: string,
+export interface ResearchHint {
+	title: string;
+	author: string;
+	publisher: string;
+	isbn: string;
+	bib: BibRecord[];
+}
+
+/** 조사 요청 조립. 브라우저 릴레이 경로도 이걸 그대로 쓴다. */
+export function buildResearchRequest(
 	model: string,
-	hint: { title: string; author: string; publisher: string; isbn: string; bib: BibRecord[] },
-	/** 웹 검색 툴을 쓸지. 끄면 모델이 이미 아는 지식만으로 답한다(근거가 약해진다). */
+	hint: ResearchHint,
 	useWebSearch = true,
-): Promise<BookResearch> {
+): StructuredRequest {
 	const known = hint.bib
 		.map((r) => `- ${r.source}: ${r.title} / ${r.author} / ${r.publisher} / ${r.publishedAt}`)
 		.join("\n");
@@ -96,22 +102,23 @@ export async function research(
 		"줄거리·등장인물·사건 순서를 최대한 구체적으로 정리해 주세요.",
 	].join("");
 
-	const result = await provider.structured<BookResearch>(
-		apiKey,
-		{
-			model,
-			instructions: useWebSearch ? SEARCH_INSTRUCTIONS : RECALL_INSTRUCTIONS,
-			prompt,
-			webSearch: useWebSearch,
-			schemaName: "book_research",
-			schema: BOOK_RESEARCH_SCHEMA as unknown as Record<string, unknown>,
-		},
-		// 웹 검색이 붙으면 응답이 느려서 넉넉히 기다린다.
-		// 재시도는 실패한 호출(429·503)에만 일어나고 실패한 호출은 과금되지 않으므로,
-		// 모델 과부하(503)로 조사 전체가 무산되지 않게 몇 번은 다시 보낸다.
-		{ timeoutMs: 180_000, maxAttempts: 3 },
-	);
+	return {
+		model,
+		instructions: useWebSearch ? SEARCH_INSTRUCTIONS : RECALL_INSTRUCTIONS,
+		prompt,
+		webSearch: useWebSearch,
+		schemaName: "book_research",
+		schema: BOOK_RESEARCH_SCHEMA as unknown as Record<string, unknown>,
+	};
+}
 
+/**
+ * 모델 응답을 다듬는다.
+ *
+ * 서버가 부르든 브라우저가 부르든 이 정리는 서버에서 한다. `found` 판정과 발췌 길이 제한은
+ * 신뢰 경계 안쪽 규칙이라 클라이언트에 맡길 수 없다.
+ */
+export function normalizeResearch(result: BookResearch): BookResearch {
 	// 모델이 실제로 내용을 채웠는지로 판정한다. 스스로 신고하게 하지 않는다.
 	const found = result.plotSummary?.trim() !== "" || (result.characters?.length ?? 0) > 0;
 
@@ -120,6 +127,26 @@ export async function research(
 		found,
 		sources: (result.sources ?? [])
 			.filter((s) => s.url.startsWith("http"))
-			.map((s) => ({ ...s, content: s.content.slice(0, MAX_SOURCE_CONTENT) })),
+			.map((s) => ({ ...s, content: (s.content ?? "").slice(0, MAX_SOURCE_CONTENT) })),
 	};
+}
+
+export async function research(
+	provider: AiProvider,
+	apiKey: string,
+	model: string,
+	hint: ResearchHint,
+	/** 웹 검색 툴을 쓸지. 끄면 모델이 이미 아는 지식만으로 답한다(근거가 약해진다). */
+	useWebSearch = true,
+): Promise<BookResearch> {
+	const result = await provider.structured<BookResearch>(
+		apiKey,
+		buildResearchRequest(model, hint, useWebSearch),
+		// 웹 검색이 붙으면 응답이 느려서 넉넉히 기다린다.
+		// 재시도는 실패한 호출(429·503)에만 일어나고 실패한 호출은 과금되지 않으므로,
+		// 모델 과부하(503)로 조사 전체가 무산되지 않게 몇 번은 다시 보낸다.
+		{ timeoutMs: 180_000, maxAttempts: 3 },
+	);
+
+	return normalizeResearch(result);
 }

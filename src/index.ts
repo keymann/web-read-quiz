@@ -7,6 +7,7 @@
  * 라우트 전체 목록은 docs/api.md 참고.
  */
 import { readSession } from "./auth/session";
+import { aiRelayRoutes } from "./routes/ai-relay";
 import { authRoutes } from "./routes/auth";
 import { bookRoutes } from "./routes/books";
 import { childrenRoutes } from "./routes/children";
@@ -26,6 +27,7 @@ const routes: Route[] = [
 	...bookRoutes,
 	...quizRoutes,
 	...historyRoutes,
+	...aiRelayRoutes,
 ];
 
 export default {

@@ -154,6 +154,22 @@ export async function analyze(env: AppEnv, userId: string, bookId: string): Prom
 		(model) => identifyBook(ai.provider, ai.apiKey, model, image),
 	);
 
+	return applyIdentity(env, userId, bookId, identity, noticeFor(fellBackFrom));
+}
+
+/**
+ * 표지 식별 결과를 책에 반영한다.
+ *
+ * 서버가 AI 를 부르든 브라우저가 부르든 **반영 규칙은 여기 하나뿐**이다. 빈 제목으로 덮어쓰지
+ * 않는 것, AI 원본을 그대로 남기는 것, ISBN 자릿수로 컬럼을 고르는 것이 모두 여기 있다.
+ */
+export async function applyIdentity(
+	env: AppEnv,
+	userId: string,
+	bookId: string,
+	identity: BookIdentity,
+	modelNotice: string | null = null,
+): Promise<AnalyzeResult> {
 	const isbn = bibliographic.normalizeIsbn(identity.isbn);
 	await booksRepo.update(env, userId, bookId, {
 		// AI 가 제목을 못 읽었으면 기존 값을 유지한다. 빈 제목으로 덮어쓰지 않는다.
@@ -175,7 +191,7 @@ export async function analyze(env: AppEnv, userId: string, bookId: string): Prom
 		book: toView(await requireOwned(env, userId, bookId)),
 		identity,
 		needsReview: identity.confidence < LOW_CONFIDENCE || identity.title === "",
-		modelNotice: noticeFor(fellBackFrom),
+		modelNotice,
 	};
 }
 
@@ -188,6 +204,8 @@ export interface SearchResult {
 	readyForQuiz: boolean;
 	/** 웹 검색을 실제로 썼는지. false 면 모델이 아는 지식만으로 답한 것이라 근거가 약하다. */
 	groundingUsed: boolean;
+	/** 근거가 얇은지. 만들 수는 있지만 검수를 더 꼼꼼히 해야 한다. */
+	evidenceWeak: boolean;
 	/** 웹 검색을 못 쓴 이유. 부모에게 그대로 보여준다. */
 	searchNotice: string | null;
 	/** 고른 모델이 응답하지 않아 다른 모델로 처리했을 때의 안내. */
@@ -240,6 +258,34 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 		({ value: found, fellBackFrom } = await attempt(false));
 	}
 
+	return applyResearch(env, userId, bookId, found, {
+		groundingUsed,
+		searchNotice,
+		modelNotice: noticeFor(fellBackFrom),
+	});
+}
+
+/**
+ * 조사 결과를 책에 반영한다.
+ *
+ * 출처 적재, 서지정보 병합, Book Brief 조립이 모두 여기 있다. 브라우저가 AI 를 부른 경우에도
+ * 이 규칙을 그대로 거친다 — 클라이언트가 보낸 값을 그대로 저장하지 않는다.
+ */
+export async function applyResearch(
+	env: AppEnv,
+	userId: string,
+	bookId: string,
+	found: BookResearch,
+	notices: { groundingUsed: boolean; searchNotice: string | null; modelNotice: string | null },
+): Promise<SearchResult> {
+	const row = await requireOwned(env, userId, bookId);
+	const bib = await bibliographic.lookup({
+		isbn: row.isbn13 ?? row.isbn10 ?? "",
+		title: row.title,
+		author: row.author ?? "",
+		publisher: row.publisher ?? "",
+	});
+
 	const sources: booksRepo.NewSource[] = [
 		...bib.map((record) => ({
 			id: newId(),
@@ -272,14 +318,17 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 		searched_at: new Date().toISOString(),
 	});
 
+	const updated = await requireOwned(env, userId, bookId);
+
 	return {
-		book: toView(await requireOwned(env, userId, bookId)),
+		book: toView(updated),
 		research: found,
 		sourceCount: sources.length,
-		readyForQuiz: isReady(found, sources.length, groundingUsed),
-		groundingUsed,
-		searchNotice,
-		modelNotice: noticeFor(fellBackFrom),
+		readyForQuiz: isReadyForQuiz(updated.brief),
+		evidenceWeak: hasWeakEvidence(sources.length),
+		groundingUsed: notices.groundingUsed,
+		searchNotice: notices.searchNotice,
+		modelNotice: notices.modelNotice,
 	};
 }
 
@@ -290,18 +339,22 @@ const noticeFor = (fellBackFrom: string | null): string | null =>
 		: `${fellBackFrom} 모델이 지금 응답하지 않아 다른 모델로 처리했습니다.`;
 
 /**
- * 문제를 만들 준비가 됐는지.
+ * 문제를 만들 준비가 됐는지 — **판단 기준은 여기 하나뿐이다.**
  *
- * 웹 검색을 쓴 경우에는 출처 2건 이상을 요구한다. AI 가 없는 내용을 지어내는 것을 막는 기준이다.
- * 웹 검색 자체를 쓸 수 없는 키라면 그 기준을 채울 방법이 없다. 이때는 모델이 "이 책을 확실히 안다"고
- * 답한 경우에만 통과시키되, 근거가 약하다는 사실을 `groundingUsed`·`searchNotice` 로 함께 알린다.
- * 어차피 부모가 문제를 검수하므로(§11) 최종 판단은 사람이 한다.
+ * 처음에는 "출처 2건 이상"으로 두었는데, 웹 검색을 쓸 수 없는 키(Gemini 무료 등급)에서는
+ * 그 기준을 영영 채울 수 없다. 그래서 실질 전제조건인 **Book Brief 존재**로 통일한다.
+ * 퀴즈 생성(`createQuiz`)도 같은 것만 확인한다.
+ *
+ * 출처가 부족한 것은 "만들 수 없음"이 아니라 "근거가 약함"이다. 그건 `evidenceWeak` 로 따로
+ * 알리고, 최종 판단은 문제를 검수하는 부모가 한다(§11).
+ *
+ * 예전에는 이 판정이 두 곳에 흩어져 서로 달랐다. 검색 직후에는 "만들 수 있다"고 하고
+ * 책 화면을 다시 열면 버튼이 잠겨 있었다.
  */
-function isReady(found: BookResearch, sourceCount: number, groundingUsed: boolean): boolean {
-	if (!found.found) return false;
-	if (!groundingUsed) return found.plotSummary.trim() !== "";
-	return sourceCount >= MIN_SOURCES_FOR_QUIZ;
-}
+export const isReadyForQuiz = (brief: string | null): boolean => brief !== null && brief.trim() !== "";
+
+/** 근거가 얇은지. 웹 검색으로 얻은 출처가 이만큼은 있어야 든든하다. */
+export const hasWeakEvidence = (sourceCount: number): boolean => sourceCount < MIN_SOURCES_FOR_QUIZ;
 
 /**
  * 비어 있는 칸만 채운다. 부모가 직접 고쳐 둔 값을 검색 결과가 덮어쓰면 안 된다.

@@ -92,8 +92,40 @@ API Key 는 **부모가 설정 화면에서 직접 입력**한다(§25). 저장 
 3. `parent_settings.openai_api_key_cipher` + `..._iv` 에 저장, 뒤 4자리만 별도 컬럼에 평문 보관
 4. 조회 API 는 `{ configured: true, last4: "abcd" }` 만 반환. **복호화된 키는 절대 응답에 담지 않는다**
 
-복호화된 키가 나가는 통로는 `src/services/settings.ts` 의 `getApiKey` 하나뿐이고, 그 반환값은
-AI 서비스가 `Authorization` 헤더를 만들 때만 쓴다. 라우트가 실수로 응답에 담을 경로 자체를 없앴다.
+복호화된 키가 나가는 통로는 두 곳뿐이다.
+- `src/services/settings.ts` 의 `getRuntime` — AI 서비스가 서버에서 호출할 때
+- `src/services/relay.ts` 의 `credential` — **브라우저 릴레이 전용** (아래 참고)
+
+## 브라우저 릴레이 (Gemini 전용)
+
+AI Studio 의 Gemini API 는 요청을 보낸 **서버**의 위치를 보고 막는다. Cloudflare Worker 는
+홍콩 콜로(`cf-ray … -HKG`)에서 나가는데 홍콩은 Gemini 미지원 지역이다. 부모의 브라우저는
+지원 지역에 있으므로, Gemini 를 쓰는 경우에만 브라우저가 대신 호출한다.
+
+```
+브라우저 ──①요청 만들어 줘──▶ Worker    (프롬프트·스키마·이미지까지 완성된 본문)
+        ◀─②{url, body}────
+        ──③본문 + 내 키 ───▶ Gemini
+        ◀─④원본 응답──────
+        ──⑤응답 그대로 ────▶ Worker    (파싱·사후검사·임계값·저장은 서버)
+```
+
+**브라우저는 요청을 만들지도, 결과를 판정하지도 않는다.** 프롬프트·스키마가 클라이언트로
+복사되지 않고, 품질 게이트(§7·§9·§10 사후검사, 검증 임계값, 정답 위치 균등화)도 서버에 남는다.
+클라이언트가 조작한 문항을 보내도 저장 직전에 사후검사를 한 번 더 돌린다.
+
+이 경로에 건 조건:
+
+| 조건 | 구현 |
+| --- | --- |
+| 키는 PARENT 세션에만 | `GET /api/ai/credential` 이 `requireParent` + 제공자 확인 |
+| 제공자가 gemini 일 때만 | OpenAI·Vertex 는 403. 서버가 부를 수 있으므로 내려보낼 이유가 없다 |
+| 브라우저에 저장하지 않음 | 작업 시작 시 받아 지역 변수로만, 끝나면 참조를 끊는다 |
+| CSP 최소 완화 | `connect-src` 에 `generativelanguage.googleapis.com` 하나만 추가 |
+
+> 이 구조는 요구사항 §24(`Frontend → AI API` 금지)와 어긋난다. Gemini 를 배포 환경에서
+> 쓰려면 이것 말고는 Vertex AI(서비스 계정) 또는 지원 지역 프록시 자체 운영뿐이라, 셋 중
+> 하나를 고른 결과다. 키를 보게 되는 것은 **그 키를 등록한 부모 본인**이다.
 
 DB 가 통째로 유출돼도 `ENCRYPTION_KEY` 없이는 키를 복원할 수 없다.
 

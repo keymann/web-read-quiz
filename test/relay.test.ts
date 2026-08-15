@@ -72,11 +72,11 @@ afterEach(() => fetchMock.assertNoPendingInterceptors());
  * 서버는 Gemini 를 부를 수 없으므로(지역 차단) 키 저장 때 브라우저가 조회해 온 모델
  * 목록을 그대로 받는다. 인터셉터 없이 저장되는 것이 그 증거다.
  */
-async function parentWithGemini(): Promise<Client> {
+async function parentWithGemini(models = ["gemini-3.5-flash"]): Promise<Client> {
 	const { client } = await signupParent();
 	await client.request("/api/settings/ai-key", {
 		method: "PUT",
-		body: { provider: "gemini", apiKey: GEMINI_KEY, models: ["gemini-3.5-flash"] },
+		body: { provider: "gemini", apiKey: GEMINI_KEY, models },
 	});
 	return client;
 }
@@ -206,6 +206,57 @@ describe("표지 식별 릴레이", () => {
 		expect(applied.body.data.book.author).toBe("황선미");
 		expect(applied.body.data.book.isbn13).toBe("9788958281252");
 		expect(applied.body.data.needsReview).toBe(false);
+	});
+});
+
+/**
+ * Gemini 는 인기 모델이 자주 503 을 낸다(실측). 서버 호출 경로에는 폴백이 있는데 릴레이에만
+ * 없으면 같은 상황이 부모에게는 그냥 실패로 보인다.
+ *
+ * 브라우저는 모델을 고르지 않는다 — "이건 안 되더라" 만 avoid 로 알려주고 다음 모델은
+ * 서버가 정한다. 여기서 확인하는 것은 서버 쪽 절반이다.
+ */
+describe("릴레이 모델 폴백", () => {
+	async function parentWithBook() {
+		const client = await parentWithGemini(["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"]);
+		const form = new FormData();
+		form.append("cover", new File([PNG], "cover.png", { type: "image/png" }));
+		const bookId = (await client.upload("/api/books", form)).body.data.book.id;
+		return { client, bookId };
+	}
+
+	it("응답하지 않은 모델을 빼고 다음 모델로 계획을 다시 만든다", async () => {
+		const { client, bookId } = await parentWithBook();
+
+		const first = await client.post("/api/ai/plan", { kind: "identify", bookId });
+		expect(first.body.data.model).toBe("gemini-3.5-flash");
+		expect(first.body.data.modelNotice).toBeNull();
+
+		const second = await client.post("/api/ai/plan", {
+			kind: "identify",
+			bookId,
+			avoid: ["gemini-3.5-flash"],
+		});
+
+		expect(second.status).toBe(200);
+		expect(second.body.data.model).toBe("gemini-3.5-flash-lite");
+		expect(second.body.data.url).toContain("gemini-3.5-flash-lite");
+		// 조용히 바꾸지 않는다. 결과가 달라 보일 수 있으니 부모에게 알린다.
+		expect(second.body.data.modelNotice).toContain("gemini-3.5-flash");
+	});
+
+	// 브라우저가 avoid 를 계속 늘리며 무한히 되물어 볼 수 있으면 안 된다.
+	it("후보를 다 쓰면 거절한다", async () => {
+		const { client, bookId } = await parentWithBook();
+
+		const res = await client.post("/api/ai/plan", {
+			kind: "identify",
+			bookId,
+			avoid: ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"],
+		});
+
+		expect(res.status).toBe(502);
+		expect(res.body.error.code).toBe("ai_failed");
 	});
 });
 

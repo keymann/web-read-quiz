@@ -152,7 +152,7 @@ export async function saveKey(
 
 	const sealed = await seal(env, trimmed);
 	const keyHint = provider.keyLabel(trimmed);
-	await settingsRepo.saveKey(env, userId, { provider: providerName, ...sealed, last4: keyHint });
+	await settingsRepo.saveKey(env, userId, { provider: providerName, ...sealed, last4: keyHint, models });
 
 	// 아직 고른 모델이 없으면 선호 순서의 첫 모델을 기본으로 잡아 준다.
 	const existing = await settingsRepo.find(env, userId);
@@ -175,20 +175,27 @@ export async function clearKey(env: AppEnv, userId: string): Promise<void> {
 	await settingsRepo.clearKey(env, userId);
 }
 
+/** 키 등록 때 받아 둔 목록. 없으면 빈 배열. */
+export async function storedModels(env: AppEnv, userId: string): Promise<string[]> {
+	const row = await settingsRepo.find(env, userId);
+	if (!row?.available_models) return [];
+	try {
+		const parsed: unknown = JSON.parse(row.available_models);
+		return Array.isArray(parsed) ? parsed.filter((m): m is string => typeof m === "string") : [];
+	} catch {
+		return [];
+	}
+}
+
 /**
  * 이 계정에서 쓸 수 있는 모델 목록.
  *
- * Gemini 는 서버에서 조회할 수 없다. 그 경우 브라우저가 직접 조회해야 하므로 여기서 막는다.
+ * 서버가 부를 수 없는 제공자(Gemini)는 키 등록 때 받아 둔 목록을 쓴다. 그 목록은 브라우저가
+ * 가져온 것을 서버 기준으로 걸러 저장한 것이라 실시간 조회와 같은 내용이다.
  */
 export async function listModels(env: AppEnv, userId: string): Promise<string[]> {
 	const { provider, apiKey } = await getRuntime(env, userId);
-	if (!callableFromServer(provider.name)) {
-		throw new ApiError(
-			"region_blocked",
-			"이 제공자의 모델 목록은 서버에서 조회할 수 없습니다. 화면에서 다시 시도해 주세요.",
-			400,
-		);
-	}
+	if (!callableFromServer(provider.name)) return storedModels(env, userId);
 	return provider.listModels(apiKey);
 }
 
@@ -198,17 +205,11 @@ export async function saveModels(
 	model: string,
 	visionModel: string,
 ): Promise<void> {
-	const row = await settingsRepo.find(env, userId);
-	const providerName = row?.ai_provider ?? DEFAULT_PROVIDER;
-
 	// 임의의 문자열이 저장되면 나중에 호출이 통째로 실패한다. 계정에서 실제로 쓸 수 있는지 확인한다.
-	// 서버가 목록을 조회할 수 없는 제공자(Gemini)는 이 확인을 할 방법이 없다. 목록을 보여준
-	// 주체가 브라우저이고 부모는 거기서 고른 것이므로, 형식만 확인하고 받아들인다.
-	if (callableFromServer(providerName)) {
-		const available = await listModels(env, userId);
-		for (const candidate of [model, visionModel]) {
-			if (!available.includes(candidate)) throw invalid("사용할 수 없는 모델입니다.");
-		}
+	// Gemini 도 키 등록 때 받아 둔 목록이 있으므로 같은 확인을 할 수 있다.
+	const available = await listModels(env, userId);
+	for (const candidate of [model, visionModel]) {
+		if (!available.includes(candidate)) throw invalid("사용할 수 없는 모델입니다.");
 	}
 
 	await settingsRepo.saveModels(env, userId, { model, visionModel });
@@ -244,11 +245,9 @@ export async function getRuntime(env: AppEnv, userId: string): Promise<AiRuntime
 	}
 
 	// 모델이 비어 있으면(제공자를 막 바꾼 직후 등) 지금 계정에서 다시 고른다.
-	// saveKey 가 항상 모델을 채우므로 정상 경로에서는 오지 않는다.
-	if (!callableFromServer(provider.name)) {
-		throw new ApiError("invalid", "사용할 모델이 정해지지 않았습니다. 설정에서 다시 저장해 주세요.", 400);
-	}
-	const available = await provider.listModels(apiKey);
+	const available = callableFromServer(provider.name)
+		? await provider.listModels(apiKey)
+		: await storedModels(env, userId);
 	const fallback = available[0];
 	if (!fallback) throw new ApiError("ai_failed", "사용할 수 있는 모델이 없습니다.", 502);
 

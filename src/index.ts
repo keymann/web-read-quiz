@@ -14,6 +14,7 @@ import { bookRoutes } from "./routes/books";
 import { childrenRoutes } from "./routes/children";
 import { historyRoutes } from "./routes/history";
 import { quizRoutes } from "./routes/quizzes";
+import { statsRoutes } from "./routes/stats";
 import { matchRoute, type Route } from "./routes/router";
 import { settingsRoutes } from "./routes/settings";
 import type { AppEnv } from "./types";
@@ -28,6 +29,7 @@ const routes: Route[] = [
 	...bookRoutes,
 	...quizRoutes,
 	...attemptRoutes,
+	...statsRoutes,
 	...historyRoutes,
 	...aiRelayRoutes,
 ];

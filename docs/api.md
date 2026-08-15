@@ -167,8 +167,27 @@ Attempt 는 시작할 때 그 시점의 활성 문항을 **버전 단위로 고�
 | POST | `/api/attempts/:id/submit` | CHILD | ✅ 남은 문항을 두고 그만두기 → 점수·통과 확정 |
 | POST | `/api/attempts/:id/retry` | CHILD | ✅ 재도전 — 같은 책의 `round+1` 회차 + 새 배정 생성 |
 | GET | `/api/children/:id/quizzes` | PARENT·CHILD | 제출된 퀴즈 목록 (CHILD 는 자기 것만) |
-| GET | `/api/children/:id/history` | PARENT·CHILD | 과거 Attempt 목록 |
-| GET | `/api/children/:id/summary` | PARENT | 대시보드 집계 (총 퀴즈·통과·재도전) |
+
+## 대시보드
+
+| Method | Path | Role | 설명 |
+| --- | --- | --- | --- |
+| GET | `/api/dashboard` | PARENT | ✅ 아이별 집계 + 최근 독서 퀴즈 + 합계 |
+| GET | `/api/children/:id/summary` | PARENT | ✅ 아이 상세 — 집계 · 책별 진행 · 회차별 기록 |
+| GET | `/api/books/:id/history` | PARENT | ✅ 이 책에 누가 몇 번 도전했는지 |
+
+집계(`stats`)는 이렇게 센다.
+
+| 필드 | 뜻 |
+| --- | --- |
+| `booksPassed` | **끝까지 읽은 책 수.** 같은 책을 여러 번 통과해도 한 권 |
+| `booksTried` | 도전한 책 수 |
+| `attempts` · `completed` · `passed` | 시작한 판 · 끝난 판 · 통과한 판 |
+| `retries` | 2회차 이상으로 푼 판 수 |
+| `averageScore` | 끝난 판의 평균 점수(정수). 없으면 `null` |
+
+아이 계정은 대시보드를 쓸 수 없다 — 형제의 점수를 보여줄 이유가 없다. 아이는 자기 기록을
+`/api/my/attempts` 로 본다.
 
 ### 아이에게 정답을 보내지 않는다
 

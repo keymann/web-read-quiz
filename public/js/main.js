@@ -6,6 +6,7 @@ import { bookAddPage } from "./pages/book-add.js";
 import { bookDetailPage } from "./pages/book-detail.js";
 import { bookListPage } from "./pages/book-list.js";
 import { childHomePage } from "./pages/child-home.js";
+import { childHistoryPage } from "./pages/child-history.js";
 import { childManagementPage } from "./pages/child-management.js";
 import { loginPage } from "./pages/login.js";
 import { parentHomePage } from "./pages/parent-home.js";
@@ -19,6 +20,7 @@ import { homePathFor, loadSession } from "./session.js";
 register("/login", loginPage);
 register("/parent", parentHomePage);
 register("/parent/children", childManagementPage);
+register("/parent/children/:id", childHistoryPage);
 register("/parent/settings", settingsPage);
 register("/parent/settings/:tab", settingsPage);
 // `/new` 는 :id 패턴과 세그먼트 수가 같으므로 먼저 등록해야 한다.

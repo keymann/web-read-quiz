@@ -345,7 +345,10 @@ Attempt #1 의 문항·답안은 그대로 조회된다. ✅
 | `src/routes/stats.ts` | `children/:id/summary`, `children/:id/history`, `books/:id/history` |
 | `public/js/pages/parent-dashboard.js` · `quiz-history.js` · `child-history.js` | 화면 |
 
-§19 의 화면 구성(내 아이 → 최근 독서 퀴즈 → 총계 → 책별 상세)을 그대로 만든다.
+§19 의 화면 구성(내 아이 → 최근 독서 퀴즈 → 총계 → 책별 상세)을 그대로 만든다. ✅
+
+부모 홈이 곧 대시보드다. 가장 큰 숫자는 점수가 아니라 **끝까지 읽은 책 수** — 부모가 알고
+싶은 것은 "우리 아이가 책을 읽고 있는가" 한 가지다.
 
 ---
 

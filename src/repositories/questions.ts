@@ -156,6 +156,58 @@ export async function countActive(env: AppEnv, quizId: string): Promise<number> 
 	return row?.c ?? 0;
 }
 
+/**
+ * 고른 문항만 치운다. 부모가 마음에 안 드는 몇 개만 다시 만들 때 쓴다(§21.7·§28).
+ *
+ * 행을 지우지 않고 비활성화만 하므로 과거 Attempt 가 가리키던 버전은 그대로 남는다.
+ * 비운 번호는 다음 생성이 채운다 — `question_number` 는 활성 문항 안에서만 유일하면 된다.
+ *
+ * 이 퀴즈에 속한 것만 지운다. 남의 퀴즈 문항 id 를 섞어 보내도 아무 일도 일어나지 않는다.
+ */
+export async function deactivate(env: AppEnv, quizId: string, ids: string[]): Promise<number> {
+	if (ids.length === 0) return 0;
+
+	const placeholders = ids.map(() => "?").join(",");
+	const { results } = await env.DB.prepare(
+		`SELECT id FROM questions
+		  WHERE quiz_id = ? AND is_active = 1 AND id IN (${placeholders})`,
+	)
+		.bind(quizId, ...ids)
+		.all<{ id: string }>();
+
+	if (results.length === 0) return 0;
+
+	const targets = results.map((r) => r.id);
+	const marks = targets.map(() => "?").join(",");
+
+	await env.DB.batch([
+		env.DB.prepare(
+			`UPDATE questions
+			    SET is_active = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+			  WHERE id IN (${marks})`,
+		).bind(...targets),
+		// 왜 사라졌는지 남긴다. 부모가 지운 것과 AI 가 다시 만들려고 치운 것은 다르다.
+		...targets.map((id) =>
+			env.DB.prepare(
+				`INSERT INTO question_histories (id, question_id, action, old_data, new_data, actor_type, actor_id)
+				 VALUES (?, ?, 'AI_REGENERATED', NULL, NULL, 'PARENT', ?)`,
+			).bind(newId(), id, null),
+		),
+	]);
+
+	return targets.length;
+}
+
+/** 지금 쓰이고 있는 문항 번호. 비운 자리를 다시 채울 때 쓴다. */
+export async function activeNumbers(env: AppEnv, quizId: string): Promise<number[]> {
+	const { results } = await env.DB.prepare(
+		"SELECT question_number FROM questions WHERE quiz_id = ? AND is_active = 1",
+	)
+		.bind(quizId)
+		.all<{ question_number: number }>();
+	return results.map((r) => r.question_number);
+}
+
 /** 생성을 다시 돌릴 때 이전 시도의 문항을 치운다. 행은 남기고 비활성화만 한다(§21.7). */
 export async function deactivateAll(env: AppEnv, quizId: string): Promise<void> {
 	await env.DB.prepare(

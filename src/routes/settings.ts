@@ -54,15 +54,22 @@ async function putModels({ request, env, principal }: RouteCtx): Promise<Respons
 	return ok({ model, visionModel });
 }
 
-/** 한 번에 출제할 문제 개수와 통과 개수(§17·§21.1). 기본값은 20/10. */
+/** 한 번에 출제할 문제 개수·통과 개수·문제 언어(§17·§21.1). 기본값은 20/10/영어. */
 async function putQuizSettings({ request, env, principal }: RouteCtx): Promise<Response> {
 	const parent = requireParent(principal);
 	const body = await v.readJson(request);
 
 	const questionCount = Number(body.questionCount);
 	const passCount = Number(body.passCount);
+	// 언어를 안 보내면 지금 값을 유지한다. 문항 수만 고치러 온 요청이 언어를 되돌리면 안 된다.
+	const current = await settings.getQuizSettings(env, parent.userId);
+	const language = body.questionLanguage === undefined
+		? current.questionLanguage
+		: String(body.questionLanguage);
 
-	return ok(await settings.saveQuizSettings(env, parent.userId, questionCount, passCount));
+	return ok(
+		await settings.saveQuizSettings(env, parent.userId, questionCount, passCount, language as never),
+	);
 }
 
 export const settingsRoutes: Route[] = [

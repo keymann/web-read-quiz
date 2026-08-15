@@ -50,10 +50,13 @@ export function textareaField(label, props) {
 	return { wrap, input };
 }
 
+/** `options` 는 문자열 배열이거나 `{ value, label }` 배열. 값과 표시가 다를 때 후자를 쓴다. */
 export function selectField(label, options, selected) {
 	const select = el("select", { class: "select" });
-	for (const value of options) {
-		select.append(el("option", { value, text: value, selected: value === selected }));
+	for (const option of options) {
+		const value = typeof option === "string" ? option : option.value;
+		const text = typeof option === "string" ? option : option.label;
+		select.append(el("option", { value, text, selected: value === selected }));
 	}
 	const wrap = el("label", { class: "field" }, [el("span", { class: "field__label", text: label }), select]);
 	return { wrap, select };

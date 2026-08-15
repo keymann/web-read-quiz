@@ -1,5 +1,6 @@
 import type { AppEnv } from "../types";
 import type { ProviderName } from "../ai/types";
+import type { QuestionLanguage } from "../types";
 
 /** `parent_settings` 테이블 접근. API Key 는 암호문·IV 로만 오간다. */
 
@@ -15,6 +16,7 @@ export interface ParentSettingsRow {
 	available_models: string | null;
 	question_count: number;
 	pass_count: number;
+	question_language: QuestionLanguage;
 	created_at: string;
 	updated_at: string;
 }
@@ -79,17 +81,18 @@ export async function clearKey(env: AppEnv, userId: string): Promise<void> {
 export async function saveQuizSettings(
 	env: AppEnv,
 	userId: string,
-	settings: { questionCount: number; passCount: number },
+	settings: { questionCount: number; passCount: number; questionLanguage: QuestionLanguage },
 ): Promise<void> {
 	await env.DB.prepare(
-		`INSERT INTO parent_settings (user_id, question_count, pass_count)
-		 VALUES (?, ?, ?)
+		`INSERT INTO parent_settings (user_id, question_count, pass_count, question_language)
+		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(user_id) DO UPDATE SET
-		   question_count = excluded.question_count,
-		   pass_count     = excluded.pass_count,
-		   updated_at     = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+		   question_count    = excluded.question_count,
+		   pass_count        = excluded.pass_count,
+		   question_language = excluded.question_language,
+		   updated_at        = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
 	)
-		.bind(userId, settings.questionCount, settings.passCount)
+		.bind(userId, settings.questionCount, settings.passCount, settings.questionLanguage)
 		.run();
 }
 

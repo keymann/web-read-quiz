@@ -1,4 +1,4 @@
-import type { AppEnv, QuizStatus } from "../types";
+import type { AppEnv, QuestionLanguage, QuizStatus } from "../types";
 
 /** `quizzes` 테이블 접근. 소유자(parent_user_id)를 항상 WHERE 에 넣는다(§21.5). */
 
@@ -12,6 +12,8 @@ export interface QuizRow {
 	question_count: number;
 	/** 이 퀴즈의 통과 기준(맞혀야 하는 문항 수). */
 	pass_count: number;
+	/** 이 퀴즈의 문제를 낸 언어. 부족한 문항을 채울 때도 이 값을 따른다. */
+	language: QuestionLanguage;
 	generation_error: string | null;
 	created_at: string;
 	updated_at: string;
@@ -26,11 +28,12 @@ export async function insert(
 		round: number;
 		questionCount: number;
 		passCount: number;
+		language: QuestionLanguage;
 	},
 ): Promise<void> {
 	await env.DB.prepare(
-		`INSERT INTO quizzes (id, book_id, parent_user_id, round, question_count, pass_count)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO quizzes (id, book_id, parent_user_id, round, question_count, pass_count, language)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 	)
 		.bind(
 			quiz.id,
@@ -39,6 +42,7 @@ export async function insert(
 			quiz.round,
 			quiz.questionCount,
 			quiz.passCount,
+			quiz.language,
 		)
 		.run();
 }

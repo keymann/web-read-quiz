@@ -340,6 +340,12 @@ body {
 	font-size: 14px;
 }
 
+/* 근거가 아니라 "근거가 없었다" 는 기록. 눈에 띄게 구분한다. */
+.list__meta--weak {
+	color: var(--warning);
+	font-weight: 600;
+}
+
 .list__editor {
 	flex-basis: 100%;
 	padding-top: 12px;
@@ -518,6 +524,30 @@ body {
 .question:last-child {
 	border-bottom: 0;
 	padding-bottom: 0;
+}
+
+/* 문제 본문과 "다시 만들기" 체크박스를 한 줄에 둔다. */
+.question__head {
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+}
+
+.question__pick {
+	/* 손가락으로 누르는 화면이라 기본 크기로는 작다. */
+	width: 20px;
+	height: 20px;
+	margin-top: 2px;
+	flex-shrink: 0;
+	accent-color: var(--primary);
+}
+
+/* 고른 문제는 한눈에 보여야 몇 개를 다시 만드는지 알 수 있다. */
+.question.is-picked {
+	background: var(--bg-subtle);
+	border-radius: 10px;
+	padding: 10px 12px;
+	margin: -10px -12px 0;
 }
 
 .question__text {

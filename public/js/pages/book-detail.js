@@ -2,7 +2,7 @@ import { get, patch, post } from "../api.js";
 import { identifyBook, researchBook, usesBrowserRelay } from "../ai-relay.js";
 import { navigate } from "../router.js";
 import { requireSession } from "../session.js";
-import { banner, el, field, header, mount, setKidMode } from "../ui.js";
+import { banner, el, field, header, mount, selectField, setKidMode } from "../ui.js";
 
 /**
  * 책 분석 화면 — AI 식별 → 부모 확인/보정 → 정보 검색(§5·§6).
@@ -10,6 +10,15 @@ import { banner, el, field, header, mount, setKidMode } from "../ui.js";
  * AI 가 표지를 잘못 읽는 일이 흔하므로 각 단계 사이에 부모가 값을 고칠 수 있어야 하고,
  * 고친 값이 다음 단계의 입력이 되어야 한다.
  */
+// 출처 종류를 사람이 읽을 수 있는 이름으로. 모르는 값은 그대로 보여준다.
+// 모듈 수준에 둔다 — 페이지 함수 안의 const 는 첫 render() 보다 아래에 놓이면 TDZ 로 터진다.
+const SOURCE_LABEL = {
+	web: "웹 검색",
+	"google-books": "구글 북스",
+	"open-library": "오픈 라이브러리",
+	ai: "AI 모델 지식",
+};
+
 export async function bookDetailPage({ id }) {
 	setKidMode(false);
 	const s = await requireSession("PARENT");
@@ -18,12 +27,15 @@ export async function bookDetailPage({ id }) {
 	let message = null;
 	let messageKind = "error";
 	let busy = null;
+	/** 부모의 기본 출제 설정. 문제 언어를 이 판만 바꿀 수 있게 화면에 띄운다. */
+	let quizDefaults = null;
 
 	await refresh();
 
 	async function refresh() {
 		let data = null;
 		try {
+			if (quizDefaults === null) quizDefaults = (await get("/api/settings")).quiz;
 			data = await get(`/api/books/${id}`);
 		} catch (err) {
 			message = err.message;
@@ -163,7 +175,10 @@ export async function bookDetailPage({ id }) {
 							el("li", { class: "list__item list__item--stacked" }, [
 								el("div", { class: "list__main" }, [
 									el("span", { class: "list__title", text: source.title ?? source.url ?? "(제목 없음)" }),
-									el("span", { class: "list__meta", text: source.source }),
+									el("span", {
+										class: source.source === "ai" ? "list__meta list__meta--weak" : "list__meta",
+										text: SOURCE_LABEL[source.source] ?? source.source,
+									}),
 								]),
 								source.url
 									? el("a", {
@@ -183,12 +198,19 @@ export async function bookDetailPage({ id }) {
 
 	/** 문제 생성 진입. 퀴즈를 만들고 생성을 시작한 뒤 검수 화면으로 넘긴다. */
 	function quizCard(book, readyForQuiz, evidenceWeak) {
+		// 이 판만 다른 언어로 낼 수 있다. 기본값은 설정 → 출제 설정의 값.
+		const language = selectField(
+			"문제 언어",
+			quizDefaults?.languages ?? [{ value: "en", label: "영어" }],
+			quizDefaults?.questionLanguage ?? "en",
+		);
+
 		return el("section", { class: "card" }, [
 			el("h2", { class: "section-title", text: "독서 퀴즈" }),
 			readyForQuiz
 				? el("p", {
 						class: "hint",
-						text: "이 책 정보로 4지선다 문제를 만듭니다. 개수는 설정 → 출제 설정에서 정합니다. 1~2분 걸립니다.",
+						text: `이 책 정보로 4지선다 문제 ${quizDefaults?.questionCount ?? 20}개를 만듭니다. 개수는 설정 → 출제 설정에서 정합니다. 1~2분 걸립니다.`,
 					})
 				: el("p", {
 						class: "status status--warn",
@@ -197,6 +219,7 @@ export async function bookDetailPage({ id }) {
 			readyForQuiz && evidenceWeak
 				? el("p", { class: "hint", text: "근거가 얇으니 만들어진 문제를 꼭 검수해 주세요." })
 				: null,
+			readyForQuiz ? language.wrap : null,
 			el("button", {
 				class: "btn",
 				type: "button",
@@ -206,9 +229,10 @@ export async function bookDetailPage({ id }) {
 					busy = "quiz";
 					message = "퀴즈를 만드는 중입니다.";
 					messageKind = "info";
+					const chosen = language.select.value;
 					await refresh();
 					try {
-						const { quiz } = await post("/api/quizzes", { bookId: book.id });
+						const { quiz } = await post("/api/quizzes", { bookId: book.id, language: chosen });
 						// 브라우저 릴레이에서는 검수 화면이 생성 루프를 직접 돌린다.
 						// 서버에게 시작을 시키면 홍콩 콜로에서 나가 Gemini 에 막힌다.
 						if (!(await usesBrowserRelay())) await post(`/api/quizzes/${quiz.id}/generate`);

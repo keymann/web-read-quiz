@@ -39,7 +39,7 @@
 | DELETE | `/api/settings/ai-key` | PARENT | ✅ 키 삭제 |
 | GET | `/api/settings/ai/models` | PARENT | ✅ 사용 가능한 모델 목록 (gemini 는 키 등록 때 받아 둔 목록) |
 | PUT | `/api/settings/ai/models` | PARENT | ✅ 사용할 모델 저장 (계정에 실제 존재하는지 확인) |
-| PUT | `/api/settings/quiz` | PARENT | ✅ `{ questionCount, passCount }` — 한 번에 낼 문제 수와 통과 기준 |
+| PUT | `/api/settings/quiz` | PARENT | ✅ `{ questionCount, passCount, questionLanguage? }` — 문제 수·통과 기준·문제 언어 |
 
 `provider` 는 `openai` | `gemini` | `vertex`.
 
@@ -111,21 +111,30 @@
 
 | Method | Path | Role | 설명 |
 | --- | --- | --- | --- |
-| POST | `/api/quizzes` | PARENT | ✅ 책 기준 퀴즈 생성 (status=DRAFT, round 자동 증가) |
-| POST | `/api/quizzes/:id/generate` | PARENT | ✅ 20문제 생성 시작. **202** 반환 후 백그라운드 실행 |
-| GET | `/api/quizzes/:id` | PARENT | ✅ 퀴즈 + 문제 + 진행 상태 |
+| POST | `/api/quizzes` | PARENT | ✅ `{ bookId, language? }` — 퀴즈 생성 (status=DRAFT, round 자동 증가) |
+| POST | `/api/quizzes/:id/generate` | PARENT | ✅ **빈 자리만** 채운다. **202** 반환 후 백그라운드 실행 |
+| POST | `/api/quizzes/:id/regenerate` | PARENT | ✅ `{ questionIds }` — 고른 문항만 비활성화. 채우기는 `generate` |
+| GET | `/api/quizzes/:id` | PARENT | ✅ 퀴즈 + 문제 + 진행 상태 + 내준 아이 |
+| POST | `/api/quizzes/:id/assign` | PARENT | ✅ `{ childId }` → assignment 생성, status=ASSIGNED |
 | GET | `/api/books/:id/quizzes` | PARENT | ✅ 이 책의 퀴즈 회차 목록 |
 | PATCH | `/api/questions/:id` | PARENT | 문제 수정 → version+1, history=PARENT_EDITED |
-| POST | `/api/questions/:id/regenerate` | PARENT | 이 문제만 AI 재생성 → history=AI_REGENERATED |
-| DELETE | `/api/questions/:id` | PARENT | `is_active=0` + 즉시 대체 문제 1개 생성 (20개 유지) |
 | GET | `/api/questions/:id/history` | PARENT | 문제 변경 이력 |
-| POST | `/api/quizzes/:id/approve` | PARENT | 20개 검증 후 status=APPROVED |
-| POST | `/api/quizzes/:id/assign` | PARENT | `{ childId }` → assignment 생성, status=ASSIGNED |
+| POST | `/api/quizzes/:id/approve` | PARENT | 검증 후 status=APPROVED |
+
+`POST /api/quizzes` 의 `language` 는 `en` | `ko`. 안 보내면 부모 설정의 기본값(초기값 `en`)이고,
+값은 퀴즈 행에 **복사된다** — 나중에 설정을 바꿔도 이미 만든 퀴즈의 언어는 그대로다. 부족한
+문항을 채울 때 언어가 섞이지 않게 하기 위해서다(`question_count`·`pass_count` 와 같은 이유).
+
+**`regenerate` 는 지우기만 한다.** 채우는 경로가 서버(백그라운드)와 브라우저 릴레이로 갈라져
+있어, 여기서 생성까지 시작하면 릴레이 쪽은 막힌 경로로 나간다. 화면이 응답을 받고 자기에게
+맞는 경로로 잇는다. `generate` 도 남아 있는 문항은 건드리지 않고 빈 자리만 채운다 — 통째로
+다시 만들면 애써 확인한 문항이 사라진다.
 
 ## 아이 풀이
 
 | Method | Path | Role | 설명 |
 | --- | --- | --- | --- |
+| GET | `/api/my/quizzes` | CHILD | ✅ 내가 받은 퀴즈 (아직 안 끝난 것만) |
 | GET | `/api/children/:id/quizzes` | PARENT·CHILD | 제출된 퀴즈 목록 (CHILD 는 자기 것만) |
 | POST | `/api/attempts` | CHILD | `{ assignmentId }` → Attempt 시작 + 20문항 스냅샷 고정. 쿨다운 검사 |
 | GET | `/api/attempts/:id` | CHILD·PARENT | 진행 상태 + 현재 문항 (정답 필드는 CHILD 응답에서 제외) |

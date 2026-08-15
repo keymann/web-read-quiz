@@ -1,7 +1,7 @@
 import { providerFor, providerChoices } from "../ai";
 import type { AiProvider, ProviderName } from "../ai/types";
 import * as settingsRepo from "../repositories/settings";
-import type { AppEnv } from "../types";
+import type { AppEnv, QuestionLanguage } from "../types";
 import { seal, unseal } from "../utils/crypto";
 import { ApiError, invalid } from "../utils/response";
 
@@ -17,6 +17,24 @@ const DEFAULT_PROVIDER: ProviderName = "openai";
 /** 요구사항 §17·§21.1 의 기본값. 부모가 설정에서 바꿀 수 있다. */
 export const DEFAULT_QUESTION_COUNT = 20;
 export const DEFAULT_PASS_COUNT = 10;
+
+/** 문제를 낼 언어. 영어 독해를 겸하는 것이 이 서비스의 기본 쓰임이라 영어가 기본이다. */
+export const DEFAULT_QUESTION_LANGUAGE: QuestionLanguage = "en";
+
+/** 고를 수 있는 언어와 화면에 보여줄 이름. */
+export const QUESTION_LANGUAGES: { value: QuestionLanguage; label: string }[] = [
+	{ value: "en", label: "영어" },
+	{ value: "ko", label: "한국어" },
+];
+
+const isQuestionLanguage = (value: string): value is QuestionLanguage =>
+	QUESTION_LANGUAGES.some((l) => l.value === value);
+
+function assertLanguage(value: string): asserts value is QuestionLanguage {
+	if (!isQuestionLanguage(value)) throw invalid("문제 언어는 영어 또는 한국어만 고를 수 있습니다.");
+}
+
+export { isQuestionLanguage };
 
 /**
  * 출제 문항 수의 허용 범위.
@@ -39,6 +57,8 @@ export interface SettingsView {
 	quiz: {
 		questionCount: number;
 		passCount: number;
+		questionLanguage: QuestionLanguage;
+		languages: { value: QuestionLanguage; label: string }[];
 		minQuestions: number;
 		maxQuestions: number;
 	};
@@ -58,6 +78,8 @@ export async function getView(env: AppEnv, userId: string): Promise<SettingsView
 		quiz: {
 			questionCount: row?.question_count ?? DEFAULT_QUESTION_COUNT,
 			passCount: row?.pass_count ?? DEFAULT_PASS_COUNT,
+			questionLanguage: row?.question_language ?? DEFAULT_QUESTION_LANGUAGE,
+			languages: QUESTION_LANGUAGES,
 			minQuestions: MIN_QUESTIONS,
 			maxQuestions: MAX_QUESTIONS,
 		},
@@ -65,14 +87,18 @@ export async function getView(env: AppEnv, userId: string): Promise<SettingsView
 }
 
 /** 퀴즈를 만들 때 복사해 갈 값. 설정이 없으면 기본값. */
-export async function getQuizSettings(
-	env: AppEnv,
-	userId: string,
-): Promise<{ questionCount: number; passCount: number }> {
+export interface QuizSettings {
+	questionCount: number;
+	passCount: number;
+	questionLanguage: QuestionLanguage;
+}
+
+export async function getQuizSettings(env: AppEnv, userId: string): Promise<QuizSettings> {
 	const row = await settingsRepo.find(env, userId);
 	return {
 		questionCount: row?.question_count ?? DEFAULT_QUESTION_COUNT,
 		passCount: row?.pass_count ?? DEFAULT_PASS_COUNT,
+		questionLanguage: row?.question_language ?? DEFAULT_QUESTION_LANGUAGE,
 	};
 }
 
@@ -81,7 +107,8 @@ export async function saveQuizSettings(
 	userId: string,
 	questionCount: number,
 	passCount: number,
-): Promise<{ questionCount: number; passCount: number }> {
+	questionLanguage: QuestionLanguage,
+): Promise<QuizSettings> {
 	if (!Number.isInteger(questionCount) || questionCount < MIN_QUESTIONS || questionCount > MAX_QUESTIONS) {
 		throw invalid(`문제 개수는 ${MIN_QUESTIONS}~${MAX_QUESTIONS} 사이로 정해 주세요.`);
 	}
@@ -90,8 +117,10 @@ export async function saveQuizSettings(
 		throw invalid(`통과 개수는 1 이상 ${questionCount} 이하로 정해 주세요.`);
 	}
 
-	await settingsRepo.saveQuizSettings(env, userId, { questionCount, passCount });
-	return { questionCount, passCount };
+	assertLanguage(questionLanguage);
+
+	await settingsRepo.saveQuizSettings(env, userId, { questionCount, passCount, questionLanguage });
+	return { questionCount, passCount, questionLanguage };
 }
 
 export interface SaveKeyResult {

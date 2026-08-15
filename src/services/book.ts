@@ -242,6 +242,7 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 	let searchNotice: string | null = null;
 	let found: BookResearch;
 	let fellBackFrom: string | null;
+	let modelUsed: string;
 
 	const attempt = (useWebSearch: boolean) =>
 		withModelFallback(ai.provider, ai.apiKey, ai.model, (model) =>
@@ -249,20 +250,83 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 		);
 
 	try {
-		({ value: found, fellBackFrom } = await attempt(true));
+		({ value: found, fellBackFrom, modelUsed } = await attempt(true));
 	} catch (err) {
 		if (!(err instanceof ApiError) || err.code !== "search_unavailable") throw err;
 
 		groundingUsed = false;
 		searchNotice = `${err.message} 웹 검색 없이 정리했으니 책 정보를 꼭 직접 확인해 주세요.`;
-		({ value: found, fellBackFrom } = await attempt(false));
+		({ value: found, fellBackFrom, modelUsed } = await attempt(false));
 	}
 
 	return applyResearch(env, userId, bookId, found, {
 		groundingUsed,
 		searchNotice,
 		modelNotice: noticeFor(fellBackFrom),
+		model: modelUsed,
 	});
+}
+
+/**
+ * 이 책 정보가 **어디서 왔는지** 남긴다.
+ *
+ * 부모가 문제를 검수하려면 근거를 볼 수 있어야 한다. 그런데 실제로 겪어 보니 참고 자료가
+ * 통째로 비는 경우가 잦았다 — 서지 API 가 한국 아동서를 모르고, 무료 등급 키는 웹 검색을
+ * 쓸 수 없고, 검색을 쓴 경우에도 모델이 `sources` 를 자주 비워서 보낸다.
+ *
+ * 그래서 얻은 것이 적어도 **출처는 반드시 남긴다.** 웹 근거가 하나도 없었다는 사실 자체가
+ * 부모가 알아야 할 정보다("이건 모델 기억에서 나온 내용이다").
+ */
+function collectSources(
+	bookId: string,
+	bib: bibliographic.BibRecord[],
+	found: BookResearch,
+	notices: {
+		groundingUsed: boolean;
+		model: string;
+		groundingSources?: { url: string; title: string }[];
+	},
+): booksRepo.NewSource[] {
+	const sources: booksRepo.NewSource[] = bib.map((record) => ({
+		id: newId(),
+		bookId,
+		source: record.source,
+		url: record.url,
+		title: record.title,
+		content: record.description,
+	}));
+
+	// 모델이 적어 준 출처와 제공자가 알려준 출처를 합친다. 같은 URL 은 한 번만.
+	const seen = new Set<string>();
+	for (const source of [...found.sources, ...(notices.groundingSources ?? [])]) {
+		if (!source.url || seen.has(source.url)) continue;
+		seen.add(source.url);
+		sources.push({
+			id: newId(),
+			bookId,
+			source: "web",
+			url: source.url,
+			title: source.title,
+			content: ("content" in source ? (source.content as string) : "") || "웹 검색으로 참고한 페이지입니다.",
+		});
+	}
+
+	// 웹 근거가 하나도 없으면, 이 내용이 모델의 기억에서 나왔다는 것을 남긴다.
+	// 참고 자료가 비어 있는 것과 "근거가 이것뿐"인 것은 부모에게 전혀 다른 정보다.
+	if (found.found && !sources.some((s) => s.source === "web")) {
+		sources.push({
+			id: newId(),
+			bookId,
+			source: "ai",
+			url: null,
+			title: `AI 모델이 알고 있는 내용 · ${notices.model}`,
+			content: notices.groundingUsed
+				? "웹 검색을 했지만 참고할 만한 페이지를 찾지 못해, 모델이 알고 있는 내용으로 정리했습니다."
+				: "이 키로는 웹 검색을 쓸 수 없어 모델이 알고 있는 내용으로 정리했습니다.",
+		});
+	}
+
+	return sources;
 }
 
 /**
@@ -276,7 +340,15 @@ export async function applyResearch(
 	userId: string,
 	bookId: string,
 	found: BookResearch,
-	notices: { groundingUsed: boolean; searchNotice: string | null; modelNotice: string | null },
+	notices: {
+		groundingUsed: boolean;
+		searchNotice: string | null;
+		modelNotice: string | null;
+		/** 실제로 답을 만든 모델. 참고 자료에 출처로 남긴다. */
+		model: string;
+		/** 제공자가 알려준 "실제로 참고한 페이지". 모델이 sources 를 비워도 여기로 남는다. */
+		groundingSources?: { url: string; title: string }[];
+	},
 ): Promise<SearchResult> {
 	const row = await requireOwned(env, userId, bookId);
 	const bib = await bibliographic.lookup({
@@ -286,24 +358,7 @@ export async function applyResearch(
 		publisher: row.publisher ?? "",
 	});
 
-	const sources: booksRepo.NewSource[] = [
-		...bib.map((record) => ({
-			id: newId(),
-			bookId,
-			source: record.source,
-			url: record.url,
-			title: record.title,
-			content: record.description,
-		})),
-		...found.sources.map((source) => ({
-			id: newId(),
-			bookId,
-			source: "web",
-			url: source.url,
-			title: source.title,
-			content: source.content,
-		})),
-	];
+	const sources = collectSources(bookId, bib, found, notices);
 	await booksRepo.replaceSources(env, bookId, sources);
 
 	// 책을 특정하지 못했으면 그 결과의 서지정보를 받아들이지 않는다. 엉뚱한 책의 정보가 섞이면
@@ -325,7 +380,7 @@ export async function applyResearch(
 		research: found,
 		sourceCount: sources.length,
 		readyForQuiz: isReadyForQuiz(updated.brief),
-		evidenceWeak: hasWeakEvidence(sources.length),
+		evidenceWeak: hasWeakEvidence(evidenceCount(sources)),
 		groundingUsed: notices.groundingUsed,
 		searchNotice: notices.searchNotice,
 		modelNotice: notices.modelNotice,
@@ -354,7 +409,17 @@ const noticeFor = (fellBackFrom: string | null): string | null =>
 export const isReadyForQuiz = (brief: string | null): boolean => brief !== null && brief.trim() !== "";
 
 /** 근거가 얇은지. 웹 검색으로 얻은 출처가 이만큼은 있어야 든든하다. */
-export const hasWeakEvidence = (sourceCount: number): boolean => sourceCount < MIN_SOURCES_FOR_QUIZ;
+export const hasWeakEvidence = (evidenceCount: number): boolean =>
+	evidenceCount < MIN_SOURCES_FOR_QUIZ;
+
+/**
+ * 근거로 셀 수 있는 출처의 수.
+ *
+ * `ai` 출처는 "이 내용이 모델 기억에서 나왔다" 는 기록이지 근거가 아니다. 그것까지 세면
+ * 근거가 하나도 없을 때 오히려 경고가 사라진다.
+ */
+export const evidenceCount = (sources: { source: string }[]): number =>
+	sources.filter((s) => s.source !== "ai").length;
 
 /**
  * 비어 있는 칸만 채운다. 부모가 직접 고쳐 둔 값을 검색 결과가 덮어쓰면 안 된다.

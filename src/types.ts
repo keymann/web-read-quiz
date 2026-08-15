@@ -95,3 +95,6 @@ export interface ChildView {
 	loginId: string | null;
 	createdAt: string;
 }
+
+/** 문제를 낼 언어. 책이 한국어여도 문제는 영어로 낼 수 있다(영어 독해 겸용). */
+export type QuestionLanguage = "en" | "ko";

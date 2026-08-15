@@ -5,7 +5,7 @@ import * as booksRepo from "../repositories/books";
 import * as questionsRepo from "../repositories/questions";
 import type { ValidationRecord } from "../repositories/questions";
 import * as quizzesRepo from "../repositories/quizzes";
-import type { AppEnv, ChoiceNumber, Difficulty, QuestionType } from "../types";
+import type { AppEnv, ChoiceNumber, Difficulty, QuestionLanguage, QuestionType } from "../types";
 import { newId } from "../utils/id";
 import { ApiError, invalid, notFound } from "../utils/response";
 import { balanceAnswerPositions, screen, typeDistribution } from "./question-checks";
@@ -52,6 +52,8 @@ export async function createQuiz(
 	env: AppEnv,
 	userId: string,
 	bookId: string,
+	/** 이 퀴즈만 다른 언어로 낼 때. 없으면 부모 설정의 기본 언어. */
+	languageOverride?: QuestionLanguage,
 ): Promise<quizzesRepo.QuizRow> {
 	const book = await booksRepo.findOwned(env, userId, bookId);
 	if (!book) throw notFound("책을 찾을 수 없습니다.");
@@ -64,15 +66,21 @@ export async function createQuiz(
 	const round = await quizzesRepo.nextRound(env, bookId);
 
 	// 설정값을 퀴즈에 **복사해 둔다.** 나중에 설정을 바꿔도 이미 만든 퀴즈의 기준은 그대로여야 한다.
-	const { questionCount, passCount } = await settings.getQuizSettings(env, userId);
+	const defaults = await settings.getQuizSettings(env, userId);
+	// 이 판만 다른 언어로 낼 수 있다. 고르지 않으면 부모의 기본값.
+	const language = languageOverride ?? defaults.questionLanguage;
+	if (!settings.isQuestionLanguage(language)) {
+		throw invalid("문제 언어는 영어 또는 한국어만 고를 수 있습니다.");
+	}
 
 	await quizzesRepo.insert(env, {
 		id: quizId,
 		bookId,
 		parentUserId: userId,
 		round,
-		questionCount,
-		passCount,
+		questionCount: defaults.questionCount,
+		passCount: defaults.passCount,
+		language,
 	});
 
 	const row = await quizzesRepo.findOwned(env, userId, quizId);
@@ -103,14 +111,26 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 			return;
 		}
 
-		// 다시 돌리는 경우 이전 시도의 문항을 치운다. 행은 남기고 비활성화만 한다(§21.7).
-		await questionsRepo.deactivateAll(env, quizId);
+		// 남아 있는 문항은 그대로 두고 **빈 자리만** 채운다.
+		//
+		// 예전에는 여기서 전부 비활성화했다. 그러면 부모가 3번 문제 하나만 다시 만들려고 해도
+		// 나머지 열아홉 개가 통째로 새로 만들어진다 — 애써 확인한 문항이 사라지고 비용도 그만큼
+		// 든다. 지울 문항은 부모가 검수 화면에서 고르고(§21.7), 여기는 채우기만 한다.
+		// 브라우저 릴레이 경로(relay.planGenerate)도 같은 규칙으로 돈다.
+		const kept = await questionsRepo.listActive(env, quizId);
 
 		const ai = await settings.getRuntime(env, userId);
 		// 근거가 웹 검색이 아니라 모델 지식뿐이면 출제도 보수적으로 가야 한다(Phase 3.5).
 		const briefIsUnverified = !(await hasWebSource(env, quiz.book_id));
 
-		const target = quiz.question_count;
+		const target = quiz.question_count - kept.length;
+		if (target <= 0) {
+			await quizzesRepo.setStatus(env, quizId, "REVIEW", null);
+			return;
+		}
+
+		// 이미 있는 문항과 겹치는 문제를 만들지 않도록 본문을 프롬프트와 중복 검사에 넘긴다.
+		const keptTexts = kept.map((q) => q.question_text);
 		const accepted: AcceptedQuestion[] = [];
 		const rejected: { questionText: string; reason: string }[] = [];
 
@@ -124,15 +144,16 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 					model,
 					brief,
 					count: need,
-					existing: accepted.map((a) => a.question.questionText),
+					existing: [...keptTexts, ...accepted.map((a) => a.question.questionText)],
 					rejected: rejected.slice(-RECENT_REJECTIONS),
 					briefIsUnverified,
+					language: quiz.language,
 				}),
 			);
 
 			// 1) AI 를 부르기 전에 서버가 걸러낸다. 여기서 줄어든 만큼 검증 비용이 준다.
 			const screened = screen(fresh, {
-				accepted: accepted.map((a) => a.question.questionText),
+				accepted: [...keptTexts, ...accepted.map((a) => a.question.questionText)],
 				title: book.title,
 				author: book.author ?? "",
 			});
@@ -150,6 +171,7 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 					model,
 					brief,
 					questions: screened.passed,
+					language: quiz.language,
 				}),
 			);
 
@@ -162,26 +184,27 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 			await quizzesRepo.setStatus(
 				env,
 				quizId,
-				"DRAFT",
+				kept.length > 0 ? "REVIEW" : "DRAFT",
 				"검수를 통과한 문제가 없습니다. 책 정보를 보강하고 다시 시도해 주세요.",
 			);
 			return;
 		}
 
-		await persistAccepted(env, quizId, 0, accepted);
+		await persistAccepted(env, quizId, accepted);
 
-		const shortfall = target - accepted.length;
+		const total = kept.length + accepted.length;
+		const shortfall = quiz.question_count - total;
 		await quizzesRepo.setStatus(
 			env,
 			quizId,
 			"REVIEW",
 			shortfall > 0
-				? `${target}문제 중 ${accepted.length}개만 검수를 통과했습니다. 다시 생성하면 나머지를 채웁니다.`
+				? `${quiz.question_count}문제 중 ${total}개만 검수를 통과했습니다. 다시 생성하면 나머지를 채웁니다.`
 				: null,
 		);
 
 		console.log(
-			`quiz ${quizId}: ${accepted.length}/${target} accepted, ${rejected.length} rejected`,
+			`quiz ${quizId}: ${total}/${quiz.question_count} accepted, ${rejected.length} rejected`,
 			typeDistribution(accepted.map((a) => a.question)),
 		);
 	} catch (err) {
@@ -225,19 +248,22 @@ export function applyVerdicts(
 	return { accepted, rejected };
 }
 
-/** 통과한 문항을 저장한다. `startNumber` 는 이미 저장된 문항 수(번호를 이어 붙이기 위해). */
+/** 통과한 문항을 저장한다. 번호는 지금 비어 있는 자리부터 채운다. */
 export async function persistAccepted(
 	env: AppEnv,
 	quizId: string,
-	startNumber: number,
 	accepted: AcceptedQuestion[],
 ): Promise<void> {
 	// 정답 위치는 모델에게 맡기지 않고 서버가 고르게 편다(§9-10).
 	const balanced = balanceAnswerPositions(accepted.map((a) => a.question));
 
+	// 번호는 "지금 비어 있는 자리" 를 채운다. 이어붙이기로 매기면 부모가 3번만 다시 만들었을 때
+	// 새 문항이 이미 있는 번호와 부딪힌다(활성 문항 안에서 번호는 유일해야 한다).
+	const free = freeNumbers(await questionsRepo.activeNumbers(env, quizId), balanced.length);
+
 	const validations = new Map<number, ValidationRecord>();
 	const rows = balanced.map((question, index) => {
-		const number = startNumber + index + 1;
+		const number = free[index]!;
 		const { verdict } = accepted[index]!;
 		validations.set(number, {
 			valid: verdict.valid,
@@ -261,6 +287,18 @@ export async function persistAccepted(
 	});
 
 	await questionsRepo.insertGenerated(env, rows, "AI_GENERATED", validations);
+}
+
+/** 쓰이지 않는 가장 작은 번호부터 `count` 개. */
+function freeNumbers(used: number[], count: number): number[] {
+	const taken = new Set(used);
+	const numbers: number[] = [];
+
+	for (let n = 1; numbers.length < count; n++) {
+		if (!taken.has(n)) numbers.push(n);
+	}
+
+	return numbers;
 }
 
 /** 웹 검색으로 얻은 출처가 하나라도 있는지. 없으면 Brief 가 모델 기억에만 기댄 것이다. */

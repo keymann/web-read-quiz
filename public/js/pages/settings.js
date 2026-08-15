@@ -117,7 +117,11 @@ export async function settingsPage() {
 			el("h2", { class: "section-title", text: "모델" }),
 			el("p", {
 				class: "hint",
-				text: "이 계정에서 쓸 수 있는 모델만 보입니다. 잘 모르겠다면 맨 위 값을 그대로 두세요.",
+				text: "이 계정에서 쓸 수 있는 모델만 보입니다. 위쪽일수록 최신이며, 잘 모르겠다면 그대로 두세요.",
+			}),
+			el("p", {
+				class: "hint",
+				text: "모델에 따라 문제 품질과 비용이 함께 달라집니다. 비용을 아끼려면 이름에 mini·nano 가 붙은 모델을, 품질을 높이려면 pro 가 붙은 모델을 골라 보세요.",
 			}),
 			model.wrap,
 			visionModel.wrap,

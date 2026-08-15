@@ -18,6 +18,48 @@ const MODEL_LIST = {
 	],
 };
 
+/** 실제 계정의 `GET /v1/models` 응답에서 가져온 목록(2026-08 기준). */
+const REAL_WORLD_MODELS = [
+	"gpt-5.6-luna",
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.5",
+	"gpt-5.5-2026-04-23",
+	"gpt-5.5-pro",
+	"gpt-5.5-pro-2026-04-23",
+	"gpt-5",
+	"gpt-5-2025-08-07",
+	"gpt-5-chat-latest",
+	"gpt-5-mini",
+	"gpt-5-nano",
+	"gpt-5-pro",
+	"gpt-5.1",
+	"gpt-5.1-chat-latest",
+	"gpt-5.2",
+	"gpt-5.2-pro",
+	"gpt-5.3-chat-latest",
+	"gpt-5.4",
+	"gpt-5.4-2026-03-05",
+	"gpt-5.4-mini",
+	"gpt-5.4-nano",
+	"gpt-5.4-pro",
+	"gpt-4.1",
+	"gpt-4.1-mini",
+	"gpt-4.1-nano",
+	"gpt-4o",
+	"gpt-4o-mini",
+	"gpt-3.5-turbo",
+	"gpt-3.5-turbo-instruct",
+	"o1",
+	"o3",
+	"o3-mini",
+	"o4-mini",
+	"gpt-image-2",
+	"gpt-4o-mini-tts",
+	"text-embedding-3-small",
+	"omni-moderation-latest",
+];
+
 beforeAll(() => {
 	fetchMock.activate();
 	fetchMock.disableNetConnect();
@@ -73,6 +115,43 @@ describe("OpenAI API Key 설정", () => {
 		expect(view.body.data.openai.configured).toBe(true);
 		expect(view.body.data.openai.last4).toBe("klmn");
 		expect(view.body.data.openai.model).toBe("gpt-5.6-mini");
+	});
+
+	// 실제 계정에서 돌아온 목록을 그대로 넣어 정렬·필터가 의도대로 도는지 고정한다.
+	it("실제 모델 목록에서 쓸 수 없는 모델과 날짜 스냅샷을 걸러낸다", async () => {
+		const { client } = await signupParent();
+		mockModels(1, 200, { data: REAL_WORLD_MODELS.map((id) => ({ id })) });
+
+		const saved = await client.request("/api/settings/openai-key", {
+			method: "PUT",
+			body: { apiKey: API_KEY },
+		});
+
+		const models: string[] = saved.body.data.models;
+
+		// 채팅/구조화 출력을 못 하거나 대상이 조용히 바뀌는 것들은 후보에서 빠진다
+		expect(models).not.toContain("gpt-3.5-turbo");
+		expect(models).not.toContain("gpt-3.5-turbo-instruct");
+		expect(models).not.toContain("gpt-5.1-chat-latest");
+		expect(models).not.toContain("gpt-image-2");
+		expect(models).not.toContain("text-embedding-3-small");
+		// 날짜 스냅샷은 기본 별칭과 중복이라 숨긴다
+		expect(models).not.toContain("gpt-5.5-2026-04-23");
+		expect(models.some((id) => /-\d{4}-\d{2}-\d{2}$/.test(id))).toBe(false);
+
+		// 최신 세대가 앞, 같은 세대 안에서는 기본 별칭 → mini/nano → pro 순
+		expect(models[0]).toMatch(/^gpt-5\.6/);
+		expect(models.indexOf("gpt-5.5")).toBeLessThan(models.indexOf("gpt-5.5-pro"));
+		expect(models.indexOf("gpt-5.4")).toBeLessThan(models.indexOf("gpt-5.4-mini"));
+		expect(models.indexOf("gpt-5.4-mini")).toBeLessThan(models.indexOf("gpt-5.4-pro"));
+		// 세대 우선순위가 변종보다 강하다
+		expect(models.indexOf("gpt-5.5-pro")).toBeLessThan(models.indexOf("gpt-5.4"));
+		// o 시리즈는 남기되 뒤로
+		expect(models).toContain("o3");
+		expect(models.indexOf("gpt-4o")).toBeLessThan(models.indexOf("o3"));
+
+		// 기본값은 목록 맨 앞이 그대로 잡힌다
+		expect((await client.get("/api/settings")).body.data.openai.model).toBe(models[0]);
 	});
 
 	it("어떤 응답에도 키 원문이 담기지 않는다", async () => {

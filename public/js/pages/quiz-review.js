@@ -1,4 +1,5 @@
 import { get, post } from "../api.js";
+import { generateQuestions, usesBrowserRelay } from "../ai-relay.js";
 import { requireSession } from "../session.js";
 import { banner, el, header, mount, setKidMode } from "../ui.js";
 
@@ -30,10 +31,24 @@ export async function quizReviewPage({ id }) {
 	let message = null;
 	let messageKind = "error";
 	let timer = null;
+	/** 브라우저가 직접 생성 중일 때의 진행 상황. 서버 폴링과 달리 우리가 직접 안다. */
+	let relayProgress = null;
+	/**
+	 * 마지막으로 그린 데이터. 진행 표시만 갱신할 때 다시 조회하지 않으려고 들고 있는다.
+	 *
+	 * 선언은 반드시 첫 `refresh()` 보다 위에 둔다 — 아래에 두면 초기화 전에 읽혀 TDZ 로 터진다.
+	 */
+	let lastData = null;
 	// 화면을 떠난 뒤에도 폴링이 돌면 남의 화면을 덮어쓴다. 경로가 바뀌면 멈춘다.
 	const myPath = location.pathname;
 
 	await refresh();
+
+	// 릴레이 모드에서는 서버가 생성을 시작해 주지 않는다(홍콩 콜로에서 나가면 Gemini 에 막힌다).
+	// 책 화면에서 막 넘어와 아직 문항이 없다면 여기서 바로 돌린다.
+	if (lastData?.quiz.status === "DRAFT" && lastData.progress.generated === 0) {
+		if (await usesBrowserRelay()) await startGeneration();
+	}
 
 	async function refresh() {
 		if (location.pathname !== myPath) return stopPolling();
@@ -47,7 +62,8 @@ export async function quizReviewPage({ id }) {
 		}
 		render(data);
 
-		if (data?.quiz.status === "GENERATING") {
+		// 브라우저가 직접 돌리는 동안에는 폴링하지 않는다. 진행 상황을 이미 알고 있다.
+		if (data?.quiz.status === "GENERATING" && relayProgress === null) {
 			timer = setTimeout(refresh, POLL_MS);
 		} else {
 			stopPolling();
@@ -60,6 +76,7 @@ export async function quizReviewPage({ id }) {
 	}
 
 	function render(data) {
+		if (data) lastData = data;
 		if (!data) {
 			mount(header("퀴즈", [backLink()]), banner(message ?? "퀴즈를 불러오지 못했습니다."));
 			return;
@@ -88,6 +105,23 @@ export async function quizReviewPage({ id }) {
 	}
 
 	function statusCard(quiz, progress) {
+		if (relayProgress !== null) {
+			const done = relayProgress.accepted;
+			const total = relayProgress.target || progress.total;
+			return el("section", { class: "card" }, [
+				el("h2", { class: "section-title", text: "문제를 만드는 중이에요" }),
+				el("p", {
+					class: "hint",
+					text:
+						relayProgress.phase === "validating"
+							? "만든 문제를 AI 가 검수하고 있습니다. 이 화면을 닫지 마세요."
+							: "AI 가 문제를 만들고 있습니다. 1~2분 걸릴 수 있어요. 이 화면을 닫지 마세요.",
+				}),
+				el("progress", { class: "progress", value: done, max: total }),
+				el("p", { class: "status status--warn", text: `${done} / ${total} 문제` }),
+			]);
+		}
+
 		if (quiz.status === "GENERATING") {
 			const percent = Math.round((progress.generated / progress.total) * 100);
 			return el("section", { class: "card" }, [
@@ -112,7 +146,7 @@ export async function quizReviewPage({ id }) {
 				class: progress.generated === progress.total ? "status status--ok" : "status status--warn",
 				text:
 					progress.generated === progress.total
-						? "20문제가 준비되었습니다. 내용을 확인해 주세요."
+						? `${progress.total}문제가 준비되었습니다. 내용을 확인해 주세요.`
 						: `아직 ${progress.total - progress.generated}문제가 부족합니다.`,
 			}),
 			el("div", { class: "row" }, [
@@ -160,12 +194,33 @@ export async function quizReviewPage({ id }) {
 	async function startGeneration() {
 		message = "문제 만들기를 시작했습니다.";
 		messageKind = "info";
+
 		try {
-			await post(`/api/quizzes/${id}/generate`);
+			if (await usesBrowserRelay()) {
+				// 브라우저가 Gemini 를 직접 부른다. 서버는 각 라운드에서 무엇을 부를지 정하고
+				// 결과를 판정한다. 탭을 닫으면 중간에 멈추므로 진행 상황을 계속 보여 준다.
+				relayProgress = { accepted: 0, target: 0, phase: "generating" };
+				await refresh();
+
+				const result = await generateQuestions(id, (progress) => {
+					relayProgress = progress;
+					render(lastData);
+				});
+
+				relayProgress = null;
+				message = result.done
+					? "문제가 준비되었습니다."
+					: `${result.target}문제 중 ${result.accepted}개만 검수를 통과했습니다. 다시 만들면 나머지를 채웁니다.`;
+				messageKind = result.done ? "info" : "error";
+			} else {
+				await post(`/api/quizzes/${id}/generate`);
+			}
 		} catch (err) {
+			relayProgress = null;
 			message = err.message;
 			messageKind = "error";
 		}
+
 		await refresh();
 	}
 }

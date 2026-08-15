@@ -1,7 +1,11 @@
-# 정적 자산은 Worker 를 거치지 않고 자산 서버가 바로 응답하므로,
-# 보안 헤더를 여기서 건다. (src/index.ts 의 SECURITY_HEADERS 와 같은 값을 유지할 것)
+# 정적 자산은 Worker 를 거치지 않고 자산 서버가 바로 응답하므로 보안 헤더를 여기서 건다.
+#
+# connect-src 에 generativelanguage.googleapis.com 이 들어 있는 이유:
+# Gemini 키를 쓰는 경우에만 부모 브라우저가 Gemini 를 직접 부른다. Cloudflare Worker 는
+# 홍콩 콜로에서 나가는데 홍콩이 Gemini 미지원 지역이라 서버에서는 호출이 막힌다.
+# 허용 호스트는 이 하나뿐이고, OpenAI·Vertex 는 여전히 서버가 부른다.
 /*
-  Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'
+  Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self' https://generativelanguage.googleapis.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'
   X-Content-Type-Options: nosniff
   Referrer-Policy: same-origin
   X-Frame-Options: DENY

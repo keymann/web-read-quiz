@@ -34,7 +34,7 @@ const MIN_SCORE = 70;
 /** 재생성 프롬프트에 넣을 탈락 사례 수. 너무 많으면 프롬프트만 길어진다. */
 const RECENT_REJECTIONS = 10;
 
-interface AcceptedQuestion {
+export interface AcceptedQuestion {
 	question: GeneratedQuestion;
 	verdict: Verdict;
 }
@@ -153,20 +153,9 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 				}),
 			);
 
-			const byNumber = new Map(verdicts.map((v) => [v.questionNumber, v]));
-			for (const question of screened.passed) {
-				if (accepted.length >= target) break;
-
-				const verdict = byNumber.get(question.questionNumber);
-				if (!verdict || !passes(verdict)) {
-					rejected.push({
-						questionText: question.questionText,
-						reason: verdict?.reason || "검수 기준을 통과하지 못했습니다.",
-					});
-					continue;
-				}
-				accepted.push({ question, verdict });
-			}
+			const round = applyVerdicts(screened.passed, verdicts, target - accepted.length);
+			accepted.push(...round.accepted);
+			rejected.push(...round.rejected);
 		}
 
 		if (accepted.length === 0) {
@@ -179,7 +168,7 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 			return;
 		}
 
-		await persist(env, quizId, accepted);
+		await persistAccepted(env, quizId, 0, accepted);
 
 		const shortfall = target - accepted.length;
 		await quizzesRepo.setStatus(
@@ -206,13 +195,49 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 const passes = (verdict: Verdict): boolean =>
 	verdict.valid && verdict.score >= MIN_SCORE && verdict.readRequired;
 
-async function persist(env: AppEnv, quizId: string, accepted: AcceptedQuestion[]): Promise<void> {
+/**
+ * 판정을 문항에 맞춰 통과·탈락으로 가른다.
+ *
+ * 서버가 부르든 브라우저가 부르든 **임계값은 여기 하나뿐**이다. `room` 은 남은 자리 수로,
+ * 목표를 넘겨 저장하지 않게 한다.
+ */
+export function applyVerdicts(
+	questions: GeneratedQuestion[],
+	verdicts: Verdict[],
+	room: number,
+): { accepted: AcceptedQuestion[]; rejected: { questionText: string; reason: string }[] } {
+	const byNumber = new Map(verdicts.map((v) => [v.questionNumber, v]));
+	const accepted: AcceptedQuestion[] = [];
+	const rejected: { questionText: string; reason: string }[] = [];
+
+	for (const question of questions) {
+		const verdict = byNumber.get(question.questionNumber);
+		if (accepted.length >= room || !verdict || !passes(verdict)) {
+			rejected.push({
+				questionText: question.questionText,
+				reason: verdict?.reason || "검수 기준을 통과하지 못했습니다.",
+			});
+			continue;
+		}
+		accepted.push({ question, verdict });
+	}
+
+	return { accepted, rejected };
+}
+
+/** 통과한 문항을 저장한다. `startNumber` 는 이미 저장된 문항 수(번호를 이어 붙이기 위해). */
+export async function persistAccepted(
+	env: AppEnv,
+	quizId: string,
+	startNumber: number,
+	accepted: AcceptedQuestion[],
+): Promise<void> {
 	// 정답 위치는 모델에게 맡기지 않고 서버가 고르게 편다(§9-10).
 	const balanced = balanceAnswerPositions(accepted.map((a) => a.question));
 
 	const validations = new Map<number, ValidationRecord>();
 	const rows = balanced.map((question, index) => {
-		const number = index + 1;
+		const number = startNumber + index + 1;
 		const { verdict } = accepted[index]!;
 		validations.set(number, {
 			valid: verdict.valid,

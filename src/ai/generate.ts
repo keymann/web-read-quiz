@@ -1,4 +1,4 @@
-import type { AiProvider } from "./types";
+import type { AiProvider, StructuredRequest } from "./types";
 import { QUESTIONS_SCHEMA } from "./schemas";
 
 /** 파이프라인 4·6단계 — 4지선다 문제 생성(§7·§9). */
@@ -48,6 +48,7 @@ CAUSE_EFFECT(원인과 결과) · ACTION(행동) · EMOTION(감정) · INFERENCE
 evidence 에는 이 문제의 근거가 된 책 속 내용을 적습니다. 근거를 댈 수 없는 문제는 만들지 마세요.`;
 
 export interface GenerateRequest {
+	/** 서버가 직접 호출할 때만 필요하다. 브라우저 릴레이에서는 조립만 한다. */
 	provider: AiProvider;
 	apiKey: string;
 	model: string;
@@ -63,7 +64,7 @@ export interface GenerateRequest {
 	briefIsUnverified?: boolean;
 }
 
-export async function generateQuestions(request: GenerateRequest): Promise<GeneratedQuestion[]> {
+export function buildGenerateRequest(request: GenerateRequest): StructuredRequest {
 	const parts = [
 		request.brief,
 		"",
@@ -106,15 +107,19 @@ export async function generateQuestions(request: GenerateRequest): Promise<Gener
 		);
 	}
 
+	return {
+		model: request.model,
+		instructions: INSTRUCTIONS,
+		prompt: parts.join("\n"),
+		schemaName: "reading_questions",
+		schema: QUESTIONS_SCHEMA as unknown as Record<string, unknown>,
+	};
+}
+
+export async function generateQuestions(request: GenerateRequest): Promise<GeneratedQuestion[]> {
 	const result = await request.provider.structured<{ questions: GeneratedQuestion[] }>(
 		request.apiKey,
-		{
-			model: request.model,
-			instructions: INSTRUCTIONS,
-			prompt: parts.join("\n"),
-			schemaName: "reading_questions",
-			schema: QUESTIONS_SCHEMA as unknown as Record<string, unknown>,
-		},
+		buildGenerateRequest(request),
 		// 20문항은 응답이 길다. 실패한 호출은 과금되지 않으므로 과부하 정도는 넘길 수 있게 둔다.
 		{ timeoutMs: 180_000, maxAttempts: 3 },
 	);

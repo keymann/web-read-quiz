@@ -1,4 +1,5 @@
 import { get, patch, post } from "../api.js";
+import { identifyBook, researchBook, usesBrowserRelay } from "../ai-relay.js";
 import { navigate } from "../router.js";
 import { requireSession } from "../session.js";
 import { banner, el, field, header, mount, setKidMode } from "../ui.js";
@@ -37,15 +38,15 @@ export async function bookDetailPage({ id }) {
 			return;
 		}
 
-		const { book, sources, readyForQuiz } = data;
+		const { book, sources, readyForQuiz, evidenceWeak } = data;
 		mount(
 			...[
 				header(book.title, [homeLink()]),
 				message ? banner(message, messageKind) : null,
 				coverCard(book),
 				infoCard(book),
-				sourcesCard(sources, readyForQuiz),
-				quizCard(book, readyForQuiz),
+				sourcesCard(sources, evidenceWeak),
+				quizCard(book, readyForQuiz, evidenceWeak),
 			].filter(Boolean),
 		);
 	}
@@ -77,7 +78,12 @@ export async function bookDetailPage({ id }) {
 					type: "button",
 					text: busy === "analyze" ? "표지를 읽는 중…" : book.analyzedAt ? "다시 분석하기" : "AI 로 책 정보 읽기",
 					disabled: busy !== null,
-					onClick: () => run("analyze", `/api/books/${id}/analyze`, "표지에서 책 정보를 읽었습니다."),
+					onClick: () =>
+							run(
+								"analyze",
+								(relay) => (relay ? identifyBook(id) : post(`/api/books/${id}/analyze`)),
+								"표지에서 책 정보를 읽었습니다.",
+							),
 				}),
 			]),
 		]);
@@ -104,11 +110,15 @@ export async function bookDetailPage({ id }) {
 					text: busy === "search" ? "책 정보를 찾는 중…" : book.searchedAt ? "정보 다시 찾기" : "책 정보 찾기",
 					disabled: busy !== null,
 					onClick: () =>
-						run("search", `/api/books/${id}/search`, "책 정보를 찾아 정리했습니다.", (data) =>
-							data.readyForQuiz
-								? data.searchNotice
-								: data.searchNotice ??
-									"근거 자료가 부족합니다. 제목·지은이를 다시 확인하거나 정보를 한 번 더 찾아 주세요.",
+						run(
+							"search",
+							(relay) => (relay ? researchBook(id) : post(`/api/books/${id}/search`)),
+							"책 정보를 찾아 정리했습니다.",
+							(data) =>
+								data.readyForQuiz
+									? data.searchNotice
+									: (data.searchNotice ??
+										"근거 자료가 부족합니다. 제목·지은이를 다시 확인하거나 정보를 한 번 더 찾아 주세요."),
 						),
 				}),
 			]),
@@ -135,14 +145,14 @@ export async function bookDetailPage({ id }) {
 		return form;
 	}
 
-	function sourcesCard(sources, readyForQuiz) {
+	function sourcesCard(sources, evidenceWeak) {
 		return el("section", { class: "card" }, [
 			el("h2", { class: "section-title", text: `참고 자료 ${sources.length}건` }),
 			el("p", {
-				class: readyForQuiz ? "status status--ok" : "status status--warn",
-				text: readyForQuiz
-					? "문제를 만들 준비가 되었습니다."
-					: "문제를 만들려면 참고 자료가 2건 이상 필요합니다. AI 가 없는 내용을 지어내지 않게 하기 위한 기준입니다.",
+				class: evidenceWeak ? "status status--warn" : "status status--ok",
+				text: evidenceWeak
+					? "웹에서 찾은 근거가 2건 미만입니다. 문제는 만들 수 있지만 내용이 맞는지 더 꼼꼼히 확인해 주세요."
+					: "근거 자료가 충분합니다.",
 			}),
 			sources.length === 0
 				? el("p", { class: "hint", text: "아직 찾은 자료가 없습니다." })
@@ -172,15 +182,21 @@ export async function bookDetailPage({ id }) {
 	}
 
 	/** 문제 생성 진입. 퀴즈를 만들고 생성을 시작한 뒤 검수 화면으로 넘긴다. */
-	function quizCard(book, readyForQuiz) {
+	function quizCard(book, readyForQuiz, evidenceWeak) {
 		return el("section", { class: "card" }, [
 			el("h2", { class: "section-title", text: "독서 퀴즈" }),
 			readyForQuiz
-				? el("p", { class: "hint", text: "이 책 정보로 4지선다 20문제를 만듭니다. 1~2분 걸립니다." })
+				? el("p", {
+						class: "hint",
+						text: "이 책 정보로 4지선다 문제를 만듭니다. 개수는 설정 → 출제 설정에서 정합니다. 1~2분 걸립니다.",
+					})
 				: el("p", {
 						class: "status status--warn",
 						text: "먼저 책 정보를 찾아 주세요. 줄거리 없이는 문제를 만들 수 없습니다.",
 					}),
+			readyForQuiz && evidenceWeak
+				? el("p", { class: "hint", text: "근거가 얇으니 만들어진 문제를 꼭 검수해 주세요." })
+				: null,
 			el("button", {
 				class: "btn",
 				type: "button",
@@ -193,7 +209,9 @@ export async function bookDetailPage({ id }) {
 					await refresh();
 					try {
 						const { quiz } = await post("/api/quizzes", { bookId: book.id });
-						await post(`/api/quizzes/${quiz.id}/generate`);
+						// 브라우저 릴레이에서는 검수 화면이 생성 루프를 직접 돌린다.
+						// 서버에게 시작을 시키면 홍콩 콜로에서 나가 Gemini 에 막힌다.
+						if (!(await usesBrowserRelay())) await post(`/api/quizzes/${quiz.id}/generate`);
 						await navigate(`/parent/quizzes/${quiz.id}`);
 						return;
 					} catch (err) {
@@ -207,15 +225,20 @@ export async function bookDetailPage({ id }) {
 		]);
 	}
 
-	/** 시간이 걸리는 AI 호출을 공통으로 처리한다. 진행 중에는 버튼을 잠근다. */
-	async function run(kind, path, successMessage, warn) {
+	/**
+	 * 시간이 걸리는 AI 호출을 공통으로 처리한다. 진행 중에는 버튼을 잠근다.
+	 *
+	 * `execute` 는 브라우저 릴레이 여부를 받아 실제 호출을 수행한다. Gemini 를 쓰는 경우에만
+	 * 브라우저가 직접 부르고, 그 외에는 서버가 부른다.
+	 */
+	async function run(kind, execute, successMessage, warn) {
 		busy = kind;
 		message = "잠시만 기다려 주세요. AI 가 작업 중입니다.";
 		messageKind = "info";
 		await refresh();
 
 		try {
-			const data = await post(path);
+			const data = await execute(await usesBrowserRelay());
 			const warning = warn ? warn(data) : null;
 			// 모델 폴백은 결과 차이를 설명해 주는 정보라 성공 메시지에도 덧붙인다.
 			message = [warning ?? successMessage, data.modelNotice].filter(Boolean).join(" ");

@@ -291,11 +291,14 @@ describe("책 정보 검색", () => {
 		mockResponses({ ...RESEARCH, plotSummary: "", characters: [], keyEvents: [], sources: [] });
 		const res = await client.post(`/api/books/${bookId}/search`);
 
+		// 책을 특정하지 못하면 Brief 가 만들어지지 않고, 그래서 문제도 만들 수 없다.
 		expect(res.body.data.readyForQuiz).toBe(false);
 		expect(res.body.data.sourceCount).toBe(0);
+		expect(res.body.data.evidenceWeak).toBe(true);
 
 		const detail = await client.get(`/api/books/${bookId}`);
 		expect(detail.body.data.book.hasBrief).toBe(false);
+		expect(detail.body.data.readyForQuiz).toBe(false);
 		// 책을 특정하지 못한 결과의 서지정보는 받아들이지 않는다. 엉뚱한 책 정보가 섞이면 안 된다.
 		expect(detail.body.data.book.author).toBeNull();
 		expect(detail.body.data.book.isbn13).toBeNull();

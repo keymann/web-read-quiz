@@ -139,6 +139,19 @@ const call = <T>(
 		options,
 	);
 
+/**
+ * 호출하지 않고 **요청만** 만든다. 브라우저 릴레이가 이걸 받아 자기 키를 붙여 보낸다.
+ *
+ * 본문 조립을 서버가 하므로 프롬프트·스키마·스키마 방언 변환이 클라이언트로 복사되지 않는다.
+ * 브라우저는 받은 것을 그대로 POST 하고 응답을 그대로 돌려주기만 한다.
+ */
+export function buildGeminiCall(request: StructuredRequest): { url: string; body: unknown } {
+	return {
+		url: `${BASE_URL}/models/${encodeURIComponent(request.model)}:generateContent`,
+		body: buildGenerateContentBody(request),
+	};
+}
+
 export const gemini: AiProvider = {
 	name: "gemini",
 	label: "Google Gemini",

@@ -78,6 +78,18 @@
 | PATCH | `/api/books/:id` | PARENT | ✅ 부모가 책 정보 직접 수정 (AI 오인식 보정) |
 | GET | `/api/books/:id/history` | PARENT | 이 책의 퀴즈·풀이 이력 |
 
+## 브라우저 릴레이 (Gemini 전용 · PARENT)
+
+| Method | Path | 설명 |
+| --- | --- | --- |
+| GET | `/api/ai/credential` | ✅ 브라우저가 쓸 Gemini 키·모델. **제공자가 gemini 일 때만** |
+| POST | `/api/ai/plan` | ✅ `{kind, …}` → 브라우저가 그대로 보낼 `{url, body}` |
+| POST | `/api/ai/apply` | ✅ 브라우저가 받아 온 Gemini 원본 응답을 서버가 해석·반영 |
+
+`kind` — plan: `identify` · `research` · `generate` · `validate` / apply: `identify` · `research` · `accept`
+
+자세한 배경은 [architecture.md](architecture.md) 의 "브라우저 릴레이" 참고.
+
 ## 이력
 
 | Method | Path | Role | 설명 |

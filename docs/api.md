@@ -21,6 +21,7 @@
 | `invalid` | 400 | 입력 검증 실패 |
 | `ai_failed` | 502 | AI 호출 실패 |
 | `search_unavailable` | 400 | 이 키로는 웹 검색을 쓸 수 없음 (Gemini 무료 등급) |
+| `region_blocked` | 400 | 서버 위치가 차단됨 (Cloudflare Worker → Gemini) |
 | `internal` | 500 | 그 외 |
 
 ## 인증 · 설정

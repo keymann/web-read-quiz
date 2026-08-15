@@ -85,6 +85,21 @@ const makeClassify = (webSearch: boolean): Classify => (status, body) => {
 		};
 	}
 
+	// Google 이 **요청을 보낸 서버의 위치**를 보고 막는 경우다. 키·모델과 무관하다.
+	// Cloudflare Worker 에서 나가는 요청이 여기에 걸린다(실측 확인). 같은 키로 로컬에서는
+	// 잘 되기 때문에, 이 사실을 알려주지 않으면 키를 몇 번이고 다시 넣어 보게 된다.
+	if (status === 400 && code === "FAILED_PRECONDITION" && message.includes("location")) {
+		return {
+			error: new ApiError(
+				"region_blocked",
+				"이 서버가 있는 지역에서는 Gemini API 를 쓸 수 없습니다. Google 이 요청 위치를 기준으로 막습니다. " +
+					"OpenAI 키를 등록해 주세요. (같은 키라도 개인 PC 의 로컬 실행 환경에서는 동작합니다)",
+				400,
+			),
+			retryable: false,
+		};
+	}
+
 	// Gemini 는 잘못된 키도 400 INVALID_ARGUMENT 로 준다. 상태 코드만으로는 구분되지 않는다.
 	if (status === 400 && (message.includes("API key") || message.includes("API_KEY"))) {
 		return {

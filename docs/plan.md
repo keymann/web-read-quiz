@@ -172,10 +172,17 @@ OpenAI 는 어떤 추론 호출에도 결제 수단이 필요하다. 부모가 �
 | 항목 | 결과 |
 | --- | --- |
 | Gemini 무료 등급 이미지 입력 | ✅ 동작 (표지 4개 항목 정확 추출, confidence 1.0) |
+| **Cloudflare Worker 에서 Gemini 호출** | ❌ **불가**. `400 FAILED_PRECONDITION: User location is not supported`. Google 이 요청을 보낸 서버의 위치를 보고 막는다. 로컬(개인 PC)에서는 같은 키로 잘 된다 |
+| Cloudflare Worker 에서 OpenAI 호출 | ✅ 동작. 지역 제한 없음 |
 | Gemini 무료 등급 구조화 출력 | ✅ 동작 |
 | **Gemini 무료 등급 Google 검색 그라운딩** | ❌ **불가**. 같은 키·같은 모델로 일반 호출은 200 인데 `google_search` 를 붙이면 429 |
 | Google Books API (키 없이) | ❌ 익명 공유 쿼터가 이미 소진되어 있음 |
 | Open Library | ❌ 한국 아동도서 데이터 없음 |
+
+> **배포 환경에서는 Gemini 를 쓸 수 없다.** 위 표의 두 번째 줄이 결정적이다. Gemini 는 로컬 개발에서만
+> 쓸 수 있고, 배포된 서버는 OpenAI 를 써야 한다. 설정 화면과 에러 메시지(`region_blocked`)로 안내한다.
+> Vertex AI(`aiplatform.googleapis.com`)는 호출자 위치 제한이 없지만 API Key 가 아니라 GCP 서비스
+> 계정 OAuth 를 요구해 별도 작업이 필요하다.
 
 그래서 검색이 막히면 **모델이 아는 지식으로 정리하는 폴백**을 넣었다. `groundingUsed: false` 와
 안내 문구를 함께 내려 부모가 근거의 약함을 알 수 있게 한다. 실제 책으로 확인한 결과 널리 알려진

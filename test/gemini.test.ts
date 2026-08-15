@@ -155,6 +155,30 @@ describe("Gemini 키 설정", () => {
 		expect((await client.get("/api/settings")).body.data.ai.configured).toBe(false);
 	});
 
+	// Cloudflare Worker 에서 나가는 요청을 Google 이 위치 기준으로 막는다(실측 확인).
+	// 같은 키로 로컬에서는 잘 되기 때문에, 이 사실을 알려주지 않으면 키를 몇 번이고 다시 넣어 보게 된다.
+	it("서버 위치가 차단되면 그 사실을 그대로 알려준다", async () => {
+		const { client } = await signupParent();
+		mockGeminiModels(1, 400, {
+			error: {
+				code: 400,
+				status: "FAILED_PRECONDITION",
+				message: "User location is not supported for the API use.",
+			},
+		});
+
+		const res = await saveGeminiKey(client);
+
+		expect(res.status).toBe(400);
+		expect(res.body.error.code).toBe("region_blocked");
+		expect(res.body.error.message).toContain("지역");
+		// OpenAI 로 가라는 안내가 함께 있어야 한다
+		expect(res.body.error.message).toContain("OpenAI");
+
+		// 쓸 수 없는 키를 저장해 두면 나중에 더 헷갈린다
+		expect((await client.get("/api/settings")).body.data.ai.configured).toBe(false);
+	});
+
 	it("DB 에는 평문이 아니라 암호문이 저장된다", async () => {
 		const { client } = await signupParent();
 		mockKeySave(1);

@@ -56,7 +56,7 @@ export async function parentHomePage() {
 						el("a", { class: "btn", href: "/parent/books/new", "data-link": true, text: "책 등록하기" }),
 					])
 				: el("div", { class: "empty" }, [
-						el("p", { text: "문제를 만들려면 먼저 AI API Key 를 등록해야 합니다. Gemini 는 결제 수단 없이 무료로 시작할 수 있어요." }),
+						el("p", { text: "문제를 만들려면 먼저 AI API Key 를 등록해야 합니다." }),
 						el("a", { class: "btn", href: "/parent/settings", "data-link": true, text: "설정으로 가기" }),
 					]),
 		]),

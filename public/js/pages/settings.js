@@ -32,7 +32,7 @@ const GUIDES = {
 			"만들어진 키를 복사해서 위에 붙여넣으세요. (AIza… 또는 AQ.… 로 시작합니다)",
 			"결제 수단을 등록하지 않아도 무료 등급으로 바로 쓸 수 있습니다.",
 		],
-		note: "무료 등급에서는 입력한 내용이 Google 제품 개선에 사용될 수 있고, Flash 계열 모델만 쓸 수 있습니다. 이것이 신경 쓰이면 Google Cloud 에서 결제 계정을 연결하세요.",
+		note: "주의: 배포된 서버(Cloudflare)에서는 Google 이 요청 위치를 막아 Gemini 를 쓸 수 없습니다. 개인 PC 에서 직접 띄워 쓸 때만 동작합니다. 또한 무료 등급에서는 입력한 내용이 Google 제품 개선에 사용될 수 있고 웹 검색(그라운딩)을 쓸 수 없습니다.",
 	},
 };
 
@@ -137,7 +137,11 @@ export async function settingsPage(params = {}) {
 			el("h2", { class: "section-title", text: "AI 제공자" }),
 			el("p", {
 				class: "hint",
-				text: "둘 중 하나의 API Key 만 있으면 됩니다. Gemini 는 결제 수단 없이 무료로 시작할 수 있고, OpenAI 는 상위 모델을 쓸 수 있습니다.",
+				text: "둘 중 하나의 API Key 만 있으면 됩니다.",
+			}),
+			el("p", {
+				class: "status status--warn",
+				text: "배포된 서버에서는 Gemini 를 쓸 수 없습니다. Google 이 서버 위치를 기준으로 요청을 막습니다. OpenAI 키를 등록해 주세요. (개인 PC 에서 직접 띄운 경우에는 Gemini 도 동작합니다)",
 			}),
 			el(
 				"div",

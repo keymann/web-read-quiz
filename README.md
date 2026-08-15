@@ -35,9 +35,12 @@ docs/               설계 문서
 
 AI 호출은 **전부 Worker 안에서만** 일어난다. API Key 는 클라이언트로 나가지 않는다.
 
-AI 제공자는 **OpenAI** 와 **Google Gemini** 중에 부모가 고른다. Gemini 는 결제 수단 없이
-무료 등급으로 시작할 수 있고(이미지 인식·문제 생성 모두 가능), OpenAI 는 상위 모델을 쓸 수 있다.
-자세한 차이와 제약은 [docs/plan.md](docs/plan.md) 의 Phase 3.5 참고.
+AI 제공자는 **OpenAI** 와 **Google Gemini** 중에 부모가 고른다.
+
+> ⚠️ **배포 환경(Cloudflare Workers)에서는 Gemini 를 쓸 수 없다.** Google 이 요청을 보낸 서버의
+> 위치를 보고 막는다(`FAILED_PRECONDITION: User location is not supported`). 같은 키라도 로컬
+> 개발 환경에서는 잘 동작하므로, **배포된 서비스는 OpenAI 키를 써야 한다.**
+> 자세한 내용은 [docs/plan.md](docs/plan.md) 의 Phase 3.5 참고.
 
 ## 문서
 

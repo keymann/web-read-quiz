@@ -30,6 +30,7 @@ export const COOLDOWN_MS = 20 * 60 * 1000;
  * - `READY`       지금 새 문제를 만들 수 있다
  * - `PREPARING`   새 판이 만들어졌고 문제를 만드는 중이다
  * - `NEEDS_PARENT` 새 판은 만들어졌지만 문제는 부모가 만들어 줘야 한다
+ * - `FAILED`      만들려다 실패했다. 기다려도 저절로 되지 않는다
  * - `WAITING`     새 판의 문제가 준비되어 풀 수 있다
  */
 export type RetryStatus =
@@ -38,6 +39,7 @@ export type RetryStatus =
 	| "READY"
 	| "PREPARING"
 	| "NEEDS_PARENT"
+	| "FAILED"
 	| "WAITING";
 
 export interface RetryState {
@@ -51,6 +53,8 @@ export interface RetryState {
 	/** 다음 판의 문항이 몇 개 준비됐는지. `PREPARING` 동안 진행을 보여준다. */
 	prepared: number;
 	total: number;
+	/** `FAILED` 일 때 서버가 남긴 사유. 부모에게 그대로 보여준다. */
+	error: string | null;
 }
 
 /**
@@ -108,6 +112,7 @@ export async function state(
 		nextAssignmentId: null,
 		prepared: 0,
 		total: 0,
+		error: null,
 	};
 
 	if (attempt.passed === 1) return idle;
@@ -125,12 +130,13 @@ export async function state(
 		const total = next?.question_count ?? 0;
 
 		return {
-			status: prepared >= total && total > 0 ? "WAITING" : await preparingStatus(env, quiz),
+			status: await pendingStatus(env, quiz, next, prepared, total),
 			waitSeconds: 0,
 			availableAt: null,
 			nextAssignmentId: pending.assignmentId,
 			prepared,
 			total,
+			error: next?.generation_error ?? null,
 		};
 	}
 
@@ -144,10 +150,32 @@ export async function state(
 		nextAssignmentId: null,
 		prepared: 0,
 		total: 0,
+		error: null,
 	};
 }
 
-async function preparingStatus(env: AppEnv, quiz: quizzesRepo.QuizRow): Promise<RetryStatus> {
+/**
+ * 만들어 둔 다음 판이 지금 어떤 상태인지.
+ *
+ * 문항이 다 찼으면 풀 수 있고, 아직이면 만드는 중이다 — 여기까지는 단순하다. 문제는
+ * **실패한 경우**다. 서버가 만들다 실패해도(크레딧 부족·키 만료 등) 문항 수는 그대로 0이라
+ * 아이 화면은 "만들고 있어요" 를 영원히 띄운다. 실제로 배포 환경에서 그렇게 보였다.
+ *
+ * 그래서 퀴즈에 남은 실패 사유를 함께 본다. 기다려도 저절로 되지 않는 상태와 곧 될 상태는
+ * 아이에게 다른 말을 해줘야 한다.
+ */
+async function pendingStatus(
+	env: AppEnv,
+	quiz: quizzesRepo.QuizRow,
+	next: quizzesRepo.QuizRow | null,
+	prepared: number,
+	total: number,
+): Promise<RetryStatus> {
+	if (total > 0 && prepared >= total) return "WAITING";
+
+	// 만들다 멈췄다. 부모가 손을 대야 한다.
+	if (next?.generation_error && next.status !== "GENERATING") return "FAILED";
+
 	return (await serverCanGenerate(env, quiz.parent_user_id)) ? "PREPARING" : "NEEDS_PARENT";
 }
 
@@ -232,6 +260,7 @@ export async function start(
 			nextAssignmentId: assignmentId,
 			prepared: 0,
 			total: previous.question_count,
+			error: null,
 		},
 		generateQuizId: canGenerate ? quizId : null,
 	};

@@ -43,6 +43,15 @@ export function field(label, inputProps) {
 	return { wrap, input };
 }
 
+export function selectField(label, options, selected) {
+	const select = el("select", { class: "select" });
+	for (const value of options) {
+		select.append(el("option", { value, text: value, selected: value === selected }));
+	}
+	const wrap = el("label", { class: "field" }, [el("span", { class: "field__label", text: label }), select]);
+	return { wrap, select };
+}
+
 export function header(title, actions = []) {
 	return el("header", { class: "page-header" }, [
 		el("h1", { class: "page-title", text: title }),

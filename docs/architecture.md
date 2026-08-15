@@ -53,6 +53,9 @@
   - `SameSite=Strict` 가 아니라 `Lax` 인 이유: Strict 면 외부 링크로 앱에 처음 들어올 때 쿠키가 실리지 않아
     로그아웃된 것처럼 보인다. 크로스 사이트 POST 는 Lax 로도 막히고, 그 위에 Origin 검사가 한 겹 더 있다.
 - 토큰의 `jti` 를 KV(`session:<jti>`)에 TTL(14일)과 함께 저장한다. 로그아웃/강제 만료는 KV 키 삭제로 처리한다.
+- 매 요청마다 **사용자 행이 아직 존재하고 활성 상태인지** 확인한다. 이 확인이 없으면 부모가 아이를
+  삭제해도 그 아이가 이미 들고 있던 로그인이 토큰 만료(14일)까지 살아 있다. 확인에 실패하면 KV
+  세션 레코드도 함께 지워 다음 요청은 D1 까지 가지 않는다. role·표시이름도 토큰이 아니라 이 행에서 읽는다.
 - 모든 `/api/*` 요청은 쿠키에서 신원(`Principal`)을 복원한다.
   **클라이언트가 body/query 로 보낸 `parentId`·`childId` 는 어떤 경우에도 신뢰하지 않는다.**
 - 변경 요청(POST/PATCH/DELETE)은 `Origin` 헤더가 자기 오리진과 일치하는지 추가로 확인한다.
@@ -83,11 +86,16 @@ CSP 는 `default-src 'self'` 기반이며 인라인 스크립트·인라인 스�
 
 API Key 는 **부모가 설정 화면에서 직접 입력**한다(§25). 저장 방식:
 
-1. 입력받은 키를 `ENCRYPTION_KEY`(Worker Secret) 기반 AES-GCM 으로 암호화
-2. `parent_settings.openai_api_key_cipher` + `..._iv` 에 저장, 뒤 4자리만 별도 컬럼에 평문 보관
-3. 조회 API 는 `{ configured: true, last4: "abcd" }` 만 반환. **복호화된 키는 절대 응답에 담지 않는다**
+1. 저장 **전에** OpenAI `GET /v1/models` 로 키가 실제로 동작하는지 확인한다
+2. `ENCRYPTION_KEY`(Worker Secret, base64 32바이트) 기반 AES-GCM 으로 암호화. IV 는 매번 새로 뽑아
+   같은 키를 다시 저장해도 암호문이 달라진다
+3. `parent_settings.openai_api_key_cipher` + `..._iv` 에 저장, 뒤 4자리만 별도 컬럼에 평문 보관
+4. 조회 API 는 `{ configured: true, last4: "abcd" }` 만 반환. **복호화된 키는 절대 응답에 담지 않는다**
 
-AI 호출이 필요한 시점에만 서버에서 복호화해 `Authorization` 헤더로 사용한다.
+복호화된 키가 나가는 통로는 `src/services/settings.ts` 의 `getApiKey` 하나뿐이고, 그 반환값은
+AI 서비스가 `Authorization` 헤더를 만들 때만 쓴다. 라우트가 실수로 응답에 담을 경로 자체를 없앴다.
+
+DB 가 통째로 유출돼도 `ENCRYPTION_KEY` 없이는 키를 복원할 수 없다.
 
 ## 백그라운드 생성
 

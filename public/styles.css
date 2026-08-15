@@ -349,6 +349,99 @@ body {
 	display: none;
 }
 
+/* ── 책 ──────────────────────────────────────────────── */
+
+/* 파일 input 은 감추고 label 을 버튼처럼 쓴다. display:none 이면 접근성 트리에서도 사라진다. */
+.visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+.preview {
+	margin: var(--space) 0;
+}
+
+.preview__img {
+	display: block;
+	width: 100%;
+	max-width: 320px;
+	border-radius: var(--radius-lg);
+	border: 1px solid var(--border);
+}
+
+.book-head {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space);
+	align-items: flex-start;
+}
+
+.book-cover {
+	width: 140px;
+	max-width: 40%;
+	border-radius: var(--radius);
+	border: 1px solid var(--border);
+}
+
+.book-head__body {
+	flex: 1 1 240px;
+}
+
+.book-thumb {
+	width: 44px;
+	height: 60px;
+	object-fit: cover;
+	border-radius: 6px;
+	border: 1px solid var(--border);
+	background: var(--bg-subtle);
+}
+
+.source-excerpt {
+	flex-basis: 100%;
+	margin: 8px 0 0;
+	padding: 10px 14px;
+	border-radius: var(--radius);
+	background: var(--bg-subtle);
+	color: var(--text-muted);
+	font-size: 14px;
+	/* 발췌가 길어도 목록이 무너지지 않게 접어 둔다 */
+	max-height: 7.5em;
+	overflow-y: auto;
+}
+
+/* ── 설정 ────────────────────────────────────────────── */
+
+.status {
+	margin: 0 0 10px;
+	padding: 10px 14px;
+	border-radius: var(--radius);
+	font-size: 15px;
+}
+
+.status--ok {
+	background: var(--primary-soft);
+	color: var(--primary-hover);
+}
+
+.status--warn {
+	background: var(--bg-subtle);
+	color: var(--text-muted);
+}
+
+.steps {
+	margin: 0 0 12px;
+	padding-left: 20px;
+	display: grid;
+	gap: 8px;
+	font-size: 15px;
+}
+
 /* ── 로그인 ──────────────────────────────────────────── */
 
 .auth {
@@ -385,4 +478,133 @@ body {
 	:root {
 		--space: 24px;
 	}
+}
+
+/* ── 문제 검수 ────────────────────────────────────────── */
+
+.progress {
+	display: block;
+	width: 100%;
+	height: 10px;
+	margin: 12px 0;
+	border: 0;
+	border-radius: 999px;
+	background: var(--bg-subtle);
+	accent-color: var(--primary);
+}
+
+.progress::-webkit-progress-bar {
+	border-radius: 999px;
+	background: var(--bg-subtle);
+}
+
+.progress::-webkit-progress-value {
+	border-radius: 999px;
+	background: var(--primary);
+}
+
+.questions {
+	margin: 0;
+	padding-left: 22px;
+	display: grid;
+	gap: 18px;
+}
+
+.question {
+	padding-bottom: 18px;
+	border-bottom: 1px solid var(--border);
+}
+
+.question:last-child {
+	border-bottom: 0;
+	padding-bottom: 0;
+}
+
+.question__text {
+	margin: 0 0 10px;
+	font-weight: 600;
+}
+
+.question__choices {
+	margin: 0 0 10px;
+	padding-left: 20px;
+	display: grid;
+	gap: 4px;
+	color: var(--text-muted);
+}
+
+/* 부모 검수 화면에서만 정답을 드러낸다. 아이 화면에는 정답이 아예 내려가지 않는다. */
+.question__choices .is-answer {
+	color: var(--primary-hover);
+	font-weight: 600;
+}
+
+.question__meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin: 0 0 8px;
+}
+
+.tag {
+	padding: 2px 10px;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	font-size: 13px;
+	color: var(--text-muted);
+}
+
+.tag--ok {
+	border-color: var(--primary-border);
+	background: var(--primary-soft);
+	color: var(--primary-hover);
+}
+
+.question__note {
+	margin: 0 0 4px;
+	color: var(--text-muted);
+	font-size: 14px;
+}
+
+/* ── 탭 ──────────────────────────────────────────────── */
+
+.tabs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin-bottom: var(--space);
+	padding: 4px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--surface);
+}
+
+.tab {
+	flex: 1 1 auto;
+	padding: 10px 14px;
+	border-radius: calc(var(--radius) - 4px);
+	color: var(--text-muted);
+	font-weight: 600;
+	font-size: 15px;
+	text-align: center;
+	text-decoration: none;
+}
+
+.tab:hover {
+	background: var(--bg-subtle);
+}
+
+.tab.is-active {
+	background: var(--primary);
+	color: var(--on-primary);
+}
+
+.tab:focus-visible {
+	outline: 3px solid var(--green-300);
+	outline-offset: 2px;
+}
+
+.tag--warn {
+	border-color: var(--warning);
+	color: var(--warning);
 }

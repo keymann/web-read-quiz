@@ -19,7 +19,8 @@ export default defineWorkersConfig(async () => {
 						bindings: {
 							TEST_MIGRATIONS: migrations,
 							SESSION_SECRET: "test-session-secret-not-used-in-production",
-							ENCRYPTION_KEY: "dGVzdC1lbmNyeXB0aW9uLWtleS0zMi1ieXRlcy0hIQ==",
+							// base64 로 정확히 32바이트여야 한다. "test-encryption-key-32-bytes-!!!"
+							ENCRYPTION_KEY: "dGVzdC1lbmNyeXB0aW9uLWtleS0zMi1ieXRlcy0hISE=",
 							INVITE_CODE: "",
 						},
 					},

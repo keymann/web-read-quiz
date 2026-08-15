@@ -43,7 +43,7 @@ users(PARENT)
 
 | 조건 | 강제 방법 |
 | --- | --- |
-| 1. 퀴즈당 활성 문제 정확히 20개 | `idx_questions_quiz_number_active` 부분 유니크 인덱스 + service 레이어의 `assertTwentyActive()` (APPROVED 전이 시 검사) |
+| 1. 퀴즈당 활성 문제가 설정한 개수만큼 | `idx_questions_quiz_number_active` 부분 유니크 인덱스 + service 레이어 검사. 개수는 `quizzes.question_count` 에 퀴즈 생성 시점의 설정값이 복사되어 있다(기본 20) |
 | 2. `correctChoice` 는 1~4 | `CHECK (correct_choice BETWEEN 1 AND 4)` — `questions` / `question_versions` / `question_answers` 모두 |
 | 3. 아이는 자신에게 ASSIGNED 된 퀴즈만 | `quiz_assignments.child_id = principal.childId` 를 모든 쿼리 `WHERE` 에 포함 |
 | 4. 다른 아이 퀴즈 조회 불가 | 동일 |

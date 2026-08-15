@@ -14,15 +14,15 @@
 
 | # | 항목 | 판단 | 근거 |
 | --- | --- | --- | --- |
-| 1 | **점수 공식** | `score = correctCount × 10` (최대 100) | §17 의 예시가 `10/20 → 100점`, `8/20 → 80점`. 20문항 대비 백분율(50점/40점)이 아니다. 10개 정답 시 즉시 종료(§15)와도 맞는다 |
+| 1 | **점수 공식** | `score = round(correctCount / passCount × 100)`, 최대 100 | §17 의 예시가 `10/20 → 100점`, `8/20 → 80점`. 20문항 대비 백분율(50점/40점)이 아니라 **통과 기준 대비 진척도**다. 기본값 20문항/10통과에서 정확히 §17 의 숫자가 나오고, 부모가 문항 수를 바꿔도 그대로 성립한다 |
 | 2 | **아이 로그인** | 아이도 `users` 행을 갖는 독립 계정. `children` 은 프로필이며 `child_user_id` 로 계정과 연결 | §3 에서 Child 가 로그인한다. 부모가 아이 추가 시 아이 로그인 ID/비밀번호를 함께 만든다 |
 | 3 | **재도전 시 새 문제** | 같은 책에 대해 `round + 1` 의 새 Quiz 를 생성하고 새 Assignment/Attempt 를 만든다 | §18 "20개의 문제는 새로운 문제로 대체한다". 기존 Quiz·Attempt 는 건드리지 않는다 |
 | 4 | **재도전 비용** | 재도전마다 AI 생성이 다시 돈다 | Book Brief 를 재사용해 1·2단계를 건너뛰므로 호출은 회당 2~3회 |
 | 5 | **10개 정답 조기 종료** | 10번째 정답 시점에 Attempt 를 즉시 COMPLETED 로 확정하고 격려 화면 | §15. 남은 문항은 미응답으로 남는다 |
 | 6 | **문항별 즉시 채점** | 답 선택 → 정오 + 해설 표시 → 다음 문제 | §15 "문제를 풀면 다음 문제로 넘어가기 전에 결과를 보여준다" |
 | 7 | **이전 문제 보기** | 되돌아가서 볼 수는 있으나 다시 답할 수 없다 (읽기 전용) | §15 두 문장을 동시에 만족시키는 유일한 해석. DB 유니크 인덱스로도 강제 |
-| 8 | **웹 검색 수단** | 공개 서지 API(Open Library/Google Books) + OpenAI 내장 `web_search` 툴 | §2 "서버 측 Web Search API". 부모 키 하나만 받으면 되고 별도 검색 키가 필요 없다 |
-| 9 | **모델 ID** | 코드에 고정하지 않고 설정 화면에서 선택 | 모델 라인업이 자주 바뀐다. `/v1/models` 조회로 선택지 구성 |
+| 8 | **웹 검색 수단** | 제공자 내장 검색 툴 (OpenAI `web_search` / Gemini Google 검색 그라운딩). 막히면 모델 지식 폴백 | §2 "서버 측 Web Search API". 부모 키 하나만 받으면 되고 별도 검색 키가 필요 없다. **단 Gemini 무료 등급에서는 그라운딩이 막힌다 — Phase 3.5 참고** |
+| 9 | **모델 ID** | 코드에 고정하지 않고 설정 화면에서 선택. 실패하면 다른 모델로 자동 폴백 | 모델 라인업이 자주 바뀌고 인기 모델은 과부하가 잦다 |
 | 10 | **문제 삭제** | 행 삭제가 아니라 `is_active = 0` | §21.7·§21.8 과거 기록 보존 |
 
 ## 2. Phase 계획
@@ -83,49 +83,117 @@ Phase 1 에서 확정한 사항:
 
 ---
 
-### Phase 2 — 부모 설정 (OPENAI_API_KEY)
+### Phase 2 — 부모 설정 (OPENAI_API_KEY) ✅ 완료
 
 | 파일 | 내용 |
 | --- | --- |
-| `src/utils/crypto.ts` | AES-GCM 암복호화 (`ENCRYPTION_KEY` 기반) |
-| `src/repositories/settings.ts` | `parent_settings` 접근 |
-| `src/ai/client.ts` | OpenAI 호출 래퍼 (재시도·타임아웃·로깅) |
-| `src/ai/models.ts` | 기본 모델 상수 + `/v1/models` 조회 |
-| `src/routes/settings.ts` | 키 저장/삭제/조회, 모델 목록 |
-| `public/js/pages/settings.js` | 설정 화면 + **키 발급 가이드**(§25) |
+| `src/utils/crypto.ts` | AES-GCM 암복호화 (`ENCRYPTION_KEY` 기반, 매번 새 IV) |
+| `src/repositories/settings.ts` | `parent_settings` 접근 (upsert) |
+| `src/ai/client.ts` | OpenAI 호출 래퍼 (타임아웃·백오프 재시도·에러 변환) |
+| `src/ai/models.ts` | 접두사 선호 목록 + `/v1/models` 조회·필터 |
+| `src/services/settings.ts` | 키 검증·보관, 모델 선택. **복호화 통로는 `getApiKey` 하나** |
+| `src/routes/settings.ts` | 키 저장/삭제/조회, 모델 목록/저장 |
+| `public/js/pages/settings.js` | 설정 화면 + 키 발급 가이드(§25) |
+| `test/settings.test.ts` | 통합 테스트 15개 (fetchMock 으로 OpenAI 대체) |
 
-키 저장 시 OpenAI 로 1회 검증 호출을 보내 유효한 키인지 확인한 뒤 저장한다.
-조회 응답에는 `configured`·`last4` 만 담고 원문은 절대 내려보내지 않는다.
+**완료 기준 달성** — 키 저장 시 OpenAI 로 검증 후 저장, `GET /api/settings` 는
+`{configured, last4, model, visionModel}` 만 반환, D1 에는 암호문만 존재.
 
-설정 화면 가이드 문구에 포함할 것:
-`platform.openai.com` → API keys → Create new secret key → `sk-` 로 시작하는 키 복사 →
-결제 수단 등록 필요 → 키는 생성 직후 1회만 표시됨 → 유출 시 즉시 폐기.
+Phase 2 에서 확정한 사항:
 
-**완료 기준** — 키 저장 후 `GET /api/settings` 가 `{configured:true, last4}` 반환. D1 에는 암호문만 존재.
+- **모델 ID 를 코드에 고정하지 않는다.** 접두사 선호 목록으로 계정의 실제 모델 목록에서 고른다.
+  라인업이 바뀌어도 배열에 문자열 하나만 추가하면 되고, 그 모델이 없는 계정은 다음 순위를 쓴다.
+  실제 계정으로 확인한 결과 59개 목록이 25개로 줄고, 구조화 출력을 못 쓰는 `*-instruct` 와
+  대상이 조용히 바뀌는 `*-chat-latest`, 날짜 스냅샷이 후보에서 빠진다.
+- 키 저장 **전에** `GET /v1/models` 로 검증한다. 잘못된 키가 저장되면 문제 생성 단계에서야
+  실패가 드러나 진단이 어렵다.
+- 복호화된 키가 나가는 통로는 `services/settings.getApiKey` 하나뿐이다. 라우트가 실수로 응답에
+  담을 경로 자체를 없앴다.
+- OpenAI 4xx 는 재시도하지 않는다. 429·5xx 만 1→2→4초 백오프로 최대 3회.
+
+> `ENCRYPTION_KEY` 는 base64 로 **정확히 32바이트**여야 한다. 길이가 틀리면 키 저장이 500 으로 실패하며,
+> 서버 로그에 길이 진단이 남는다. `openssl rand -base64 32` 로 생성할 것.
 
 ---
 
-### Phase 3 — 책 등록 · 식별 · 정보 수집
+### Phase 3 — 책 등록 · 식별 · 정보 수집 ✅ 완료
 
 | 파일 | 내용 |
 | --- | --- |
-| `src/utils/image.ts` | MIME 매직바이트 검사, 크기 제한, 축소 |
+| `migrations/0002_book_analysis.sql` | `cover_mime` · `brief` · `analyzed_at` · `searched_at` 추가 |
+| `src/utils/image.ts` | 매직 바이트 포맷 판정, 8MB 상한, data URL 변환 |
 | `src/repositories/books.ts` | `books` · `book_sources` |
-| `src/ai/vision.ts` | 표지 → 서지정보 추출 (Structured Output) |
-| `src/search/bibliographic.ts` | Open Library / Google Books ISBN 조회 |
+| `src/ai/responses.ts` | Responses API + Structured Output 공통 호출부 |
+| `src/ai/schemas.ts` | 식별·조사 JSON Schema |
+| `src/ai/vision.ts` | 표지 → 서지정보 추출 |
+| `src/search/bibliographic.ts` | Google Books / Open Library ISBN 조회 (키 불필요) |
 | `src/search/web.ts` | OpenAI `web_search` 기반 줄거리·서평 수집 |
 | `src/services/book.ts` | 식별 → 검색 → 병합 → **Book Brief** 생성 |
-| `src/routes/books.ts` | 업로드 / analyze / search / cover 프록시 |
-| `public/js/pages/book-add.js` · `book-analysis.js` | 카메라·갤러리·파일 업로드 + 결과 확인/보정 |
+| `src/routes/books.ts` | 업로드 / 목록 / 상세 / analyze / search / cover 프록시 |
+| `public/js/image.js` | 브라우저 canvas 축소 (긴 변 1600px, JPEG) |
+| `public/js/pages/book-add.js` · `book-detail.js` · `book-list.js` | 화면 |
+| `test/books.test.ts` | 통합 테스트 16개 |
 
-카메라 입력은 `<input type="file" accept="image/*" capture="environment">` 로 처리한다(빌드 없는 환경에서 가장 단순하고 전 기기에서 동작).
+카메라 입력은 `<input type="file" accept="image/*" capture="environment">` 로 처리한다
+(빌드 없는 환경에서 가장 단순하고 전 기기에서 동작).
 
-**완료 기준** — 표지 촬영 → 제목·저자·출판사·ISBN 이 채워지고, 부모가 틀린 값을 고칠 수 있고,
-`book_sources` 에 출처 URL 이 2건 이상 쌓인다.
+**완료 기준 달성** — 표지 업로드 → R2 저장 → AI 식별 → 부모 보정 → 웹 검색 → `book_sources` 적재 →
+Book Brief 생성까지 동작. 자료가 2건 미만이면 `readyForQuiz = false` 로 문제 생성을 막는다.
+
+Phase 3 에서 확정한 사항:
+
+- **이미지 축소는 브라우저에서 한다.** Workers 런타임에 이미지 디코더가 없다. 클라이언트가
+  긴 변 1600px 로 줄여 올리고, 서버는 매직 바이트로 포맷을 다시 판정한다 — 축소는 최적화일 뿐
+  신뢰 경계가 아니다.
+- **책을 특정하지 못한(`found: false`) 검색 결과의 서지정보는 받아들이지 않는다.** 엉뚱한 책의
+  정보가 섞이면 부모가 알아채기 어렵고 그대로 문제 생성 입력이 된다.
+- **부모가 고친 값을 검색 결과가 덮어쓰지 않는다.** 우선순위는 기존 값 > 공개 서지 API > 웹 검색.
+- 검색을 다시 돌리면 이전 출처를 지우고 새로 쌓는다. 오래된 근거가 섞이지 않게.
 
 ---
 
-### Phase 4 — AI 문제 생성 파이프라인
+### Phase 3.5 — AI 제공자 추가 (Gemini) ✅ 완료
+
+OpenAI 는 어떤 추론 호출에도 결제 수단이 필요하다. 부모가 부담 없이 시작할 수 있는 경로가 하나는
+있어야 해서 Gemini 를 붙였다. 상위 레이어는 `AiProvider` 인터페이스만 본다.
+
+| 파일 | 내용 |
+| --- | --- |
+| `migrations/0003_ai_provider.sql` | `ai_provider` 추가 + 키·모델 컬럼을 제공자 중립 이름으로 |
+| `src/ai/types.ts` | `AiProvider` 인터페이스 |
+| `src/ai/http.ts` | 타임아웃·백오프 재시도 공통부 |
+| `src/ai/openai.ts` · `gemini.ts` | 제공자 구현 |
+| `src/ai/keyshape.ts` | 키 형식 사전 검사 |
+| `src/ai/fallback.ts` | 모델 폴백 |
+| `test/gemini.test.ts` | 통합 테스트 14개 |
+
+**실측으로 확인한 것** — 문서만 보고는 알 수 없던 것들이다.
+
+| 항목 | 결과 |
+| --- | --- |
+| Gemini 무료 등급 이미지 입력 | ✅ 동작 (표지 4개 항목 정확 추출, confidence 1.0) |
+| Gemini 무료 등급 구조화 출력 | ✅ 동작 |
+| **Gemini 무료 등급 Google 검색 그라운딩** | ❌ **불가**. 같은 키·같은 모델로 일반 호출은 200 인데 `google_search` 를 붙이면 429 |
+| Google Books API (키 없이) | ❌ 익명 공유 쿼터가 이미 소진되어 있음 |
+| Open Library | ❌ 한국 아동도서 데이터 없음 |
+
+그래서 검색이 막히면 **모델이 아는 지식으로 정리하는 폴백**을 넣었다. `groundingUsed: false` 와
+안내 문구를 함께 내려 부모가 근거의 약함을 알 수 있게 한다. 실제 책으로 확인한 결과 널리 알려진
+아동도서는 이 경로만으로도 줄거리·인물·사건이 정확하게 나온다.
+
+Phase 3.5 에서 확정한 사항:
+
+- **키 형식을 화이트리스트로 막지 않는다.** Google 키는 `AIza…` 39자만 있는 줄 알았는데 `AQ.…` 53자도
+  발급된다. 형식 검사는 "다른 제공자의 키를 붙여넣은" 명백한 실수만 잡고, 유효성은 제공자 API 가 판정한다.
+- **`found` 를 모델에게 묻지 않는다.** 스키마 첫 필드로 두면 내용을 떠올리기 전에 판단을 확정해 버려
+  아는 책인데도 false 로 빠진다. 서버가 채워진 내용을 보고 도출한다.
+- **프롬프트에 제목·저자를 항상 넣는다.** ISBN 만 보내면 검색 없이는 책을 알아볼 방법이 없다.
+- **모델 폴백** — 503·404·429 는 다른 모델로 넘어가면 대부분 그냥 성공한다. 폴백이 일어나면 부모에게 알린다.
+  키 오류·크레딧 부족·그라운딩 권한 문제는 모델을 바꿔도 같으므로 폴백하지 않는다.
+
+---
+
+### Phase 4 — AI 문제 생성 파이프라인 ✅ 완료
 
 | 파일 | 내용 |
 | --- | --- |
@@ -139,8 +207,47 @@ Phase 1 에서 확정한 사항:
 
 상세 설계는 `docs/ai-question-generation.md`.
 
-**완료 기준** — 책 하나로 `POST /generate` 호출 시 검증 통과한 20문항이 REVIEW 상태로 저장되고,
-`question_histories` 에 20건의 `AI_GENERATED` 가 남는다. 정상 경로 OpenAI 호출 4회 이내.
+**완료 기준 달성** — 실제 Gemini 무료 키로 `마당을 나온 암탉` 20문항 생성 확인(약 90초).
+`question_histories` 에 20건의 `AI_GENERATED`, `question_versions` 에 v1 20건, `question_validations`
+20건이 함께 남는다. Book Brief 가 이미 있으므로 **정상 경로 AI 호출은 2회**(생성 1 + 검증 1)다.
+
+Phase 4 에서 확정한 사항:
+
+- **정답 위치는 서버가 보장한다.** §9-10 "정답을 1번에 편중시키지 마라"를 모델에게 부탁하는 대신
+  선택지를 재배열해 1·2·3·4번에 정확히 5문항씩 오게 만든다. 선택지 내용은 그대로라 의미는 변하지 않는다.
+  실측에서 모델이 전부 1번을 정답으로 내놓아도 5/5/5/5 가 나온다.
+- **AI 검증 전에 서버가 먼저 거른다.** 선택지 중복·근거 누락·제목/저자 직접 언급(§7 금지 유형)·
+  기존 문항과의 중복(자카드 0.7)은 코드로 잡는다. 여기서 줄어든 만큼 검증 호출이 싸진다.
+- **탈락분만 재생성한다.** 20문항을 통째로 다시 만들지 않는다. 재생성 프롬프트에 살아남은 문항과
+  탈락 사유를 함께 넣어 같은 실수를 반복하지 않게 한다. 최대 3라운드.
+- **생성은 `ctx.waitUntil` 로 백그라운드에서 돈다.** 202 를 즉시 돌려주고 클라이언트가 폴링한다.
+  동시에 두 번 눌러도 하나만 통과하도록 상태 확인과 전이를 한 UPDATE 문으로 처리한다.
+- 백그라운드에서 터진 예외는 아무도 못 보므로 반드시 `generation_error` 에 남긴다.
+
+---
+
+### Phase 4.5 — 출제 설정 · 문제/답 이력 ✅ 완료
+
+요구사항은 20문제 중 10문제 통과를 고정값으로 쓰지만(§17·§21.1), 아이의 학년과 책 분량에 따라
+부모가 조절할 수 있어야 한다는 요청에 따라 설정으로 뺐다. 기본값은 요구사항 그대로 20/10.
+
+| 파일 | 내용 |
+| --- | --- |
+| `migrations/0004_quiz_settings.sql` | `parent_settings` 와 `quizzes` 에 `question_count` · `pass_count` |
+| `src/repositories/history.ts` · `src/routes/history.ts` | 문제·답 이력 조회 |
+| `public/js/pages/settings-quiz.js` · `settings-history.js` | 설정 탭 |
+| `test/quiz-settings.test.ts` | 통합 테스트 14개 |
+
+확정한 사항:
+
+- **설정값을 퀴즈에 복사해 둔다.** 설정을 나중에 바꿔도 이미 만든 퀴즈의 통과 기준이 따라 바뀌면
+  아이가 이미 푼 결과의 합격 여부가 뒤집힌다. `quizzes.question_count` · `pass_count` 에 스냅샷한다.
+- 허용 범위는 5~30문항. 아래로는 통과 기준을 세울 수 없고, 위로는 아이의 집중력과 AI 응답 길이가
+  감당하지 못한다. 통과 개수는 1 이상 문항 수 이하.
+- 유형·난이도 분배 힌트는 문항 수에 비례해 계산한다(8종 최소 `count/8`문항, Easy·Hard 각 30%).
+- **답안 이력은 `question_versions` 를 조인한다.** `questions` 를 그대로 읽으면 부모가 나중에 고친
+  문장이 과거 기록에 섞인다(§22). 테스트로 이 점을 못박아 두었다.
+- 설정 탭은 경로(`/parent/settings/:tab`)에 담는다. 새로고침·뒤로가기가 그대로 동작한다.
 
 ---
 

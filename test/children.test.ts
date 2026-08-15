@@ -45,6 +45,18 @@ describe("아이 관리", () => {
 		expect((await client.post("/api/auth/login", { loginId, password })).status).toBe(403);
 	});
 
+	// 로그인을 막는 것만으로는 부족하다. 이미 로그인해 둔 세션도 그 자리에서 끊겨야 한다.
+	it("삭제하면 아이가 이미 들고 있던 세션도 즉시 끊긴다", async () => {
+		const { client: parent } = await signupParent();
+		const { childId, client: child } = await addChild(parent);
+
+		expect((await child.get("/api/auth/me")).status).toBe(200);
+
+		await parent.del(`/api/children/${childId}`);
+
+		expect((await child.get("/api/auth/me")).status).toBe(401);
+	});
+
 	it("학년은 1~6 만 받는다", async () => {
 		const { client: parent } = await signupParent();
 		const res = await parent.post("/api/children", {

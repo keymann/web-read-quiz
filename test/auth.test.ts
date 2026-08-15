@@ -1,3 +1,4 @@
+import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { Client, addChild, signupParent, uniqueId } from "./helpers";
 
@@ -62,6 +63,16 @@ describe("인증", () => {
 
 	it("로그인하지 않으면 401", async () => {
 		const client = new Client("10.0.9.5");
+		expect((await client.get("/api/auth/me")).status).toBe(401);
+	});
+
+	// 세션 토큰은 유효한데 사용자 행이 사라진 경우. 그대로 두면 뒤쪽 쿼리가 외래키 오류로 500 을 낸다.
+	it("사용자 행이 사라진 세션은 401 로 처리된다", async () => {
+		const { client, loginId } = await signupParent();
+		expect((await client.get("/api/auth/me")).status).toBe(200);
+
+		await env.DB.prepare("DELETE FROM users WHERE login_id = ?").bind(loginId).run();
+
 		expect((await client.get("/api/auth/me")).status).toBe(401);
 	});
 

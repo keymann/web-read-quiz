@@ -19,7 +19,8 @@
 | `conflict` | 409 | 상태 전이 불가 (예: COMPLETED 퀴즈 수정) |
 | `rate_limited` | 429 | Rate Limit 초과 |
 | `invalid` | 400 | 입력 검증 실패 |
-| `ai_failed` | 502 | OpenAI 호출 실패 |
+| `ai_failed` | 502 | AI 호출 실패 |
+| `search_unavailable` | 400 | 이 키로는 웹 검색을 쓸 수 없음 (Gemini 무료 등급) |
 | `internal` | 500 | 그 외 |
 
 ## 인증 · 설정
@@ -32,10 +33,21 @@
 | POST | `/api/auth/login` | – | ✅ 로그인 → 세션 쿠키 |
 | POST | `/api/auth/logout` | any | ✅ 세션 폐기 |
 | GET | `/api/auth/me` | any | ✅ 현재 신원 + role (+ CHILD 면 childId) |
-| GET | `/api/settings` | PARENT | `{ openai: { configured, last4, model } }` — **키 원문 미포함** |
-| PUT | `/api/settings/openai-key` | PARENT | 키 저장(암호화). 저장 전 OpenAI 로 유효성 1회 검증 |
-| DELETE | `/api/settings/openai-key` | PARENT | 키 삭제 |
-| GET | `/api/settings/openai/models` | PARENT | 저장된 키로 사용 가능한 모델 목록 조회 |
+| GET | `/api/settings` | PARENT | ✅ `{ provider, providers, ai: { configured, last4, model, visionModel } }` — **키 원문 미포함** |
+| PUT | `/api/settings/ai-key` | PARENT | ✅ `{ provider, apiKey }` 저장(암호화). 저장 전 제공자로 유효성 검증 |
+| DELETE | `/api/settings/ai-key` | PARENT | ✅ 키 삭제 |
+| GET | `/api/settings/ai/models` | PARENT | ✅ 저장된 키로 사용 가능한 모델 목록 조회 |
+| PUT | `/api/settings/ai/models` | PARENT | ✅ 사용할 모델 저장 (계정에 실제 존재하는지 확인) |
+| PUT | `/api/settings/quiz` | PARENT | ✅ `{ questionCount, passCount }` — 한 번에 낼 문제 수와 통과 기준 |
+
+`provider` 는 `openai` | `gemini`.
+
+`PUT /api/settings/ai-key` 는 저장 **전에** 두 가지를 확인한다.
+1. 모델 목록 조회 — 키가 인증되는지
+2. 아주 작은 추론 호출 — 실제로 호출이 되는지 (크레딧 부족·권한 문제를 여기서 잡는다)
+
+1이 실패하면 아무것도 저장하지 않는다. 2가 실패하면 저장은 하되 `warning` 을 함께 돌려준다.
+결제 수단을 등록하러 가는 중일 수 있어 저장 자체는 막지 않는다.
 
 ## 아이 관리
 
@@ -53,21 +65,34 @@
 
 | Method | Path | Role | 설명 |
 | --- | --- | --- | --- |
-| POST | `/api/books` | PARENT | 표지 이미지 업로드(multipart) → R2 저장 → book 행 생성 |
-| GET | `/api/books/:id/cover` | PARENT | R2 이미지 프록시 서빙 (소유권 확인) |
-| POST | `/api/books/:id/analyze` | PARENT | Vision 으로 제목/저자/출판사/ISBN 추출 |
-| POST | `/api/books/:id/search` | PARENT | 웹 검색으로 책 정보 보강 + `book_sources` 적재 |
-| PATCH | `/api/books/:id` | PARENT | 부모가 책 정보 직접 수정 (AI 오인식 보정) |
+| POST | `/api/books` | PARENT | ✅ 표지 이미지 업로드(multipart) → R2 저장 → book 행 생성 |
+| GET | `/api/books` | PARENT | ✅ 내가 등록한 책 목록 |
+| GET | `/api/books/:id` | PARENT | ✅ 책 + 출처 + 문제 생성 준비 여부 |
+| GET | `/api/books/:id/cover` | PARENT | ✅ R2 이미지 프록시 서빙 (소유권 확인) |
+| POST | `/api/books/:id/analyze` | PARENT | ✅ Vision 으로 제목/저자/출판사/ISBN 추출 |
+| POST | `/api/books/:id/search` | PARENT | ✅ 웹 검색으로 책 정보 보강 + `book_sources` 적재 |
+| PATCH | `/api/books/:id` | PARENT | ✅ 부모가 책 정보 직접 수정 (AI 오인식 보정) |
 | GET | `/api/books/:id/history` | PARENT | 이 책의 퀴즈·풀이 이력 |
+
+## 이력
+
+| Method | Path | Role | 설명 |
+| --- | --- | --- | --- |
+| GET | `/api/history/questions` | PARENT | ✅ 문제 생성·수정 이력 (`bookId` · `quizId` · `limit` · `offset`) |
+| GET | `/api/history/answers` | PARENT | ✅ 아이 답안 이력 (`childId` 추가 필터) |
+| GET | `/api/history/filters` | PARENT | ✅ 이력 화면의 책·아이 선택지 |
+
+답안 이력은 `question_versions` 를 조인해 **아이가 그때 본 문항 본문**을 돌려준다.
+`questions` 를 그대로 읽으면 부모가 나중에 고친 문장이 과거 기록에 섞인다(§22).
 
 ## 퀴즈 생성 · 검수
 
 | Method | Path | Role | 설명 |
 | --- | --- | --- | --- |
-| POST | `/api/quizzes` | PARENT | 책 기준 퀴즈 생성 (status=DRAFT) |
-| POST | `/api/quizzes/:id/generate` | PARENT | 20문제 생성 시작. **202** 반환 후 백그라운드 실행 |
-| POST | `/api/quizzes/:id/validate` | PARENT | 검증 재실행 (실패 문제만 재생성) |
-| GET | `/api/quizzes/:id` | PARENT | 퀴즈 + 문제 20개 + 진행 상태 |
+| POST | `/api/quizzes` | PARENT | ✅ 책 기준 퀴즈 생성 (status=DRAFT, round 자동 증가) |
+| POST | `/api/quizzes/:id/generate` | PARENT | ✅ 20문제 생성 시작. **202** 반환 후 백그라운드 실행 |
+| GET | `/api/quizzes/:id` | PARENT | ✅ 퀴즈 + 문제 + 진행 상태 |
+| GET | `/api/books/:id/quizzes` | PARENT | ✅ 이 책의 퀴즈 회차 목록 |
 | PATCH | `/api/questions/:id` | PARENT | 문제 수정 → version+1, history=PARENT_EDITED |
 | POST | `/api/questions/:id/regenerate` | PARENT | 이 문제만 AI 재생성 → history=AI_REGENERATED |
 | DELETE | `/api/questions/:id` | PARENT | `is_active=0` + 즉시 대체 문제 1개 생성 (20개 유지) |
@@ -101,6 +126,9 @@ KV 카운터(`rl:<scope>:<key>`)로 고정 윈도우 방식.
 | 로그인 | 10회 / 15분 (IP + login_id) |
 | 이미지 업로드 | 20회 / 시간 (user) |
 | AI 생성·검증·재생성 | 20회 / 시간 (user) |
+| API Key 저장 | 10회 / 시간 (user) |
+| 모델 목록 조회 | 30회 / 시간 (user) |
+| 회원가입 | 5회 / 시간 (IP) |
 | 그 외 API | 300회 / 분 (user) |
 
 초과 시 `429` + `Retry-After` 헤더.

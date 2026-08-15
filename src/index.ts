@@ -8,14 +8,25 @@
  */
 import { readSession } from "./auth/session";
 import { authRoutes } from "./routes/auth";
+import { bookRoutes } from "./routes/books";
 import { childrenRoutes } from "./routes/children";
+import { historyRoutes } from "./routes/history";
+import { quizRoutes } from "./routes/quizzes";
 import { matchRoute, type Route } from "./routes/router";
+import { settingsRoutes } from "./routes/settings";
 import type { AppEnv } from "./types";
 import { assertSameOrigin } from "./utils/csrf";
 import { clientIp, rateLimit } from "./utils/ratelimit";
 import { fail, toResponse } from "./utils/response";
 
-const routes: Route[] = [...authRoutes, ...childrenRoutes];
+const routes: Route[] = [
+	...authRoutes,
+	...childrenRoutes,
+	...settingsRoutes,
+	...bookRoutes,
+	...quizRoutes,
+	...historyRoutes,
+];
 
 export default {
 	async fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {

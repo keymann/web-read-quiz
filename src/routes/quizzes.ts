@@ -160,6 +160,9 @@ async function inbox({ env, principal }: RouteCtx): Promise<Response> {
 			questionCount: row.question_count,
 			passCount: row.pass_count,
 			status: row.status,
+			// 재도전은 배정을 먼저 만들고 문제를 나중에 만든다. 다 차기 전에는 풀 수 없다.
+			ready: row.ready_count >= row.question_count,
+			readyCount: row.ready_count,
 			assignedAt: row.assigned_at,
 		})),
 	});
@@ -169,11 +172,18 @@ async function listForBook({ env, principal, params }: RouteCtx): Promise<Respon
 	const parent = requireParent(principal);
 	const rows = await quizzesRepo.listByBook(env, parent.userId, params.id!);
 
+	// 회차마다 문항이 몇 개 준비됐는지 함께 센다. 재도전은 문제 없이 배정만 먼저 생기므로,
+	// 부모가 "만들어 줘야 할 회차" 를 알아볼 수 있어야 한다.
+	const counts = await Promise.all(rows.map((q) => questionsRepo.countActive(env, q.id)));
+
 	return ok({
-		quizzes: rows.map((q) => ({
+		quizzes: rows.map((q, index) => ({
 			id: q.id,
 			status: q.status,
 			round: q.round,
+			language: q.language,
+			questionCount: q.question_count,
+			generated: counts[index]!,
 			createdAt: q.created_at,
 		})),
 	});

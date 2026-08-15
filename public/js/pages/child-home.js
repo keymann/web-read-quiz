@@ -55,16 +55,21 @@ export async function childHomePage() {
 									el("span", { class: "list__title", text: quiz.bookTitle }),
 									el("span", {
 										class: "list__meta",
-										text: `${quiz.questionCount}문제 · ${quiz.passCount}개 맞히면 통과`,
+										text: quiz.ready
+											? `${quiz.questionCount}문제 · ${quiz.passCount}개 맞히면 통과`
+											: `새 문제를 준비하고 있어요 (${quiz.readyCount} / ${quiz.questionCount})`,
 									}),
 								]),
-								el("button", {
-									class: "btn",
-									type: "button",
-									text: quiz.status === "IN_PROGRESS" ? "이어서 풀기" : "풀기 시작",
-									disabled: busy,
-									onClick: () => startQuiz(quiz.assignmentId),
-								}),
+								// 재도전은 배정이 먼저 생기고 문제가 나중에 만들어진다. 다 차기 전에는 못 푼다.
+								quiz.ready
+									? el("button", {
+											class: "btn",
+											type: "button",
+											text: quiz.status === "IN_PROGRESS" ? "이어서 풀기" : "풀기 시작",
+											disabled: busy,
+											onClick: () => startQuiz(quiz.assignmentId),
+										})
+									: el("span", { class: "tag tag--warn", text: "준비 중" }),
 							]),
 						),
 					),

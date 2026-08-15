@@ -74,12 +74,21 @@ export interface AssignmentWithBook extends AssignmentRow {
 	book_title: string;
 	question_count: number;
 	pass_count: number;
+	/** 지금 준비된 문항 수. 재도전으로 막 만들어진 퀴즈는 아직 0이다. */
+	ready_count: number;
 }
 
-/** 아이 화면에 보여줄 "받은 퀴즈". 아직 안 끝난 것만. */
+/**
+ * 아이 화면에 보여줄 "받은 퀴즈". 아직 안 끝난 것만.
+ *
+ * 문항이 몇 개 준비됐는지 함께 센다. 재도전은 배정을 먼저 만들고 문제를 나중에 만들기 때문에,
+ * 이 값이 없으면 문항 0개짜리 퀴즈가 "풀기 시작" 으로 보인다.
+ */
 export async function listForChild(env: AppEnv, childId: string): Promise<AssignmentWithBook[]> {
 	const { results } = await env.DB.prepare(
-		`SELECT a.*, b.title AS book_title, q.question_count, q.pass_count
+		`SELECT a.*, b.title AS book_title, q.question_count, q.pass_count,
+		        (SELECT COUNT(*) FROM questions x WHERE x.quiz_id = q.id AND x.is_active = 1)
+		          AS ready_count
 		   FROM quiz_assignments a
 		   JOIN quizzes q ON q.id = a.quiz_id
 		   JOIN books b   ON b.id = q.book_id

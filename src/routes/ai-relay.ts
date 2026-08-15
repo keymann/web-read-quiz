@@ -14,6 +14,18 @@ import { route, type Route, type RouteCtx } from "./router";
  * 모든 라우트가 PARENT 전용이며, 제공자가 gemini 가 아니면 서비스 레이어가 거부한다.
  */
 
+/**
+ * 길이를 제한한 배열. 넘치면 거부한다.
+ *
+ * 잘라서 받아들이면 클라이언트는 자기가 보낸 것이 다 반영된 줄 안다. 서버가 조용히 버리는
+ * 것보다 "너무 많다" 고 말해 주는 편이 낫다.
+ */
+function boundedArray(value: unknown, max: number): never[] {
+	if (!Array.isArray(value)) return [];
+	if (value.length > max) throw invalid(`한 번에 ${max}개까지만 보낼 수 있습니다.`);
+	return value as never[];
+}
+
 /** 자격증명은 브라우저에 캐시되지 않는다. 작업마다 다시 받아 가므로 호출이 잦다. */
 async function credential({ env, principal }: RouteCtx): Promise<Response> {
 	const parent = requireParent(principal);
@@ -32,7 +44,8 @@ async function plan({ request, env, principal }: RouteCtx): Promise<Response> {
 	const kind = v.str(body, "kind", "단계");
 
 	// 브라우저가 "이 모델은 응답하지 않더라" 고 알려준 목록. 다음에 무엇을 쓸지는 서버가 정한다.
-	const avoid = Array.isArray(body.avoid) ? (body.avoid as unknown[]).map(String) : [];
+	// 서버가 최대 3개까지만 바꾸므로 그 이상은 받을 이유가 없다.
+	const avoid = v.strArray(body, "avoid", { max: 8, maxLength: 120 });
 
 	switch (kind) {
 		case "identify":
@@ -55,7 +68,8 @@ async function plan({ request, env, principal }: RouteCtx): Promise<Response> {
 					env,
 					parent.userId,
 					v.str(body, "quizId", "퀴즈"),
-					Array.isArray(body.rejected) ? (body.rejected as never[]) : [],
+					// 프롬프트에 넣는 것은 최근 10건뿐이다. 그보다 훨씬 넉넉히 잡고 나머지는 막는다.
+					boundedArray(body.rejected, 100),
 					avoid,
 				),
 			);
@@ -107,7 +121,8 @@ async function apply({ request, env, principal }: RouteCtx): Promise<Response> {
 					env,
 					parent.userId,
 					v.str(body, "quizId", "퀴즈"),
-					Array.isArray(body.questions) ? (body.questions as never[]) : [],
+					// 한 라운드에 만들 수 있는 문항 수를 넘길 이유가 없다. 서버가 다시 사후검사도 한다.
+					boundedArray(body.questions, 100),
 					body.response,
 				),
 			);

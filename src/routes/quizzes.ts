@@ -122,7 +122,8 @@ async function regenerate({ request, env, principal, params }: RouteCtx): Promis
 	}
 
 	const body = await v.readJson(request);
-	const ids = Array.isArray(body.questionIds) ? (body.questionIds as unknown[]).map(String) : [];
+	// 한 퀴즈의 문항 수를 넘길 이유가 없다. 개수를 막지 않으면 IN (?, ?, …) 이 거대해진다.
+	const ids = v.strArray(body, "questionIds", { max: quiz.question_count, maxLength: 64 });
 	if (ids.length === 0) throw invalid("다시 만들 문제를 선택해 주세요.");
 
 	const removed = await questionsRepo.deactivate(env, quiz.id, ids);

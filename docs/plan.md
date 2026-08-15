@@ -352,17 +352,21 @@ Attempt #1 의 문항·답안은 그대로 조회된다. ✅
 
 ---
 
-### Phase 9 — 보안 하드닝 · 테스트 · 배포
+### Phase 9 — 보안 하드닝 · 테스트 · 배포 ✅
 
-- `test/` 에 vitest + `@cloudflare/vitest-pool-workers` 로 통합 테스트
-  - 권한 우회 시도 (다른 부모/아이 리소스 접근)
+- `test/` 에 vitest + `@cloudflare/vitest-pool-workers` 로 통합 테스트 ✅
+  - 권한 우회 시도 (다른 부모/아이 리소스 접근) — 기능별 테스트 + 라우트 전수 검사
   - 스냅샷 불변성 (문제 수정 후 과거 Attempt 재조회)
-  - 20문항 불변식, 조기 종료, 쿨다운
+  - 문항 수 불변식, 조기 종료, 쿨다운
   - Rate Limit
-- XSS: 모든 사용자·AI 생성 문자열은 `textContent` 로 렌더링한다. `innerHTML` 은 정적 템플릿에만.
-- CSP 헤더 추가 (`default-src 'self'`)
-- 실제 D1/KV 생성 → ID 교체 → `wrangler secret put SESSION_SECRET` / `ENCRYPTION_KEY`
-- `npm run db:migrate:remote` → `npm run deploy`
+- XSS: 모든 사용자·AI 생성 문자열은 `textContent` 로 렌더링한다. `innerHTML` 은 쓰지 않는다 ✅
+  - **AI 가 준 URL** 도 저장·렌더링 두 곳에서 스킴을 검사한다
+- CSP 헤더 추가 (`default-src 'self'`) ✅ — 정적 자산은 Worker 를 거치지 않으므로 `public/_headers`
+- 입력 길이 상한 (본문 1MB · 배열 개수 · 아이 계정 수) ✅
+- 실제 D1/KV 생성 → ID 교체 → `wrangler secret put SESSION_SECRET` / `ENCRYPTION_KEY` ✅
+- `npm run db:migrate:remote` → `npm run deploy` ✅
+
+**완료 기준** — 라우트를 하나 추가하고 가드를 빠뜨리면 테스트가 깨진다.
 
 ## 3. 화면 ↔ Phase 대응
 

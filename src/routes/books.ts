@@ -44,7 +44,7 @@ async function detail({ env, principal, params }: RouteCtx): Promise<Response> {
 	});
 }
 
-/** 표지 이미지는 비공개 R2 에 있다. 소유권을 확인하고 Worker 가 대신 내보낸다. */
+/** 표지 이미지는 비공개 KV 에 있다. 소유권을 확인하고 Worker 가 대신 내보낸다. */
 async function cover({ env, principal, params }: RouteCtx): Promise<Response> {
 	const parent = requireParent(principal);
 	const { body, mime } = await book.readCover(env, parent.userId, params.id!);

@@ -5,6 +5,20 @@
  * CSP 가 `style-src 'self'` 이므로 인라인 style 속성도 쓰지 않고 클래스만 쓴다.
  */
 
+/**
+ * 링크·이미지 주소로 받아들일 스킴.
+ *
+ * 이 앱에는 **AI 와 외부 API 가 만든 URL** 이 화면에 링크로 붙는다(참고 자료). `javascript:` 나
+ * `data:text/html` 이 섞여 들어오면 부모가 누르는 순간 우리 오리진에서 실행된다. 렌더링이
+ * `el()` 한 곳을 지나므로 여기서 한 번 막으면 지금 있는 링크도, 앞으로 생길 링크도 덮인다.
+ *
+ * 서버도 저장 시점에 같은 검사를 한다(`services/book.ts`). 어느 한 쪽만으로는 부족하다 —
+ * 서버 검사는 이미 저장된 데이터를 못 고치고, 이 검사는 서버를 거치지 않는 값을 못 본다.
+ */
+const SAFE_URL = /^(https?:|mailto:|\/|#|\?)/i;
+
+const isSafeUrl = (value) => SAFE_URL.test(String(value).trim());
+
 export function el(tag, props = {}, children = []) {
 	const node = document.createElement(tag);
 
@@ -13,7 +27,10 @@ export function el(tag, props = {}, children = []) {
 		if (key === "class") node.className = value;
 		else if (key === "text") node.textContent = String(value);
 		else if (key.startsWith("on")) node.addEventListener(key.slice(2).toLowerCase(), value);
-		else node.setAttribute(key, value === true ? "" : String(value));
+		else if ((key === "href" || key === "src") && !isSafeUrl(value)) {
+			// 조용히 버리지 않는다. 링크가 사라진 이유를 콘솔에서 찾을 수 있어야 한다.
+			console.warn(`허용되지 않은 주소를 건너뜁니다: ${key}`);
+		} else node.setAttribute(key, value === true ? "" : String(value));
 	}
 
 	for (const child of [].concat(children)) {

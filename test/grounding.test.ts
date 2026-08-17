@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { buildGenerateRequest } from "../src/ai/generate";
+import { buildValidateRequest } from "../src/ai/validate";
 import { mostlyUngrounded, shortfallNotice } from "../src/services/generation";
 import {
 	MIN_EVIDENCE_GROUNDING,
@@ -233,5 +235,58 @@ describe("오답 선택지", () => {
 		const result = checkGrounding(question, BRIEF);
 		expect(result.ok, result.reason ?? "").toBe(true);
 		expect(MIN_QUESTION_GROUNDING).toBeLessThan(1);
+	});
+});
+
+/**
+ * 프롬프트에 실려 있어야 하는 지시.
+ *
+ * 실측(Phase 3, n=50)에서 확인한 것: 모델은 `[출판사 소개]` 를 근거로 **전혀** 쓰지 않고
+ * 근거가 전부 `[줄거리]`·`[주요 사건]`·`[등장인물]` 에서 나온다(50/50). §7 위반도 0/50 이다.
+ *
+ * 그 결과는 아래 지시 덕분이다. 지시가 사라지면 홍보 문구로 문제를 만들기 시작하고 — 책을
+ * 읽지 않아도 풀리는 문제가 된다. 실측을 다시 하지 않아도 지시의 존재는 여기서 지킨다.
+ */
+describe("소개를 근거로 쓰지 못하게 하는 지시", () => {
+	it("생성 프롬프트가 소개를 배경으로만 쓰라고 말한다", () => {
+		const request = buildGenerateRequest({
+			provider: null as never,
+			apiKey: "",
+			model: "m",
+			brief: "[소개]\n홍보 문구\n\n[줄거리]\n줄거리",
+			count: 5,
+		});
+
+		const text = `${request.instructions ?? ""}\n${request.prompt}`;
+		expect(text).toContain("[출판사 소개]");
+		expect(text).toContain("출제 근거가 아닙니다");
+		// 어디서 근거를 찾으라고 알려 줘야 한다 — 금지만 하면 모델이 갈 곳을 잃는다.
+		expect(text).toContain("[줄거리]");
+	});
+
+	it("검증 프롬프트가 소개만으로 답이 나오는 문제를 탈락시키라고 말한다", () => {
+		const request = buildValidateRequest({
+			provider: null as never,
+			apiKey: "",
+			model: "m",
+			brief: "[소개]\n홍보 문구",
+			questions: [
+				{
+					questionNumber: 1,
+					questionText: "문항",
+					choices: ["가", "나", "다", "라"],
+					correctChoice: 1,
+					questionType: "EVENT",
+					difficulty: 1,
+					explanation: "해설",
+					evidence: "근거",
+					readRequired: true,
+				},
+			],
+		});
+
+		const text = `${request.instructions ?? ""}\n${request.prompt}`;
+		expect(text).toContain("[출판사 소개]");
+		expect(text).toContain("탈락");
 	});
 });

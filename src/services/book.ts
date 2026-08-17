@@ -221,12 +221,8 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 	const ai = await settings.getRuntime(env, userId);
 
 	// 공개 서지 API 와 웹 검색은 성격이 다르다. 전자는 서지정보의 기준점, 후자는 줄거리 원천.
-	const bib = await bibliographic.lookup(env, {
-		isbn: row.isbn13 ?? row.isbn10 ?? "",
-		title: row.title,
-		author: row.author ?? "",
-		publisher: row.publisher ?? "",
-	});
+	// 여기서 받은 것을 책에 적어 두고, 반영 단계(applyResearch)가 같은 값을 읽는다.
+	const bib = await prepareBib(env, userId, row);
 
 	const hint = {
 		title: row.title,
@@ -340,6 +336,48 @@ function collectSources(
 }
 
 /**
+ * 조사에 쓸 서지 정보를 확보한다.
+ *
+ * 조사 준비(프롬프트 조립)와 반영(병합·출처 적재)이 **같은 값을 봐야 한다.** 두 번 부르면
+ * 그 사이에 외부 API 응답이 바뀔 수 있고, 그러면 모델은 A 를 보고 답했는데 서버는 B 로
+ * 제목·저자를 덮어쓴다. 한 번 받은 것을 책에 적어 두고 반영 단계가 그것을 읽는다.
+ *
+ * 릴레이 경로에서는 준비와 반영이 서로 다른 HTTP 요청이라 메모리로 넘길 방법이 없다.
+ */
+export async function prepareBib(
+	env: AppEnv,
+	userId: string,
+	row: BookRow,
+): Promise<bibliographic.BibRecord[]> {
+	const bib = await bibliographic.lookup(env, {
+		isbn: row.isbn13 ?? row.isbn10 ?? "",
+		title: row.title,
+		author: row.author ?? "",
+		publisher: row.publisher ?? "",
+	});
+
+	await booksRepo.update(env, userId, row.id, { bib_cache: JSON.stringify(bib) });
+	return bib;
+}
+
+/** 준비 단계가 적어 둔 서지 결과. 없으면(예전에 등록된 책) 그때 새로 받는다. */
+async function readBib(
+	env: AppEnv,
+	userId: string,
+	row: BookRow,
+): Promise<bibliographic.BibRecord[]> {
+	if (row.bib_cache) {
+		try {
+			const parsed: unknown = JSON.parse(row.bib_cache);
+			if (Array.isArray(parsed)) return parsed as bibliographic.BibRecord[];
+		} catch {
+			// 형식이 깨졌으면 새로 받는다.
+		}
+	}
+	return prepareBib(env, userId, row);
+}
+
+/**
  * 조사 결과를 책에 반영한다.
  *
  * 출처 적재, 서지정보 병합, Book Brief 조립이 모두 여기 있다. 브라우저가 AI 를 부른 경우에도
@@ -361,12 +399,8 @@ export async function applyResearch(
 	},
 ): Promise<SearchResult> {
 	const row = await requireOwned(env, userId, bookId);
-	const bib = await bibliographic.lookup(env, {
-		isbn: row.isbn13 ?? row.isbn10 ?? "",
-		title: row.title,
-		author: row.author ?? "",
-		publisher: row.publisher ?? "",
-	});
+	// 준비 단계가 적어 둔 것을 읽는다. 다시 부르면 프롬프트가 본 값과 달라질 수 있다.
+	const bib = await readBib(env, userId, row);
 
 	const sources = collectSources(bookId, bib, found, notices);
 	await booksRepo.replaceSources(env, bookId, sources);
@@ -379,7 +413,7 @@ export async function applyResearch(
 
 	await booksRepo.update(env, userId, bookId, {
 		...merged,
-		brief: found.found ? buildBrief(row.title, merged, found) : null,
+		brief: found.found ? buildBrief(row.title, merged, found, bib) : null,
 		searched_at: new Date().toISOString(),
 	});
 
@@ -460,6 +494,7 @@ function buildBrief(
 	title: string,
 	merged: booksRepo.BookFields,
 	found: BookResearch,
+	bib: bibliographic.BibRecord[] = [],
 ): string {
 	const lines = [
 		`[책] ${title}`,
@@ -472,6 +507,27 @@ function buildBrief(
 		"[줄거리]",
 		found.plotSummary,
 	];
+
+	// 출판사·서점이 공개한 책소개. **모델의 기억이 아니라 확인된 글**이라 근거 검사가 인정한다.
+	// 이것이 이 서지 연동의 실제 산물이다(§docs/korean-book-api-plan.md).
+	//
+	// 다만 이건 홍보 문구이지 줄거리가 아니다. §7 은 "소개문만 읽어도 답할 수 있는 문제" 를
+	// 금지하므로, 아래 프롬프트에서 출제 근거로 쓰지 말라고 명시한다.
+	const blurbs = bib
+		.map((record) => record.description.trim())
+		.filter((text) => text.length >= 40);
+
+	if (blurbs.length > 0) {
+		lines.push("", "[출판사 소개]");
+		// 같은 문장이 두 소스에서 오면 한 번만.
+		const seen = new Set<string>();
+		for (const text of blurbs) {
+			const key = text.slice(0, 40);
+			if (seen.has(key)) continue;
+			seen.add(key);
+			lines.push(text);
+		}
+	}
 
 	if (found.characters.length > 0) {
 		lines.push("", "[등장인물]");

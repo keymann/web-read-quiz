@@ -22,6 +22,8 @@ export interface BookRow {
 	ai_extracted: string | null;
 	ai_confidence: number | null;
 	brief: string | null;
+	/** 이번 조사에서 받은 서지 결과(JSON 배열). 프롬프트와 병합이 같은 값을 쓰게 한다. */
+	bib_cache: string | null;
 	analyzed_at: string | null;
 	searched_at: string | null;
 	created_at: string;
@@ -81,6 +83,7 @@ export interface BookFields {
 	ai_extracted?: string | null;
 	ai_confidence?: number | null;
 	brief?: string | null;
+	bib_cache?: string | null;
 	analyzed_at?: string | null;
 	searched_at?: string | null;
 }

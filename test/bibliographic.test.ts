@@ -1,6 +1,24 @@
 import { env, fetchMock } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { isSameBook, lookup } from "../src/search/bibliographic";
+import { FIXTURE_PLOT, signupParent } from "./helpers";
+
+const PNG = new Uint8Array([
+	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+	0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+	0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+	0x42, 0x60, 0x82,
+]);
+
+const mockOpenAi = (payload: unknown) =>
+	fetchMock
+		.get("https://api.openai.com")
+		.intercept({ path: "/v1/responses", method: "POST" })
+		.reply(200, {
+			status: "completed",
+			output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(payload) }] }],
+		});
 
 /**
  * 서지 조회 — 특히 **알라딘**(§docs/korean-book-api-plan.md).
@@ -21,9 +39,13 @@ const HANARM = {
 	publisher: "사계절",
 	pubDate: "2000-05-29",
 	isbn13: "9788971968710",
-	// 태그 안에 ASP 블록이 중첩된 실제 형태. 순서를 잘못 지우면 `">` 가 남는다.
+	/**
+	 * **실제 응답 그대로.** 두 가지 함정이 다 들어 있다.
+	 *  - 태그 안에 ASP 블록(`<% … %>`) — 태그부터 지우면 `">` 가 남는다
+	 *  - 꺾쇠로 감싼 책 제목이 **이스케이프 없이** 옴 — 태그로 보고 지우면 본문이 사라진다
+	 */
 	description:
-		'<a href="/catalog/book.asp?ISBN=8901028514&UID=<% =qsUID %>">&lt;나쁜 어린이표&gt;</a>로 아이들만의 생각을 &amp; 절묘하게 표현해냈던 황선미의 장편동화.',
+		'<a href="/catalog/book.asp?ISBN=8901028514&UID=<% =qsUID %>"><나쁜 어린이표></a>로 아이들만의 생각을 &amp; 절묘하게 표현해냈던 황선미의 장편동화.',
 	// link 도 `&amp;` 로 이스케이프돼 온다.
 	link: "https://www.aladin.co.kr/shop/wproduct.aspx?ItemId=914024&amp;partner=op",
 };
@@ -67,6 +89,27 @@ function silenceOthers() {
 }
 
 const withKey = { ...env, ALADIN_TTB_KEY: "ttbtest0000000001" };
+const withBoth = { ...withKey, KAKAO_REST_KEY: "kakaotest0000000000000000000001" };
+
+const KAKAO = "https://dapi.kakao.com";
+
+/** 실측 응답 모양. `isbn` 이 `"ISBN10 ISBN13"` 로 붙어 오는 것까지 그대로. */
+const KAKAO_HANARM = {
+	title: "마당을 나온 암탉",
+	authors: ["황선미"],
+	translators: [],
+	publisher: "사계절",
+	datetime: "2023-07-31T00:00:00.000+09:00",
+	isbn: "8971968710 9788971968710",
+	contents: "2017 대한민국 문화예술상을 수상한 황선미의 『마당을 나온 암탉』은 알을 품어 병아리의 탄생을 보겠다는 소망을 가지고 양계장을 나온 암탉 잎싹의 이야기를 그린 작품이다.",
+	url: "https://search.daum.net/search?w=bookpage&amp;bookId=992873",
+};
+
+const mockKakao = (body: unknown) =>
+	fetchMock
+		.get(KAKAO)
+		.intercept({ path: (p) => p.startsWith("/v3/search/book"), method: "GET" })
+		.reply(200, body);
 
 describe("같은 책인지 확인", () => {
 	// 판본 표기가 후보에만 더 붙는다. 그것 때문에 떨어뜨리면 국내책이 거의 안 잡힌다.
@@ -139,12 +182,13 @@ describe("알라딘 조회", () => {
 		// 태그는 사라지고 엔티티는 되돌아온다. 그대로 두면 프롬프트에 태그가 들어간다.
 		expect(aladin!.description).not.toContain("<a ");
 		expect(aladin!.description).not.toContain("&lt;");
-		expect(aladin!.description).toContain("<나쁜 어린이표>로");
+		// 꺾쇠로 감싼 책 제목은 본문이다. 태그로 보고 지우면 통째로 사라진다(실측에서 그랬다).
+		expect(aladin!.description).toMatch(/^<나쁜 어린이표>로 아이들만의/);
 		expect(aladin!.description).toContain("생각을 & 절묘하게");
 		// ASP 블록 때문에 남던 찌꺼기. 실측에서 `">로 아이들만의…` 로 보였다.
-		expect(aladin!.description.startsWith('">')).toBe(false);
+		expect(aladin!.description).not.toContain('">');
 		expect(aladin!.description).not.toContain("%>");
-		expect(aladin!.description).toMatch(/^<나쁜 어린이표>로/);
+		expect(aladin!.description).not.toContain("<a href");
 	});
 
 	// 국내책은 알라딘이 가장 정확하다. bib[0] 를 기준점으로 쓰는 병합이 맞게 돌아야 한다.
@@ -293,5 +337,168 @@ describe("알라딘 조회", () => {
 
 		const records = await lookup(env, { isbn: "9788971968710" });
 		expect(records.find((r) => r.source === "aladin")).toBeUndefined();
+	});
+});
+
+describe("카카오 책 검색", () => {
+	/** 알라딘·구글·오픈라이브러리를 잠재우고 카카오만 본다. */
+	function silenceExceptKakao() {
+		mockAladin("ItemLookUp", { item: [] });
+		mockAladin("ItemSearch", { item: [] });
+		fetchMock
+			.get("https://www.googleapis.com")
+			.intercept({ path: (p) => p.startsWith("/books/v1/volumes"), method: "GET" })
+			.reply(200, {})
+			.times(1);
+		fetchMock
+			.get("https://openlibrary.org")
+			.intercept({ path: (p) => p.startsWith("/api/books"), method: "GET" })
+			.reply(200, {})
+			.times(1);
+	}
+
+	it("응답을 서지 레코드로 옮긴다", async () => {
+		mockKakao({ documents: [KAKAO_HANARM] });
+		silenceExceptKakao();
+
+		const records = await lookup(withBoth, {
+			isbn: "9788971968710",
+			title: "마당을 나온 암탉",
+			author: "황선미",
+		});
+		const kakao = records.find((r) => r.source === "kakao-book");
+
+		expect(kakao).toBeTruthy();
+		// `"ISBN10 ISBN13"` 에서 13자리만 골라야 한다.
+		expect(kakao!.isbn13).toBe("9788971968710");
+		// ISO8601 을 날짜로 자른다.
+		expect(kakao!.publishedAt).toBe("2023-07-31");
+		expect(kakao!.author).toBe("황선미");
+		// 링크의 `&amp;` 도 되돌린다.
+		expect(kakao!.url).toContain("&bookId=");
+		expect(kakao!.url).not.toContain("&amp;");
+		expect(kakao!.description.length).toBeGreaterThan(60);
+	});
+
+	// 알라딘과 같은 이유 — ISBN 이 표지 OCR 값이라 믿을 수 없다.
+	it("잘못 읽은 ISBN 으로 다른 책이 오면 제목으로 되짚는다", async () => {
+		fetchMock
+			.get(KAKAO)
+			.intercept({ path: (p) => p.includes("target=isbn"), method: "GET" })
+			.reply(200, { documents: [{ title: "전혀 다른 책", authors: ["다른작가"], publisher: "다른출판사" }] });
+		fetchMock
+			.get(KAKAO)
+			.intercept({ path: (p) => p.includes("target=title"), method: "GET" })
+			.reply(200, { documents: [KAKAO_HANARM] });
+		silenceExceptKakao();
+
+		const records = await lookup(withBoth, {
+			isbn: "9788958282242",
+			title: "마당을 나온 암탉",
+			author: "황선미",
+		});
+
+		expect(records.find((r) => r.source === "kakao-book")?.isbn13).toBe("9788971968710");
+		expect(records.map((r) => r.title)).not.toContain("전혀 다른 책");
+	});
+
+	/**
+	 * 두 소스가 같은 책을 줘도 **합치지 않는다.** 서로 다른 책소개와 링크를 가진 별개의
+	 * 인용이므로, 부모가 두 곳을 확인할 수 있어야 하고 `evidenceWeak` 기준도 그래야 채워진다.
+	 */
+	it("알라딘과 카카오가 같은 책을 주면 둘 다 남긴다", async () => {
+		mockAladin("ItemLookUp", { item: [HANARM] });
+		mockKakao({ documents: [KAKAO_HANARM] });
+		fetchMock
+			.get("https://www.googleapis.com")
+			.intercept({ path: (p) => p.startsWith("/books/v1/volumes"), method: "GET" })
+			.reply(200, {});
+		fetchMock
+			.get("https://openlibrary.org")
+			.intercept({ path: (p) => p.startsWith("/api/books"), method: "GET" })
+			.reply(200, {});
+
+		const records = await lookup(withBoth, { isbn: "9788971968710", title: "마당을 나온 암탉" });
+
+		// 국내 소스가 앞에 온다 — `bib[0]` 를 기준점으로 쓰는 병합이 맞게 돌아야 한다.
+		expect(records.map((r) => r.source)).toEqual(["aladin", "kakao-book"]);
+	});
+
+	it("키가 없으면 카카오를 부르지 않는다", async () => {
+		// 카카오 인터셉터를 걸지 않았다. 불렀다면 disableNetConnect 로 실패한다.
+		mockAladin("ItemLookUp", { item: [HANARM] });
+		fetchMock
+			.get("https://www.googleapis.com")
+			.intercept({ path: (p) => p.startsWith("/books/v1/volumes"), method: "GET" })
+			.reply(200, {});
+		fetchMock
+			.get("https://openlibrary.org")
+			.intercept({ path: (p) => p.startsWith("/api/books"), method: "GET" })
+			.reply(200, {});
+
+		const records = await lookup(withKey, { isbn: "9788971968710", title: "마당을 나온 암탉" });
+		expect(records.find((r) => r.source === "kakao-book")).toBeUndefined();
+	});
+});
+
+describe("조사 1회 = 조회 1회", () => {
+	/**
+	 * 조사 준비(프롬프트 조립)와 반영(병합·출처 적재)이 **같은 서지 값을 봐야 한다.**
+	 * 두 번 부르면 그 사이에 외부 응답이 바뀔 수 있고, 그러면 모델은 A 를 보고 답했는데
+	 * 서버는 B 로 제목·저자를 덮어쓴다.
+	 *
+	 * 인터셉터를 **한 번만** 걸어 두는 것이 그 확인이다 — 두 번 불렀다면
+	 * `disableNetConnect` 로 실패한다.
+	 */
+	it("준비 단계가 적어 둔 서지를 반영 단계가 다시 부르지 않고 읽는다", async () => {
+		const { client } = await signupParent();
+
+		fetchMock
+			.get("https://api.openai.com")
+			.intercept({ path: "/v1/models", method: "GET" })
+			.reply(200, { data: [{ id: "gpt-5.6-mini" }] });
+		mockOpenAi({ ok: true });
+		await client.request("/api/settings/ai-key", {
+			method: "PUT",
+			body: { provider: "openai", apiKey: "sk-test1234567890abcdefghijklmn" },
+		});
+
+		const form = new FormData();
+		form.append("cover", new File([PNG], "cover.png", { type: "image/png" }));
+		const bookId = (await client.upload("/api/books", form)).body.data.book.id as string;
+		await client.patch(`/api/books/${bookId}`, { title: "마당을 나온 암탉", author: "황선미" });
+
+		// 서지 소스는 **각각 한 번만** 응답한다.
+		// ISBN 을 모르는 책이라 알라딘은 제목 검색 경로로 간다.
+		mockAladin("ItemSearch", { item: [HANARM] });
+		mockKakao({ documents: [KAKAO_HANARM] });
+		fetchMock
+			.get("https://www.googleapis.com")
+			.intercept({ path: (p) => p.startsWith("/books/v1/volumes"), method: "GET" })
+			.reply(200, {});
+
+		mockOpenAi({
+			title: "마당을 나온 암탉",
+			author: "황선미",
+			publisher: "사계절",
+			isbn13: "",
+			publishedAt: "2000",
+			targetAge: "초등 고학년",
+			description: "AI 가 정리한 소개.",
+			plotSummary: FIXTURE_PLOT,
+			characters: [{ name: "잎싹", role: "암탉" }],
+			keyEvents: ["양계장을 떠난다"],
+			sources: [],
+		});
+
+		const res = await client.post(`/api/books/${bookId}/search`);
+		expect(res.status).toBe(200);
+
+		// 알라딘·카카오가 출처로 남는다 → 웹 근거 2건이라 근거 얇음 경고가 사라진다.
+		const detail = await client.get(`/api/books/${bookId}`);
+		const sources = detail.body.data.sources.map((s: { source: string }) => s.source);
+		expect(sources).toContain("aladin");
+		expect(sources).toContain("kakao-book");
+		expect(detail.body.data.evidenceWeak).toBe(false);
 	});
 });

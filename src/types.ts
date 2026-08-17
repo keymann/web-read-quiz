@@ -12,6 +12,15 @@ export interface AppEnv extends Env {
 	ENCRYPTION_KEY: string;
 	/** 설정 시 회원가입에 초대 코드를 요구한다. 비어 있으면 제한 없음. */
 	INVITE_CODE?: string;
+	/**
+	 * 국내 서지 조회용 키. **부모별이 아니라 서비스 공용**이다.
+	 *
+	 * AI 키를 부모마다 받는 이유는 비용이 부모에게 청구되기 때문인데(§25), 이쪽은 무료다.
+	 * 알라딘은 발급에 승인 1~2일이 걸려 부모에게 요구할 수도 없다.
+	 * 없으면 그 소스를 조용히 건너뛴다 — 서지 조회가 실패해도 파이프라인은 멈추지 않는다.
+	 */
+	ALADIN_TTB_KEY?: string;
+	KAKAO_REST_KEY?: string;
 }
 
 export type Role = "PARENT" | "CHILD";

@@ -221,7 +221,7 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 	const ai = await settings.getRuntime(env, userId);
 
 	// 공개 서지 API 와 웹 검색은 성격이 다르다. 전자는 서지정보의 기준점, 후자는 줄거리 원천.
-	const bib = await bibliographic.lookup({
+	const bib = await bibliographic.lookup(env, {
 		isbn: row.isbn13 ?? row.isbn10 ?? "",
 		title: row.title,
 		author: row.author ?? "",
@@ -361,7 +361,7 @@ export async function applyResearch(
 	},
 ): Promise<SearchResult> {
 	const row = await requireOwned(env, userId, bookId);
-	const bib = await bibliographic.lookup({
+	const bib = await bibliographic.lookup(env, {
 		isbn: row.isbn13 ?? row.isbn10 ?? "",
 		title: row.title,
 		author: row.author ?? "",

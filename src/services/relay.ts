@@ -181,7 +181,7 @@ export async function planResearch(
 	}
 
 	const { model, modelNotice } = await chooseModel(env, userId, "text", avoid);
-	const bib = await bibliographic.lookup({
+	const bib = await bibliographic.lookup(env, {
 		isbn: row.isbn13 ?? row.isbn10 ?? "",
 		title: row.title,
 		author: row.author ?? "",

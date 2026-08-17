@@ -10,7 +10,16 @@ import { banner, confirmAction, el, header, mount, selectField, setKidMode } fro
  * REVIEW 면 문항을 보여준다. 다 만들어지면 아이에게 내보낼 수 있다.
  */
 
-const POLL_MS = 2000;
+/**
+ * 서버 경로의 폴링 간격.
+ *
+ * 2초 고정이면 다 끝났는데도 최대 2초를 더 기다린다. 생성은 30초를 넘기므로 초반을 촘촘히
+ * 하는 것은 요청 몇 번 더 보내는 값이고, 끝나는 순간을 놓치지 않는 이득이 크다.
+ * 뒤로 갈수록 늘려 불필요한 요청을 줄인다.
+ */
+const POLL_START_MS = 600;
+const POLL_MAX_MS = 2500;
+const POLL_GROWTH = 1.4;
 const DIFFICULTY = { 1: "쉬움", 2: "보통", 3: "어려움" };
 const LANGUAGE = { en: "영어", ko: "한국어" };
 const ASSIGN_STATUS = { ASSIGNED: "아직 안 풀었어요", IN_PROGRESS: "푸는 중", COMPLETED: "다 풀었어요" };
@@ -67,6 +76,8 @@ export async function quizReviewPage({ id }) {
 	let message = null;
 	let messageKind = "error";
 	let timer = null;
+	/** 지금 폴링 간격. 매번 조금 늘린다. */
+	let pollMs = POLL_START_MS;
 	/** 진행 표시를 1초마다 새로 그리는 타이머. 경과 시간이 멈춰 있으면 멈춘 것처럼 보인다. */
 	let ticker = null;
 	let startedAt = null;
@@ -106,7 +117,8 @@ export async function quizReviewPage({ id }) {
 
 		// 브라우저가 직접 돌리는 동안에는 폴링하지 않는다. 진행 상황을 이미 알고 있다.
 		if (data?.quiz.status === "GENERATING" && relayProgress === null) {
-			timer = setTimeout(refresh, POLL_MS);
+			timer = setTimeout(refresh, pollMs);
+			pollMs = Math.min(POLL_MAX_MS, Math.round(pollMs * POLL_GROWTH));
 		} else if (relayProgress === null) {
 			stop();
 		}
@@ -446,6 +458,9 @@ export async function quizReviewPage({ id }) {
 				messageKind = result.done ? "info" : "error";
 			} else {
 				await post(`/api/quizzes/${id}/generate`);
+				// 새 생성이 시작되면 간격도 처음부터. 앞 회차에서 늘어난 값을 물려받으면
+				// 시작 직후 몇 초를 그냥 기다린다.
+				pollMs = POLL_START_MS;
 				startTicking();
 				message = "문제 만들기를 시작했습니다.";
 			}

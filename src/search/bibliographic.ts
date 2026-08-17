@@ -44,16 +44,21 @@ const decodeEntities = (text: string): string =>
  * <a href="/catalog/book.asp?ISBN=8901028514&UID=<% =qsUID %>">&lt;나쁜 어린이표&gt;</a>로 …
  * ```
  *
- * 태그 안에 ASP 블록(`<% … %>`)이 중첩돼 있다. 그래서 `<[^>]*>` 만 돌리면 그 블록의 `>` 에서
- * 끊겨 `">` 가 남는다 — 실제로 참고 자료에 `">로 아이들만의…` 로 보였다.
- * **ASP 블록을 먼저** 지운 뒤 태그를 지워야 한다.
+ * 두 가지를 조심해야 한다.
+ *
+ * 1. **태그 안에 ASP 블록**(`<% … %>`)이 중첩돼 있다. 태그부터 지우면 그 블록의 `>` 에서
+ *    끊겨 `">` 가 남는다 — 실제로 참고 자료에 `">로 아이들만의…` 로 보였다. 블록을 먼저 지운다.
+ * 2. **꺾쇠로 감싼 책 제목이 이스케이프되지 않은 채 온다** — `<나쁜 어린이표>`.
+ *    `<[^>]*>` 로 지우면 이것까지 태그로 보고 지워 **본문이 사라진다**(실제로 저 제목이
+ *    통째로 없어졌다). 그래서 **태그 이름이 ASCII 로 시작하는 것만** 지운다.
  */
 function stripHtml(raw: string): string {
 	return decodeEntities(
 		raw
 			// 태그 속성 안에 들어앉은 템플릿 블록. 이걸 먼저 치워야 태그 제거가 온전히 된다.
 			.replace(/<%[\s\S]*?%>/g, "")
-			.replace(/<[^>]*>/g, ""),
+			// 여는·닫는 태그. 이름이 ASCII 문자로 시작하는 것만 — 한글로 시작하면 본문이다.
+			.replace(/<\/?[a-zA-Z][^>]*>/g, ""),
 	)
 		.replace(/\s+/g, " ")
 		.trim();
@@ -111,10 +116,10 @@ export const normalizeIsbn = (raw: string): string => raw.replace(/[^0-9Xx]/g, "
 
 export const isValidIsbn = (isbn: string): boolean => isbn.length === 10 || isbn.length === 13;
 
-async function getJson<T>(url: string): Promise<T | null> {
+async function getJson<T>(url: string, extraHeaders?: Record<string, string>): Promise<T | null> {
 	try {
 		const res = await fetch(url, {
-			headers: { Accept: "application/json" },
+			headers: { Accept: "application/json", ...extraHeaders },
 			signal: AbortSignal.timeout(TIMEOUT_MS),
 		});
 		if (!res.ok) return null;
@@ -218,6 +223,87 @@ async function fromAladin(
 	return null;
 }
 
+/* ── 카카오 책 검색 ─────────────────────────────────── */
+
+interface KakaoDocument {
+	title?: string;
+	authors?: string[];
+	translators?: string[];
+	publisher?: string;
+	datetime?: string;
+	/** `"ISBN10 ISBN13"` 형태로 공백으로 붙어 온다(실측). 둘 중 하나만 있을 수도 있다. */
+	isbn?: string;
+	contents?: string;
+	url?: string;
+}
+
+interface KakaoResponse {
+	documents?: KakaoDocument[];
+}
+
+/** 공백으로 붙어 오는 ISBN 에서 13자리를 골라낸다. */
+const kakaoIsbn13 = (raw: string): string =>
+	raw.split(/\s+/).map(normalizeIsbn).find((v) => v.length === 13) ?? "";
+
+const toKakaoRecord = (doc: KakaoDocument): BibRecord | null => {
+	if (!doc.title) return null;
+
+	return {
+		// 실측 응답은 깨끗했지만, 검색 API 가 강조 태그를 넣는 일은 흔하다. 같은 정리를 거친다.
+		title: stripHtml(doc.title),
+		author: [...(doc.authors ?? []), ...(doc.translators ?? [])].filter(Boolean).join(", "),
+		publisher: doc.publisher ?? "",
+		isbn13: kakaoIsbn13(doc.isbn ?? ""),
+		// `2023-07-31T00:00:00.000+09:00` 로 온다. 날짜만 남긴다.
+		publishedAt: (doc.datetime ?? "").slice(0, 10),
+		description: stripHtml(doc.contents ?? ""),
+		source: "kakao-book",
+		// ToS 상 출처 링크가 필요하다.
+		url: doc.url ? decodeEntities(doc.url) : "https://search.daum.net/",
+	};
+};
+
+/**
+ * 카카오 책 검색.
+ *
+ * 네이버 책 검색을 대신한다 — 발급한 Client ID 로도 `401 "Scopes are Empty"` 가 와서 쓸 수 없다.
+ * 카카오는 즉시 발급되고 `contents`(책소개)가 알라딘보다 길다(실측 250~253자 대 121~209자).
+ *
+ * ISBN 도 `target=isbn` 으로 조회되지만, **그 ISBN 이 표지 OCR 값이라 믿을 수 없다.**
+ * 알라딘과 같은 이유로 결과를 제목과 대조하고 안 맞으면 제목으로 되짚는다.
+ */
+async function fromKakaoBook(
+	key: string,
+	hint: { isbn?: string; title?: string; author?: string; publisher?: string },
+): Promise<BibRecord | null> {
+	const search = async (target: "isbn" | "title", query: string, size: number) => {
+		const url = new URL("https://dapi.kakao.com/v3/search/book");
+		url.searchParams.set("target", target);
+		url.searchParams.set("query", query);
+		url.searchParams.set("size", String(size));
+
+		return getJson<KakaoResponse>(url.toString(), { Authorization: `KakaoAK ${key}` });
+	};
+
+	const isbn = hint.isbn ? normalizeIsbn(hint.isbn) : "";
+	if (isbn.length === 13) {
+		const body = await search("isbn", isbn, 1);
+		const record = body?.documents?.[0] ? toKakaoRecord(body.documents[0]) : null;
+		if (record && accepts(hint, record)) return record;
+	}
+
+	const title = (hint.title ?? "").trim();
+	if (title === "") return null;
+
+	const body = await search("title", title, 5);
+	for (const doc of body?.documents ?? []) {
+		const record = toKakaoRecord(doc);
+		if (record && isSameBook(hint, record)) return record;
+	}
+
+	return null;
+}
+
 interface GoogleBooksResponse {
 	items?: {
 		volumeInfo?: {
@@ -301,21 +387,23 @@ export async function lookup(
 
 	// 키가 없으면 그 소스는 아예 부르지 않는다. 없는 키로 부르면 오류만 늘고 지연만 생긴다.
 	const aladin = env.ALADIN_TTB_KEY ? fromAladin(env.ALADIN_TTB_KEY, hint) : Promise.resolve(null);
+	const kakao = env.KAKAO_REST_KEY ? fromKakaoBook(env.KAKAO_REST_KEY, hint) : Promise.resolve(null);
 
 	if (isValidIsbn(isbn)) {
-		const [korean, google, openLibrary] = await Promise.all([
+		const found = await Promise.all([
 			aladin,
+			kakao,
 			fromGoogleBooks(`isbn:${isbn}`),
 			fromOpenLibrary(isbn),
 		]);
-		// 국내책은 알라딘이 가장 정확하다. 앞에 둬야 `bib[0]` 를 기준점으로 쓰는 병합이 맞게 돈다.
-		return keepMatching(hint, [korean, google, openLibrary]);
+		// 국내책은 국내 소스가 정확하다. 앞에 둬야 `bib[0]` 를 기준점으로 쓰는 병합이 맞게 돈다.
+		return keepMatching(hint, found);
 	}
 
 	if (terms.trim() === "") return [];
 
-	const [korean, google] = await Promise.all([aladin, fromGoogleBooks(terms)]);
-	return keepMatching(hint, [korean, google]);
+	const found = await Promise.all([aladin, kakao, fromGoogleBooks(terms)]);
+	return keepMatching(hint, found);
 }
 
 /**

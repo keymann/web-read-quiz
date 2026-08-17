@@ -8,7 +8,6 @@ import * as questionsRepo from "../repositories/questions";
 import * as quizzesRepo from "../repositories/quizzes";
 import * as settingsRepo from "../repositories/settings";
 import { buildResearchRequest, normalizeResearch, type BookResearch } from "../search/web";
-import * as bibliographic from "../search/bibliographic";
 import type { AppEnv } from "../types";
 import { unseal } from "../utils/crypto";
 import { ApiError, forbidden, invalid, notFound } from "../utils/response";
@@ -181,12 +180,9 @@ export async function planResearch(
 	}
 
 	const { model, modelNotice } = await chooseModel(env, userId, "text", avoid);
-	const bib = await bibliographic.lookup(env, {
-		isbn: row.isbn13 ?? row.isbn10 ?? "",
-		title: row.title,
-		author: row.author ?? "",
-		publisher: row.publisher ?? "",
-	});
+	// 여기서 받은 것을 책에 적어 두고, 반영 단계(applyResearch)가 같은 값을 읽는다.
+	// 두 번 부르면 프롬프트가 본 서지와 병합에 쓰는 서지가 달라질 수 있다.
+	const bib = await book.prepareBib(env, userId, row);
 
 	return {
 		...buildGeminiCall(

@@ -9,8 +9,6 @@
 import { readSession } from "./auth/session";
 import { aiRelayRoutes } from "./routes/ai-relay";
 import { attemptRoutes } from "./routes/attempts";
-// 국내 서지 API 연동 Phase 0-1 확인용. 확인 후 제거한다.
-import { diagRoutes } from "./routes/diag";
 import { authRoutes } from "./routes/auth";
 import { bookRoutes } from "./routes/books";
 import { childrenRoutes } from "./routes/children";
@@ -33,7 +31,6 @@ const routes: Route[] = [
 	...attemptRoutes,
 	...statsRoutes,
 	...historyRoutes,
-	...diagRoutes,
 	...aiRelayRoutes,
 ];
 

@@ -352,6 +352,15 @@ Attempt #1 의 문항·답안은 그대로 조회된다. ✅
 
 ---
 
+### Phase 10 — 국내 서지 API (계획 수립됨)
+
+국내책 서지·책소개를 알라딘·카카오(조건부 네이버) 무료 API 로 확보한다.
+근거 검사가 Brief 밖의 문항을 걸러내므로, **Brief 를 살찌우는 것이 곧 문항 확보량**이다.
+
+별도 문서: [korean-book-api-plan.md](korean-book-api-plan.md)
+
+---
+
 ### Phase 9 — 보안 하드닝 · 테스트 · 배포 ✅
 
 - `test/` 에 vitest + `@cloudflare/vitest-pool-workers` 로 통합 테스트 ✅

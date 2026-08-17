@@ -270,7 +270,8 @@ export async function planGenerate(
 			apiKey: "",
 			model,
 			brief,
-			count: need,
+			// 탈락분을 미리 흡수해 2라운드로 넘어가지 않게 한다(generation.withBuffer).
+			count: generation.withBuffer(need),
 			existing: existing.map((q) => q.question_text),
 			rejected: rejected.slice(-10),
 			briefIsUnverified: !hasWeb,
@@ -280,6 +281,7 @@ export async function planGenerate(
 
 	return {
 		done: false,
+		// 화면에는 **필요한 수**를 보여준다. 여유분까지 보여주면 부모가 그만큼 저장될 줄 안다.
 		need,
 		target: quiz.question_count,
 		accepted: existing.length,

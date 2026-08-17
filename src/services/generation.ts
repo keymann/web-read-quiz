@@ -34,6 +34,23 @@ const MIN_SCORE = 70;
 /** 재생성 프롬프트에 넣을 탈락 사례 수. 너무 많으면 프롬프트만 길어진다. */
 const RECENT_REJECTIONS = 10;
 
+/**
+ * 필요한 수보다 **조금 더** 요청한다.
+ *
+ * 실측(Phase 3, n=5): 1라운드 탈락이 2,0,1,0,2 였고 5회 중 3회가 2라운드로 넘어갔다.
+ * 라운드 하나는 AI 호출 2회(생성+검수)라 시간이 거의 두 배가 된다.
+ *
+ * 반면 문항을 몇 개 더 요청하는 비용은 **출력 토큰뿐**이다. 요청 본문 크기는 문항 수와
+ * 무관하다(실측: 5·10·12·20문항 모두 4.5KB) — 프롬프트는 "N개 만들어 주세요" 한 줄만 다르다.
+ *
+ *   여유분 없이 2라운드   호출 4회, 출력 100% + 소량
+ *   여유분 20%로 1라운드  호출 2회, 출력 120%
+ *
+ * 남는 문항은 저장하지 않고 버린다(`applyVerdicts` 의 `room`).
+ */
+export const withBuffer = (need: number): number =>
+	need + Math.min(5, Math.max(1, Math.ceil(need * 0.2)));
+
 export interface AcceptedQuestion {
 	question: GeneratedQuestion;
 	verdict: Verdict;
@@ -143,7 +160,8 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 					apiKey: ai.apiKey,
 					model,
 					brief,
-					count: need,
+					// 탈락분을 미리 흡수해 2라운드로 넘어가지 않게 한다.
+					count: withBuffer(need),
 					existing: [...keptTexts, ...accepted.map((a) => a.question.questionText)],
 					rejected: rejected.slice(-RECENT_REJECTIONS),
 					briefIsUnverified,
@@ -272,24 +290,42 @@ export function applyVerdicts(
 	questions: GeneratedQuestion[],
 	verdicts: Verdict[],
 	room: number,
-): { accepted: AcceptedQuestion[]; rejected: { questionText: string; reason: string }[] } {
+): {
+	accepted: AcceptedQuestion[];
+	rejected: { questionText: string; reason: string }[];
+	/** 자리가 없어 못 쓴 **멀쩡한** 문항 수. 여유분을 얹어 요청한 결과다. */
+	surplus: number;
+} {
 	const byNumber = new Map(verdicts.map((v) => [v.questionNumber, v]));
 	const accepted: AcceptedQuestion[] = [];
 	const rejected: { questionText: string; reason: string }[] = [];
+	let surplus = 0;
 
 	for (const question of questions) {
 		const verdict = byNumber.get(question.questionNumber);
-		if (accepted.length >= room || !verdict || !passes(verdict)) {
+		const ok = verdict !== undefined && passes(verdict);
+
+		if (ok && accepted.length >= room) {
+			// **탈락이 아니다.** 검수를 통과했지만 자리가 찼을 뿐이다.
+			//
+			// 이걸 rejected 에 넣으면 두 군데가 틀어진다. 다음 라운드 프롬프트가 멀쩡한 문항을
+			// "반복하지 마라" 목록에 올리고, 부모에게 보여줄 안내가 통과 수를 실제보다 적게 센다.
+			surplus++;
+			continue;
+		}
+
+		if (!ok) {
 			rejected.push({
 				questionText: question.questionText,
 				reason: verdict?.reason || "검수 기준을 통과하지 못했습니다.",
 			});
 			continue;
 		}
+
 		accepted.push({ question, verdict });
 	}
 
-	return { accepted, rejected };
+	return { accepted, rejected, surplus };
 }
 
 /** 통과한 문항을 저장한다. 번호는 지금 비어 있는 자리부터 채운다. */

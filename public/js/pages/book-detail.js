@@ -14,6 +14,7 @@ import { banner, el, field, header, mount, selectField, setKidMode } from "../ui
 // 모듈 수준에 둔다 — 페이지 함수 안의 const 는 첫 render() 보다 아래에 놓이면 TDZ 로 터진다.
 const SOURCE_LABEL = {
 	web: "웹 검색",
+	aladin: "알라딘",
 	"google-books": "구글 북스",
 	"open-library": "오픈 라이브러리",
 	ai: "AI 모델 지식",

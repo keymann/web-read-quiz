@@ -9,6 +9,7 @@ import { quizRoutes } from "../src/routes/quizzes";
 import { settingsRoutes } from "../src/routes/settings";
 import { statsRoutes } from "../src/routes/stats";
 import { aiRelayRoutes } from "../src/routes/ai-relay";
+import { diagRoutes } from "../src/routes/diag";
 import { ORIGIN, addChild, signupParent } from "./helpers";
 
 /**
@@ -44,6 +45,7 @@ const ALL_ROUTES = [
 	...statsRoutes,
 	...historyRoutes,
 	...aiRelayRoutes,
+	...diagRoutes,
 ];
 
 /** 라우트는 세그먼트로만 보관된다. 사람이 읽을 경로로 되돌린다. */

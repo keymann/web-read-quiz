@@ -44,11 +44,19 @@
 | --- | --- | --- |
 | **알라딘** `ItemSearch.aspx` · `ItemLookUp.aspx` | ✅ 살아 있음 | JSON 업무 오류 `{"errorCode":4,"errorMessage":"API출력이 금지된 회원입니다."}` 반환. 없는 엔드포인트(`Nonsense.aspx`)는 HTML 페이지를 주므로 구분됨 |
 | **카카오** `dapi.kakao.com/v3/search/book` | ✅ 살아 있음 | 401 `cannot find Authorization : KakaoAK header`. 없는 경로는 404 `ResourceNotFound` 로 **다르게** 응답 |
-| **네이버** `openapi.naver.com/v1/search/book.json` | ⚠️ **불확실 — 종료된 것으로 보임** | 401 이 오지만 `nonsense.json` 도 **똑같은** 401 을 반환해 판별 불가. 별도 조사에서 2026-07-31 종료(HUB 미이관) 정보 확인 |
+| **네이버** `openapi.naver.com/v1/search/book.json` | ⚠️ **불확실 — 판정 보류** | 401 이 오지만 `nonsense.json` 도 **똑같은** 401 을 반환해 판별 불가. 3자 자료는 2026-07-31 종료(HUB 미이관)라 하지만, **공식 문서 페이지는 종료 안내 없이 그대로 게시되어 있다**(2026-08-17 확인) |
 
 > 네이버 책 검색은 처음 401 응답만 보고 "살아 있다" 고 적을 뻔했다. 대조군을 넣어 보니 그 401 은
-> 아무 것도 증명하지 않았다. 근거를 확인한 자료도 자기 모순이 있어(2027-06-30 유예 언급 후 부정),
-> **이 문서는 네이버를 "확인 필요" 로 둔다.** 판정은 §6 Phase 0 에서 5분이면 끝난다.
+> 아무 것도 증명하지 않았다.
+>
+> 그 뒤 양쪽 증거가 갈렸다. 종료를 주장하는 3자 자료는 자기 모순이 있고(2027-06-30 유예 언급 후
+> 부정), **공식 문서(`/docs/serviceapi/search/book/book.md`)는 개요·레퍼런스·오류코드·예제까지
+> 온전히 살아 있고 종료 안내가 없다.** 문서가 남아 있는 것이 서비스가 산 증거는 아니지만,
+> "종료됐다" 고 단정할 근거도 못 된다.
+>
+> **그래서 이 문서는 네이버를 "판정 보류" 로 둔다.** 결론은 §6 Phase 0-4 에서만 낼 수 있다 —
+> 애플리케이션 등록 화면의 **사용 API 목록에 "검색" 이 있는지**, 그리고 실제 Client ID 로 책
+> 검색이 결과를 주는지. 둘 다 로그인이 필요해 대신 확인할 수 없다.
 
 ### 알라딘 발급 조건 (조사 결과, Phase 0 에서 재확인)
 
@@ -224,7 +232,7 @@ book_sources.url    = 그 상품 페이지 URL   ← 반드시 채운다
 | 1 | ~~**Cloudflare Worker 에서 `aladin.co.kr`·`dapi.kakao.com` 에 닿는지** 확인~~ ✅ | 닿는다 (위 참고) |
 | 2 | 알라딘 TTB 등록·승인 (1~2일) | 키 확보 |
 | 3 | 카카오 REST 키 발급 (즉시) | 키 확보 |
-| 4 | 네이버 책 검색이 아직 신청 가능한지 확인 | 가능하면 Phase 2 에 포함, 아니면 제외 |
+| 4 | 네이버 책 검색이 아직 **신청 가능한지** 확인 — 등록 화면의 "사용 API" 에 `검색` 이 있는지, 그리고 발급한 Client ID 로 `book.json` 이 결과를 주는지 | 되면 Phase 2 에 포함, 안 되면 제외(카카오로 대체) |
 | 5 | 실제 키로 『마당을 나온 암탉』 조회 → 응답 필드 확보 | `description` 길이·품질 확인, `OptResult` 값 결정 |
 
 1번은 배포된 Worker 에 임시 진단 경로를 두고 확인했고, 확인 직후 제거했다(PR #23 → #24).
@@ -289,7 +297,17 @@ book_sources.url    = 그 상품 페이지 URL   ← 반드시 채운다
 
 ## 9. 참고
 
+### 발급 페이지 (모두 접속 확인, 2026-08-17)
+
+| 대상 | 주소 |
+| --- | --- |
+| 알라딘 TTBKey | <https://www.aladin.co.kr/ttb/wblog_manage.aspx> |
+| 카카오 애플리케이션 | <https://developers.kakao.com/console/app> |
+| 네이버 애플리케이션 | <https://developers.naver.com/apps/#/register> |
+
 - [알라딘 OpenAPI 안내](https://blog.aladin.co.kr/openapi/popup/6695306) · [상품 API 안내](https://blog.aladin.co.kr/openapi/popup/5353294) · [검색 API 소개](https://blog.aladin.co.kr/openapi/popup/5353290) · [매뉴얼](https://docs.google.com/document/d/1mX-WxuoGs8Hy-QalhHcvuV17n50uGI2Sg_GHofgiePE/mobilebasic)
-- [네이버 검색 API 종료·HUB 이관 정리(3자 자료, 내용에 자기 모순 있음 — Phase 0 에서 직접 확인)](https://waffleboard.io/blog/naver-search-api-hub-migration-guide)
+- [카카오 Daum 검색 REST API 문서](https://developers.kakao.com/docs/latest/ko/daum-search/dev-guide)
+- [네이버 책 검색 공식 문서](https://developers.naver.com/docs/serviceapi/search/book/book.md) — 2026-08-17 기준 종료 안내 없음
+- [네이버 검색 API 종료·HUB 이관 정리(3자 자료, 내용에 자기 모순 있음 — Phase 0-4 에서 직접 확인)](https://waffleboard.io/blog/naver-search-api-hub-migration-guide)
 - 이 저장소: `src/search/bibliographic.ts` · `src/services/book.ts`(`collectSources`·`buildBrief`) ·
   `src/services/grounding.ts` · `docs/architecture.md`

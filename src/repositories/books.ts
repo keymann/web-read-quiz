@@ -26,6 +26,10 @@ export interface BookRow {
 	manual_plot: string | null;
 	/** 이번 조사에서 받은 서지 결과(JSON 배열). 프롬프트와 병합이 같은 값을 쓰게 한다. */
 	bib_cache: string | null;
+	/** Tavily 웹 검색 결과(JSON 배열). 재조사·재도전이 크레딧을 다시 쓰지 않게 한다. */
+	web_cache: string | null;
+	/** 이 책이 웹 검색을 쓴 횟수. 책당 상한을 건다. */
+	web_searches: number;
 	analyzed_at: string | null;
 	searched_at: string | null;
 	created_at: string;
@@ -87,6 +91,8 @@ export interface BookFields {
 	brief?: string | null;
 	manual_plot?: string | null;
 	bib_cache?: string | null;
+	web_cache?: string | null;
+	web_searches?: number;
 	analyzed_at?: string | null;
 	searched_at?: string | null;
 }

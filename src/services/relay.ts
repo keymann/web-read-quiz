@@ -183,6 +183,8 @@ export async function planResearch(
 	// 여기서 받은 것을 책에 적어 두고, 반영 단계(applyResearch)가 같은 값을 읽는다.
 	// 두 번 부르면 프롬프트가 본 서지와 병합에 쓰는 서지가 달라질 수 있다.
 	const bib = await book.prepareBib(env, userId, row);
+	// 웹 자료도 같은 이유로 여기서 확보해 캐시에 둔다. 반영 단계가 그 캐시를 읽는다.
+	await book.prepareWeb(env, userId, row);
 
 	return {
 		...buildGeminiCall(

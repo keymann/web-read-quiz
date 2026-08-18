@@ -1,6 +1,7 @@
 import { requireParent } from "../auth/guards";
 import * as booksRepo from "../repositories/books";
 import * as book from "../services/book";
+import * as budget from "../services/search-budget";
 import { MAX_BYTES } from "../utils/image";
 import { rateLimit } from "../utils/ratelimit";
 import { invalid, ok } from "../utils/response";
@@ -41,6 +42,13 @@ async function detail({ env, principal, params }: RouteCtx): Promise<Response> {
 		// "검색 직후엔 만들 수 있다더니 다시 열면 버튼이 잠기는" 일이 있었다.
 		readyForQuiz: book.isReadyForQuiz(row.brief),
 		evidenceWeak: book.hasWeakEvidence(book.evidenceCount(sources)),
+		// 재검색 버튼이 남은 횟수를 보여줄 수 있게 함께 내린다. 크레딧을 쓰는 조작이므로
+		// 누르기 전에 몇 번 남았는지 알아야 한다.
+		web: {
+			enabled: Boolean(env.TAVILY_API_KEY),
+			searchesLeft: Math.max(0, budget.MAX_SEARCHES_PER_BOOK - row.web_searches),
+			creditsLeft: await budget.remaining(env),
+		},
 	});
 }
 
@@ -104,6 +112,17 @@ async function manualPlot({ request, env, principal, params }: RouteCtx): Promis
 	return ok(await book.saveManualPlot(env, parent.userId, params.id!, v.optionalStr(body, "plot") ?? ""));
 }
 
+/**
+ * 부모가 누르는 웹 자료 재검색. **크레딧을 쓰는 유일한 사용자 조작**이다.
+ *
+ * `ai` 레이트리밋과 별도로 둔다 — 성격이 다르고, 책당 횟수와 월 예산이 이미 두 겹으로 막는다.
+ */
+async function webSearch({ env, principal, params }: RouteCtx): Promise<Response> {
+	const parent = requireParent(principal);
+	await rateLimit(env, "web-search", parent.userId, 30, 60 * 60);
+	return ok(await book.refreshWeb(env, parent.userId, params.id!));
+}
+
 export const bookRoutes: Route[] = [
 	route("POST", "/api/books", upload),
 	route("PUT", "/api/books/:id/plot", manualPlot),
@@ -113,4 +132,5 @@ export const bookRoutes: Route[] = [
 	route("GET", "/api/books/:id/cover", cover),
 	route("POST", "/api/books/:id/analyze", analyze),
 	route("POST", "/api/books/:id/search", search),
+	route("POST", "/api/books/:id/web-search", webSearch),
 ];

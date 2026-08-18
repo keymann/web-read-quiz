@@ -30,6 +30,13 @@ export interface BookRow {
 	web_cache: string | null;
 	/** 이 책이 웹 검색을 쓴 횟수. 책당 상한을 건다. */
 	web_searches: number;
+	/** 책이 쓰인 언어(ISO 639-1). 퀴즈의 `language`(문제를 낼 말)와 다르다. */
+	book_language: string | null;
+	/* 영문책의 읽기 난이도. 한국어 책에는 매겨지지 않아 늘 null 이다. */
+	ar_level: number | null;
+	ar_points: number | null;
+	ar_interest: string | null;
+	lexile: string | null;
 	analyzed_at: string | null;
 	searched_at: string | null;
 	created_at: string;
@@ -93,6 +100,11 @@ export interface BookFields {
 	bib_cache?: string | null;
 	web_cache?: string | null;
 	web_searches?: number;
+	book_language?: string | null;
+	ar_level?: number | null;
+	ar_points?: number | null;
+	ar_interest?: string | null;
+	lexile?: string | null;
 	analyzed_at?: string | null;
 	searched_at?: string | null;
 }

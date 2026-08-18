@@ -21,6 +21,8 @@ export interface AppEnv extends Env {
 	 */
 	ALADIN_TTB_KEY?: string;
 	KAKAO_REST_KEY?: string;
+	/** Tavily 웹 검색. 서비스 공용이며 없으면 웹 검색만 건너뛴다. */
+	TAVILY_API_KEY?: string;
 }
 
 export type Role = "PARENT" | "CHILD";

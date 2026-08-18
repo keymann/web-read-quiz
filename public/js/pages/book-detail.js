@@ -59,14 +59,14 @@ export async function bookDetailPage({ id }) {
 			return;
 		}
 
-		const { book, sources, readyForQuiz, evidenceWeak } = data;
+		const { book, sources, readyForQuiz, evidenceWeak, web } = data;
 		mount(
 			...[
 				header(book.title, [homeLink()]),
 				message ? banner(message, messageKind) : null,
 				coverCard(book),
 				infoCard(book),
-				sourcesCard(sources, evidenceWeak, readyForQuiz),
+				sourcesCard(sources, evidenceWeak, readyForQuiz, web),
 				// AI 가 줄거리를 못 찾았거나 부모가 이미 적어 둔 경우에만 띄운다. 잘 된 책에는 군더더기다.
 				!readyForQuiz || book.manualPlot ? plotCard(book, readyForQuiz) : null,
 				attempts.length > 0 ? attemptsCard() : null,
@@ -221,7 +221,40 @@ export async function bookDetailPage({ id }) {
 	 * 책에서 이 카드는 "충분합니다", 바로 아래 퀴즈 카드는 "먼저 책 정보를 찾아 주세요" 라고
 	 * 동시에 말했다. 같은 화면이 서로 반대되는 말을 하면 저장이 고장 난 것처럼 보인다.
 	 */
-	function sourcesCard(sources, evidenceWeak, readyForQuiz) {
+	/**
+	 * 웹 자료 재검색. **크레딧을 쓰는 유일한 사용자 조작**이므로 누르기 전에 몇 번 남았는지 보인다.
+	 *
+	 * 책당 횟수와 이달 서비스 전체 크레딧, 둘 중 하나라도 바닥나면 잠긴다.
+	 */
+	function webSearchRow(web) {
+		if (!web?.enabled) return null;
+
+		const left = web.searchesLeft ?? 0;
+		const credits = web.creditsLeft ?? 0;
+		const blocked = left === 0 || credits < 3;
+
+		return el("div", { class: "row" }, [
+			el("button", {
+				class: "btn btn--secondary",
+				type: "button",
+				text: busy === "web" ? "웹에서 찾는 중…" : "웹 자료 다시 찾기",
+				disabled: busy !== null || blocked,
+				onClick: () =>
+					run("web", () => post(`/api/books/${id}/web-search`), "웹 자료를 다시 찾았습니다.", (d) => d.notice),
+			}),
+			el("span", {
+				class: "hint",
+				text:
+					left === 0
+						? "이 책의 재검색 횟수를 다 썼습니다."
+						: credits < 3
+							? "이달 웹 검색 한도를 다 썼습니다."
+							: `이 책 ${left}회 남음 · 이달 전체 ${credits} 크레딧 남음`,
+			}),
+		]);
+	}
+
+	function sourcesCard(sources, evidenceWeak, readyForQuiz, web) {
 		const status = !readyForQuiz
 			? { kind: "warn", text: "자료는 찾았지만 줄거리를 얻지 못했습니다. 이 자료만으로는 문제를 만들 수 없습니다." }
 			: evidenceWeak
@@ -231,6 +264,7 @@ export async function bookDetailPage({ id }) {
 		return el("section", { class: "card" }, [
 			el("h2", { class: "section-title", text: `참고 자료 ${sources.length}건` }),
 			el("p", { class: `status status--${status.kind}`, text: status.text }),
+			webSearchRow(web),
 			sources.length === 0
 				? el("p", { class: "hint", text: "아직 찾은 자료가 없습니다." })
 				: el(
@@ -409,7 +443,12 @@ export async function bookDetailPage({ id }) {
 	async function run(kind, execute, successMessage, warn) {
 		busy = kind;
 		// 줄거리 저장은 AI 를 부르지 않는다. 부르지도 않은 것을 기다리라고 하지 않는다.
-		message = kind === "plot" ? "저장하는 중입니다." : "잠시만 기다려 주세요. AI 가 작업 중입니다.";
+		message =
+			kind === "plot"
+				? "저장하는 중입니다."
+				: kind === "web"
+					? "웹에서 자료를 찾는 중입니다."
+					: "잠시만 기다려 주세요. AI 가 작업 중입니다.";
 		messageKind = "info";
 		await refresh();
 

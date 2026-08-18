@@ -3,7 +3,9 @@ import { identifyBook, type BookIdentity } from "../ai/vision";
 import * as booksRepo from "../repositories/books";
 import type { BookRow } from "../repositories/books";
 import * as bibliographic from "../search/bibliographic";
+import * as tavily from "../search/tavily";
 import { research, type BookResearch } from "../search/web";
+import * as budget from "./search-budget";
 import * as settings from "./settings";
 import type { AppEnv } from "../types";
 import { assertUploadedImage } from "../utils/image";
@@ -226,6 +228,9 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 	// 공개 서지 API 와 웹 검색은 성격이 다르다. 전자는 서지정보의 기준점, 후자는 줄거리 원천.
 	// 여기서 받은 것을 책에 적어 두고, 반영 단계(applyResearch)가 같은 값을 읽는다.
 	const bib = await prepareBib(env, userId, row);
+	// 웹 자료도 지금 확보해 둔다. 반영 단계가 이 캐시를 읽어 참고 자료에 남긴다.
+	// 조사 프롬프트에 싣는 것은 Phase 2 다 — 여기서는 근거를 모으는 것까지만 한다.
+	await prepareWeb(env, userId, row);
 
 	const hint = {
 		title: row.title,
@@ -294,6 +299,8 @@ function collectSources(
 		groundingUsed: boolean;
 		model: string;
 		groundingSources?: { url: string; title: string }[];
+		/** Tavily 로 찾은 페이지. 부모가 실제로 열어 확인할 수 있는 근거다. */
+		webSources?: tavily.WebSource[];
 	},
 ): booksRepo.NewSource[] {
 	const sources: booksRepo.NewSource[] = bib.map((record) => ({
@@ -305,9 +312,10 @@ function collectSources(
 		content: record.description,
 	}));
 
-	// 모델이 적어 준 출처와 제공자가 알려준 출처를 합친다. 같은 URL 은 한 번만.
+	// Tavily 로 찾은 페이지, 모델이 적어 준 출처, 제공자가 알려준 출처를 합친다.
+	// 같은 URL 은 한 번만. Tavily 를 앞에 두어 발췌가 있는 쪽이 남게 한다.
 	const seen = new Set<string>();
-	for (const source of [...found.sources, ...(notices.groundingSources ?? [])]) {
+	for (const source of [...(notices.webSources ?? []), ...found.sources, ...(notices.groundingSources ?? [])]) {
 		if (!isStorableUrl(source.url) || seen.has(source.url)) continue;
 		seen.add(source.url);
 		sources.push({
@@ -363,6 +371,142 @@ export async function prepareBib(
 	return bib;
 }
 
+/* ── 웹 검색 (Tavily) ───────────────────────────────── */
+
+/** 적어 둔 웹 검색 결과만 읽는다. 크레딧을 쓰지 않는다. */
+export function cachedWeb(row: BookRow): tavily.WebSource[] {
+	if (!row.web_cache) return [];
+	try {
+		const parsed: unknown = JSON.parse(row.web_cache);
+		return Array.isArray(parsed) ? (parsed as tavily.WebSource[]) : [];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * 조사에 쓸 웹 자료. **캐시가 있으면 그것을 쓴다.**
+ *
+ * 여기가 크레딧을 지키는 장치다. "정보 다시 찾기" 와 재도전 회차 생성은 조사를 다시 돌리지만
+ * 책은 그대로다 — 아이가 5번 재도전한다고 웹을 5번 검색할 이유가 없다.
+ * 새로 검색하려면 부모가 재검색을 명시적으로 눌러야 한다(`refreshWeb`).
+ */
+export async function prepareWeb(
+	env: AppEnv,
+	userId: string,
+	row: BookRow,
+): Promise<tavily.WebSource[]> {
+	const cached = cachedWeb(row);
+	if (cached.length > 0) return cached;
+	// 아직 한 번도 안 했을 때만 자동으로 한 번 쓴다.
+	if (row.web_searches > 0) return [];
+	return runWebSearch(env, userId, row);
+}
+
+async function runWebSearch(
+	env: AppEnv,
+	userId: string,
+	row: BookRow,
+): Promise<tavily.WebSource[]> {
+	const found = await tavily.search(env, { title: row.title, author: row.author ?? "" });
+
+	// 빈손이어도 횟수는 센다. 안 세면 자료 없는 책에서 매 조사마다 크레딧을 쓴다.
+	await booksRepo.update(env, userId, row.id, {
+		web_searches: row.web_searches + 1,
+		...(found.length > 0 ? { web_cache: JSON.stringify(found) } : {}),
+	});
+
+	return found;
+}
+
+/** 웹 자료를 참고 자료 행으로. 재검색과 조사 반영이 같은 모양을 쓰게 한다. */
+const webRows = (bookId: string, sources: tavily.WebSource[]): booksRepo.NewSource[] =>
+	sources.map((source) => ({
+		id: newId(),
+		bookId,
+		source: "web",
+		url: source.url,
+		title: source.title,
+		content: source.content,
+	}));
+
+export interface WebSearchResult {
+	sourceCount: number;
+	/** 이 책이 웹 검색을 더 쓸 수 있는 횟수. 화면에 그대로 보여준다. */
+	searchesLeft: number;
+	/** 이달 서비스 전체가 더 쓸 수 있는 크레딧. */
+	creditsLeft: number;
+	notice: string | null;
+}
+
+/**
+ * 부모가 누르는 재검색. **크레딧을 쓰는 유일한 사용자 조작**이다.
+ *
+ * 두 겹으로 막는다 — 책당 횟수(`MAX_SEARCHES_PER_BOOK`)와 월 예산(`MONTHLY_CAP`).
+ * 월 예산만으로는 한 부모가 한 책에 수십 번 눌러 전체를 말릴 수 있다.
+ */
+export async function refreshWeb(
+	env: AppEnv,
+	userId: string,
+	bookId: string,
+): Promise<WebSearchResult> {
+	const row = await requireOwned(env, userId, bookId);
+	if (!row.title || row.title === "(분석 전)") {
+		throw invalid("먼저 책 정보를 분석하거나 제목을 입력해 주세요.");
+	}
+	if (!env.TAVILY_API_KEY) throw invalid("웹 검색을 쓸 수 없습니다.");
+
+	if (row.web_searches >= budget.MAX_SEARCHES_PER_BOOK) {
+		throw invalid(
+			`이 책의 웹 검색 횟수를 다 썼습니다 (${budget.MAX_SEARCHES_PER_BOOK}회). 줄거리를 직접 적어 주시면 문제를 만들 수 있습니다.`,
+		);
+	}
+
+	const before = cachedWeb(row);
+	const found = await runWebSearch(env, userId, row);
+	const updated = await requireOwned(env, userId, bookId);
+
+	// 새 결과가 없으면 이전 캐시를 지우지 않는다(`runWebSearch` 가 덮지 않는다).
+	const kept = found.length > 0 ? found : before;
+
+	/*
+	 * 찾은 자료를 **참고 자료에도 바로 넣는다.**
+	 *
+	 * 이걸 빼먹으면 부모는 "20건 찾았습니다" 를 보고 목록은 0건인 화면을 본다(실제로 겪었다).
+	 * 참고 자료가 채워지는 곳이 조사 반영(`applyResearch`) 하나뿐이었기 때문이다.
+	 *
+	 * 웹 행만 갈아 끼운다. 서지 API 로 얻은 행은 이 검색과 무관하므로 건드리지 않는다.
+	 */
+	if (found.length > 0) {
+		const existing = await booksRepo.listSources(env, bookId);
+		await booksRepo.replaceSources(env, bookId, [
+			...existing
+				.filter((s) => s.source !== "web")
+				.map((s) => ({
+					id: s.id,
+					bookId,
+					source: s.source,
+					url: s.url,
+					title: s.title,
+					content: s.content,
+				})),
+			...webRows(bookId, found),
+		]);
+	}
+
+	return {
+		sourceCount: kept.length,
+		searchesLeft: Math.max(0, budget.MAX_SEARCHES_PER_BOOK - updated.web_searches),
+		creditsLeft: await budget.remaining(env),
+		notice:
+			found.length > 0
+				? null
+				: (await budget.remaining(env)) === 0
+					? "이달 웹 검색 한도를 다 썼습니다. 다음 달에 다시 시도하거나 줄거리를 직접 적어 주세요."
+					: "웹에서 이 책을 다룬 자료를 찾지 못했습니다. 줄거리를 직접 적어 주시면 문제를 만들 수 있습니다.",
+	};
+}
+
 /** 적어 둔 서지 결과만 읽는다. 없으면 빈 배열 — 외부를 부르지 않는다. */
 function cachedBib(row: BookRow): bibliographic.BibRecord[] {
 	if (!row.bib_cache) return [];
@@ -409,7 +553,8 @@ export async function applyResearch(
 	// 준비 단계가 적어 둔 것을 읽는다. 다시 부르면 프롬프트가 본 값과 달라질 수 있다.
 	const bib = await readBib(env, userId, row);
 
-	const sources = collectSources(bookId, bib, found, notices);
+	// 준비 단계가 적어 둔 웹 자료. 여기서 새로 검색하지 않는다 — 크레딧을 두 번 쓰게 된다.
+	const sources = collectSources(bookId, bib, found, { ...notices, webSources: cachedWeb(row) });
 	await booksRepo.replaceSources(env, bookId, sources);
 
 	// 책을 특정하지 못했으면 그 결과의 서지정보를 받아들이지 않는다. 엉뚱한 책의 정보가 섞이면

@@ -30,7 +30,7 @@
 
 | Method | Path | Role | 설명 |
 | --- | --- | --- | --- |
-| POST | `/api/auth/signup` | – | ✅ 부모 계정 생성 (초대코드 선택) |
+| POST | `/api/auth/signup` | – | ✅ 부모 계정 생성. **초대 코드 필수** — 틀리거나 서버에 미설정이면 403 |
 | POST | `/api/auth/login` | – | ✅ 로그인 → 세션 쿠키 |
 | POST | `/api/auth/logout` | any | ✅ 세션 폐기 |
 | GET | `/api/auth/me` | any | ✅ 현재 신원 + role (+ CHILD 면 childId) |

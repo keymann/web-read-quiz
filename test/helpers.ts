@@ -56,6 +56,9 @@ let counter = 0;
 export const uniqueId = (prefix: string): string => `${prefix}${Date.now() % 100000}${counter++}`;
 
 /** 부모 계정을 만들고 로그인된 클라이언트를 돌려준다. */
+/** 테스트 환경의 초대 코드. vitest.config.ts 의 바인딩과 맞춰 둔다. */
+export const INVITE_CODE = "test-invite-code";
+
 export async function signupParent(ip?: string): Promise<{ client: Client; loginId: string }> {
 	const client = new Client(ip ?? `10.0.0.${(counter % 200) + 1}`);
 	const loginId = uniqueId("parent");
@@ -64,6 +67,8 @@ export async function signupParent(ip?: string): Promise<{ client: Client; login
 		password: "password1234",
 		password2: "password1234",
 		displayName: "부모",
+		// 서버가 늘 요구한다. vitest.config.ts 의 INVITE_CODE 와 같은 값이어야 한다.
+		invite: INVITE_CODE,
 	});
 	if (res.status !== 201) throw new Error(`signup failed: ${JSON.stringify(res.body)}`);
 	return { client, loginId };

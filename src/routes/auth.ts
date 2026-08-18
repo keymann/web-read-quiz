@@ -22,10 +22,22 @@ async function signup({ request, env, url }: RouteCtx): Promise<Response> {
 
 	if (pw !== pw2) throw invalid("비밀번호가 일치하지 않습니다.");
 
-	// 초대 코드는 설정되어 있을 때만 요구한다.
+	/*
+	 * 초대 코드는 **늘** 요구한다.
+	 *
+	 * 예전에는 `INVITE_CODE` 가 비어 있으면 검사를 건너뛰었다. 그러면 배포에서 시크릿을
+	 * 빠뜨리거나 오타를 내는 순간 가입이 아무에게나 열린다 — 그것도 **조용히** 열린다.
+	 * 아이 이름·학년과 독서 기록을 담는 서비스라 그 실수의 대가가 크다.
+	 *
+	 * 그래서 설정돼 있지 않으면 가입을 받지 않는 쪽으로 닫는다. 설정을 빠뜨렸을 때
+	 * 가입이 막히는 것은 금방 알아채고 고칠 수 있지만, 열려 버린 것은 알아채지 못한다.
+	 */
 	const expectedInvite = env.INVITE_CODE?.trim();
-	if (expectedInvite) {
-		if (v.optionalStr(body, "invite") !== expectedInvite) throw forbidden("초대 코드가 올바르지 않습니다.");
+	if (!expectedInvite) throw forbidden("지금은 회원가입을 받지 않습니다.");
+
+	// 붙여넣을 때 앞뒤에 공백이 묻어 오는 일이 흔하다. 그것 때문에 막지는 않는다.
+	if (v.optionalStr(body, "invite")?.trim() !== expectedInvite) {
+		throw forbidden("초대 코드가 올바르지 않습니다.");
 	}
 
 	if (await usersRepo.loginIdExists(env, id)) throw conflict("이미 사용 중인 아이디입니다.");

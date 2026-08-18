@@ -15,7 +15,15 @@ export async function loginPage() {
 	mount(container);
 	renderForm();
 
-	function renderForm(message) {
+	/**
+	 * @param message 화면 위에 띄울 알림.
+	 * @param kept 실패 직전에 부모가 적어 둔 값. 다시 그릴 때 그대로 되살린다.
+	 *
+	 * 실패하면 폼을 통째로 다시 만드는 구조라, 예전에는 적어 둔 것이 전부 사라졌다.
+	 * 초대 코드가 필수가 되면서 이 실패는 일상이 됐다 — 코드 한 글자를 틀렸다고
+	 * 아이디·비밀번호·이름까지 다시 치게 할 수는 없다.
+	 */
+	function renderForm(message, kept = {}) {
 		const isSignup = mode === "signup";
 
 		const loginId = field("아이디", { name: "loginId", autocomplete: "username", required: true });
@@ -27,7 +35,20 @@ export async function loginPage() {
 		});
 		const password2 = field("비밀번호 확인", { type: "password", name: "password2", required: true });
 		const displayName = field("이름", { name: "displayName", required: true });
-		const invite = field("초대 코드 (있는 경우)", { name: "invite" });
+		// 초대 코드 없이는 가입되지 않는다. "(있는 경우)" 는 넣어도 그만인 것처럼 읽혀
+		// 비운 채로 제출하게 만든다.
+		const invite = field("초대 코드", { name: "invite", required: true });
+
+		// 값은 속성이 아니라 프로퍼티로 넣는다. 비밀번호가 DOM 속성에 남지 않게 한다.
+		for (const [f, key] of [
+			[loginId, "loginId"],
+			[password, "password"],
+			[password2, "password2"],
+			[displayName, "displayName"],
+			[invite, "invite"],
+		]) {
+			if (kept[key]) f.input.value = kept[key];
+		}
 
 		const submit = el("button", { class: "btn btn--block", type: "submit", text: isSignup ? "가입하기" : "로그인" });
 
@@ -55,7 +76,13 @@ export async function loginPage() {
 						await navigate(homePathFor(data.role), { replace: true });
 					} catch (err) {
 						submit.disabled = false;
-						renderForm(err.message);
+						renderForm(err.message, {
+							loginId: loginId.input.value,
+							password: password.input.value,
+							password2: password2.input.value,
+							displayName: displayName.input.value,
+							invite: invite.input.value,
+						});
 					}
 				},
 			},

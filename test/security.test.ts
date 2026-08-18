@@ -9,7 +9,7 @@ import { quizRoutes } from "../src/routes/quizzes";
 import { settingsRoutes } from "../src/routes/settings";
 import { statsRoutes } from "../src/routes/stats";
 import { aiRelayRoutes } from "../src/routes/ai-relay";
-import { ORIGIN, addChild, signupParent } from "./helpers";
+import { INVITE_CODE, ORIGIN, addChild, signupParent } from "./helpers";
 
 /**
  * 보안 경계(§21·§26).
@@ -268,6 +268,7 @@ describe("세션 쿠키", () => {
 				password: "cookie-check-1234",
 				password2: "cookie-check-1234",
 				displayName: "쿠키확인",
+				invite: INVITE_CODE,
 			}),
 		});
 

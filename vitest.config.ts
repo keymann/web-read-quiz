@@ -21,7 +21,8 @@ export default defineWorkersConfig(async () => {
 							SESSION_SECRET: "test-session-secret-not-used-in-production",
 							// base64 로 정확히 32바이트여야 한다. "test-encryption-key-32-bytes-!!!"
 							ENCRYPTION_KEY: "dGVzdC1lbmNyeXB0aW9uLWtleS0zMi1ieXRlcy0hISE=",
-							INVITE_CODE: "",
+							// 가입에 늘 필요하다. 비워 두면 서버가 가입을 막으므로 테스트도 값을 준다.
+							INVITE_CODE: "test-invite-code",
 						},
 					},
 				},

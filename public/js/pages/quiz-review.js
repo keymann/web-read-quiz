@@ -273,8 +273,9 @@ export async function quizReviewPage({ id }) {
 	 *  - 브라우저 경로: 루프가 이 화면에 있으므로 표시만 세우면 다음 단계에서 스스로 멈춘다.
 	 *  - 서버 경로: 백그라운드 작업은 밖에서 죽일 수 없어 서버에 표시를 남긴다.
 	 *
-	 * 어느 쪽이든 **지금 돌고 있는 AI 호출이 끝난 뒤** 실제로 멈춘다. 그래서 화면을 떠난
-	 * 뒤에도 몇 초 동안은 서버가 일하고 있을 수 있고, 그때까지 통과한 문항은 저장된다.
+	 * 멈추는 시점이 다르다. 브라우저 경로는 **돌고 있는 호출을 곧바로 끊는다.** 서버 경로는
+	 * 밖에서 끊을 수 없어 지금 돌고 있는 AI 호출이 끝난 뒤에 멈춘다 — 화면을 떠난 뒤에도
+	 * 몇 초 동안은 서버가 일하고 있을 수 있다. 어느 쪽이든 그때까지 통과한 문항은 저장된다.
 	 */
 	async function cancelGeneration() {
 		stopRequested = true;
@@ -304,9 +305,7 @@ export async function quizReviewPage({ id }) {
 			return el("section", { class: "card" }, [
 				el("h2", { class: "section-title", text: "문제를 만드는 중이에요" }),
 				el("p", { class: "status status--warn", text: `${phaseText(relayProgress)} · ${elapsedText()}` }),
-				stopRequested
-					? el("p", { class: "hint", text: "멈추는 중이에요. 하던 요청이 끝나면 멈춥니다." })
-					: null,
+				stopRequested ? el("p", { class: "hint", text: "멈추는 중이에요." }) : null,
 				relayProgress.note ? el("p", { class: "hint", text: relayProgress.note }) : null,
 				el("progress", { class: "progress", value: done, max: total || 1 }),
 				el("p", { class: "hint", text: `${done} / ${total} 문제 저장됨` }),

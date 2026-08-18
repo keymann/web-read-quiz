@@ -455,7 +455,7 @@ export async function refreshWeb(
 	if (!row.title || row.title === "(분석 전)") {
 		throw invalid("먼저 책 정보를 분석하거나 제목을 입력해 주세요.");
 	}
-	if (!env.TAVILY_API_KEY) throw invalid("웹 검색을 쓸 수 없습니다.");
+	if (budget.slots(env).length === 0) throw invalid("웹 검색을 쓸 수 없습니다.");
 
 	if (row.web_searches >= budget.MAX_SEARCHES_PER_BOOK) {
 		throw invalid(

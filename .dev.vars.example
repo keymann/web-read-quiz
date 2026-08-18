@@ -23,6 +23,17 @@ ALADIN_TTB_KEY=""
 KAKAO_REST_KEY=""
 
 # Tavily 웹 검색. https://app.tavily.com (가입 즉시 발급, 신용카드 불필요)
-# 무료 등급 월 1,000 크레딧. 서버가 상한 950 으로 스스로 막는다
-# (src/services/search-budget.ts). 자세한 내용은 docs/tavily-search-plan.md.
+#
+# 무료 등급은 **계정당** 월 1,000 크레딧이다. 계정을 여럿 만들어 번호 순서대로 넣으면
+# 앞 키가 바닥날 때(432 Plan Limit Exceeded) 다음 키로 자동으로 넘어간다.
+# 키 하나만 넣어도 되고, 아예 없으면 웹 검색만 조용히 건너뛴다.
+#
+# 서버가 키마다 상한 950 으로 스스로 막는다(src/services/search-budget.ts).
+# 어느 키가 어느 계정인지는 실제 `.dev.vars` 에 주석으로 적어 둔다 — 잔량을 확인하려면
+# 그 계정으로 app.tavily.com 에 로그인해야 한다.
+#
+# 자세한 내용은 docs/tavily-search-plan.md.
 TAVILY_API_KEY=""
+TAVILY_API_KEY2=""
+TAVILY_API_KEY3=""
+TAVILY_API_KEY4=""

@@ -120,46 +120,73 @@ function buildQuery(hint: WebHint, broad: boolean): { query: string; country?: s
 export const relevantCount = (sources: WebSource[], title: string): number =>
 	sources.filter((s) => groundedRatio(title, `${s.title} ${s.content}`) >= MIN_TITLE_MATCH).length;
 
+/**
+ * 이 키의 월 크레딧이 정말 바닥났다는 신호.
+ *
+ * - **432 Plan Limit Exceeded** — 무료 등급 월 1,000 을 다 썼다
+ * - **433 Pay-As-You-Go Limit Exceeded** — 종량 한도를 넘겼다
+ *
+ * **429 는 여기 없다.** 그건 분당 레이트리밋(무료 100 RPM)이라 잠시 뒤면 풀린다.
+ * 429 로 키를 소진 처리하면 멀쩡한 키를 그 달 내내 버리게 된다.
+ */
+const EXHAUSTED = new Set([432, 433]);
+
 async function callOnce(
 	env: AppEnv,
 	hint: WebHint,
 	depth: Depth,
 	broad: boolean,
 ): Promise<WebSource[]> {
-	const apiKey = env.TAVILY_API_KEY;
-	if (!apiKey) return [];
-
-	// **호출 전에** 잡는다. 쓰고 나서 세면 초과를 초과한 뒤에 안다.
-	if (!(await budget.reserve(env, CREDITS[depth]))) return [];
-
 	const { query, country } = buildQuery(hint, broad);
+	const body = JSON.stringify({
+		query,
+		search_depth: depth,
+		max_results: MAX_RESULTS,
+		// 원문이 필요하다. 독후감 블로그의 줄거리는 요약이 아니라 본문에 있다.
+		include_raw_content: "markdown",
+		chunks_per_source: 3,
+		// Tavily 가 요약해 주는 answer 는 쓰지 않는다. 그 요약이 또 하나의 기억이 된다 —
+		// 우리에게 필요한 것은 근거 검사가 대조할 **원문**이다.
+		include_answer: false,
+		...(country ? { country } : {}),
+	});
 
-	try {
-		const response = await fetch(ENDPOINT, {
-			method: "POST",
-			headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-			body: JSON.stringify({
-				query,
-				search_depth: depth,
-				max_results: MAX_RESULTS,
-				// 원문이 필요하다. 독후감 블로그의 줄거리는 요약이 아니라 본문에 있다.
-				include_raw_content: "markdown",
-				chunks_per_source: 3,
-				// Tavily 가 요약해 주는 answer 는 쓰지 않는다. 그 요약이 또 하나의 기억이 된다 —
-				// 우리에게 필요한 것은 근거 검사가 대조할 **원문**이다.
-				include_answer: false,
-				...(country ? { country } : {}),
-			}),
-			signal: AbortSignal.timeout(TIMEOUT_MS),
-		});
+	/*
+	 * 키가 바닥나면 다음 키로 넘어간다. 무료 등급은 **계정당** 월 1,000 이므로 계정을 여럿
+	 * 두면 그만큼 늘어난다.
+	 *
+	 * 우리 카운터만 믿지 않는 이유: 카운터는 적게 셀 수 있다(KV 경쟁, 이 앱 바깥에서의 사용).
+	 * 그러면 남은 달 내내 같은 키로 432 를 받는다. 그래서 **Tavily 가 432 를 주면 그 키를
+	 * 소진으로 표시하고** 다음 키로 간다.
+	 */
+	const exhausted: number[] = [];
 
-		if (!response.ok) return [];
+	for (;;) {
+		// **호출 전에** 잡는다. 쓰고 나서 세면 초과를 초과한 뒤에 안다.
+		const slot = await budget.reserve(env, CREDITS[depth], exhausted);
+		if (!slot) return [];
 
-		const body = (await response.json()) as { results?: RawResult[] };
-		return normalize(body.results ?? []);
-	} catch {
-		// 네트워크 오류·타임아웃. 조사는 계속된다.
-		return [];
+		try {
+			const response = await fetch(ENDPOINT, {
+				method: "POST",
+				headers: { "content-type": "application/json", authorization: `Bearer ${slot.key}` },
+				body,
+				signal: AbortSignal.timeout(TIMEOUT_MS),
+			});
+
+			if (response.ok) {
+				const payload = (await response.json()) as { results?: RawResult[] };
+				return normalize(payload.results ?? []);
+			}
+
+			if (!EXHAUSTED.has(response.status)) return [];
+
+			await budget.markExhausted(env, slot.index);
+			exhausted.push(slot.index);
+		} catch {
+			// 네트워크 오류·타임아웃. 다른 키로 바꿔도 같을 테니 여기서 접는다.
+			return [];
+		}
 	}
 }
 
@@ -174,7 +201,7 @@ async function callOnce(
  * 실패는 빈 배열로 돌려준다 — 웹 검색이 안 됐다고 조사 전체를 무산시키지 않는다.
  */
 export async function search(env: AppEnv, hint: WebHint): Promise<WebSource[]> {
-	if (!env.TAVILY_API_KEY || hint.title.trim() === "") return [];
+	if (budget.slots(env).length === 0 || hint.title.trim() === "") return [];
 
 	const first = await callOnce(env, hint, "basic", false);
 	if (relevantCount(first, hint.title) >= MIN_RELEVANT) return first;

@@ -54,6 +54,11 @@ export interface BookView {
 
 /** AR·Lexile. 미국 학교에서 쓰는 두 척도이고 영문책에만 존재한다. */
 export interface ReadingLevelView {
+	/**
+	 * 이 값이 어디서 왔는지. `web` 이면 실제 페이지에서 읽은 값, `ai` 면 모델이 짐작한 값.
+	 * 화면은 `ai` 일 때 **"AI가 추측한 등급"** 이라고 분명히 적어야 한다.
+	 */
+	source: "web" | "ai";
 	/** ATOS 북 레벨. 4.7 = 4학년 7개월. */
 	ar: number | null;
 	/** 다 읽었을 때 받는 AR 포인트. 분량에 비례한다. */
@@ -72,7 +77,10 @@ function readingLevelOf(row: BookRow): ReadingLevelView | null {
 		arInterest: row.ar_interest,
 		lexile: row.lexile,
 	};
-	return Object.values(level).some((v) => v !== null && v !== "") ? level : null;
+	if (!Object.values(level).some((v) => v !== null && v !== "")) return null;
+
+	// 출처가 적혀 있지 않은 옛 행은 웹에서 온 것으로 본다 — 짐작은 이 컬럼이 생긴 뒤에만 넣는다.
+	return { source: row.reading_level_source ?? "web", ...level };
 }
 
 export const toView = (row: BookRow): BookView => ({
@@ -690,6 +698,14 @@ export async function applyResearch(
 	// 화면이 등급을 바로 볼 수 있게 여기서 만난다. 위의 저장과 겹쳐 돌았다.
 	await levelWork;
 
+	/*
+	 * 웹 조회가 끝난 **뒤에** 판단해야 한다. 먼저 짐작해 넣으면 확인된 값이 들어올 자리를
+	 * 짐작이 차지한다. 그래서 방금 갱신된 행을 다시 읽고 나서 정한다.
+	 */
+	if (found.found) {
+		await guessReadingLevel(env, userId, await requireOwned(env, userId, bookId), found);
+	}
+
 	const updated = await requireOwned(env, userId, bookId);
 
 	return {
@@ -785,7 +801,43 @@ export async function ensureReadingLevel(
 	if (!row.ar_interest && found.arInterestLevel !== "") fields.ar_interest = found.arInterestLevel;
 	if (!row.lexile && found.lexile !== "") fields.lexile = found.lexile;
 
-	if (Object.keys(fields).length > 0) await booksRepo.update(env, userId, row.id, fields);
+	if (Object.keys(fields).length > 0) {
+		await booksRepo.update(env, userId, row.id, { ...fields, reading_level_source: "web" });
+	}
+}
+
+/**
+ * 웹에서 못 찾았을 때의 마지막 수단 — **조사 모델이 짐작한 값**을 쓴다.
+ *
+ * 없는 것보다는 낫다. 부모가 아이에게 맞는 책인지 가늠할 실마리는 되고, AR·Lexile 이 아예
+ * 매겨지지 않았거나 잘 알려지지 않은 책이 흔하다. 대신 화면에 **"AI가 추측한 등급"** 이라고
+ * 분명히 적어 내보낸다(`reading_level_source = 'ai'`).
+ *
+ * **섞지 않는다.** 웹에서 하나라도 찾았으면 손대지 않는다 — 한 줄에 확인된 값과 짐작한 값이
+ * 섞이면 부모가 어느 쪽이 어느 쪽인지 알 수 없다.
+ *
+ * 값은 이미 도는 조사 호출에 얹어 받는다. 따로 부르지 않으므로 비용도 지연도 늘지 않고,
+ * 서버 경로와 브라우저 릴레이 모두 같은 길을 탄다.
+ */
+async function guessReadingLevel(
+	env: AppEnv,
+	userId: string,
+	row: BookRow,
+	found: BookResearch,
+): Promise<void> {
+	if (!isEnglishBook(row.book_language ?? found.bookLanguage, row.title)) return;
+	// 웹에서 하나라도 건졌으면 그대로 둔다.
+	if (row.ar_level !== null || (row.lexile ?? "") !== "") return;
+
+	// `normalizeResearch` 가 이미 형식을 검사해 통과시킨 값이다.
+	const fields: booksRepo.BookFields = {};
+	if (found.arLevel !== "") fields.ar_level = Number(found.arLevel);
+	if (found.arPoints !== "") fields.ar_points = Number(found.arPoints);
+	if (found.arInterestLevel !== "") fields.ar_interest = found.arInterestLevel;
+	if (found.lexile !== "") fields.lexile = found.lexile;
+	if (Object.keys(fields).length === 0) return;
+
+	await booksRepo.update(env, userId, row.id, { ...fields, reading_level_source: "ai" });
 }
 
 function mergeMetadata(
@@ -871,6 +923,11 @@ export async function saveManualPlot(
 		publishedAt: row.published_at ?? "",
 		targetAge: "",
 		bookLanguage: row.book_language ?? "",
+		// 등급은 이 경로에서 쓰지 않는다. Brief 조립에만 쓰는 빈 조사 결과다.
+		arLevel: "",
+		arPoints: "",
+		arInterestLevel: "",
+		lexile: "",
 		description: row.description ?? "",
 		plotSummary: "",
 		characters: [],

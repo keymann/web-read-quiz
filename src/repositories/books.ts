@@ -39,6 +39,8 @@ export interface BookRow {
 	lexile: string | null;
 	/** 등급을 찾아본 적이 있는지. 못 찾은 책에서 같은 검색을 되풀이하지 않기 위한 표시. */
 	reading_level_searched_at: string | null;
+	/** 등급이 어디서 왔는지. `web` = 실제 페이지에서 읽음, `ai` = 모델이 짐작함. */
+	reading_level_source: "web" | "ai" | null;
 	analyzed_at: string | null;
 	searched_at: string | null;
 	created_at: string;
@@ -108,6 +110,7 @@ export interface BookFields {
 	ar_interest?: string | null;
 	lexile?: string | null;
 	reading_level_searched_at?: string | null;
+	reading_level_source?: "web" | "ai" | null;
 	analyzed_at?: string | null;
 	searched_at?: string | null;
 }

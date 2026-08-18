@@ -744,6 +744,26 @@ body {
 	color: var(--warning);
 }
 
+/* 짐작한 읽기 난이도. 확인된 값(초록)과 한눈에 갈라 보이게 둔다 —
+   부모가 이 숫자로 책을 고르므로 둘이 같아 보이면 안 된다. */
+.tag--guess {
+	border-color: var(--warning);
+	color: var(--warning);
+	border-style: dashed;
+}
+
+/* 이름표와 "AI가 추측한 등급" 배지를 한 줄에. */
+.level__head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 6px;
+}
+
+.level__head .field__label {
+	margin-bottom: 0;
+}
+
 .textarea {
 	min-height: 160px;
 	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

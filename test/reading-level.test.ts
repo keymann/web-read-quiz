@@ -281,6 +281,11 @@ const research = (over: Partial<BookResearch> = {}): BookResearch => ({
 	publishedAt: "1952-10-15",
 	targetAge: "8-12",
 	bookLanguage: "en",
+	// 조사 모델이 짐작한 값. 웹 조회가 빈손일 때만 쓰인다.
+	arLevel: "",
+	arPoints: "",
+	arInterestLevel: "",
+	lexile: "",
 	description: "A pig named Wilbur is saved by a spider.",
 	plotSummary: "Wilbur is saved from slaughter by Charlotte, who writes words in her web.",
 	characters: [{ name: "Wilbur", role: "the pig" }],
@@ -354,6 +359,7 @@ describe("책에 반영되기까지", () => {
 		const { book } = (await client.request(`/api/books/${bookId}`)).body.data;
 		expect(book.language).toBe("en");
 		expect(book.readingLevel).toEqual({
+			source: "web",
 			ar: 4.4,
 			arPoints: 5,
 			arInterest: "MG",
@@ -402,6 +408,70 @@ describe("책에 반영되기까지", () => {
 		const { book } = (await client.request(`/api/books/${bookId}`)).body.data;
 		expect(book.readingLevel.ar).toBe(9.9);
 		expect(book.readingLevel.lexile).toBe("680L");
+	});
+
+	/**
+	 * 웹에서 못 찾았을 때의 마지막 수단.
+	 *
+	 * 없는 것보다는 낫다 — AR·Lexile 이 아예 매겨지지 않았거나 잘 알려지지 않은 책이 흔하다.
+	 * 대신 짐작이라는 것을 **화면이 알 수 있어야** 한다.
+	 */
+	it("웹에서 못 찾으면 조사 모델이 짐작한 값을 쓰고 출처를 ai 로 남긴다", async () => {
+		const { client, bookId, userId } = await bookReady();
+		mockTavily([]); // 전용 검색이 빈손
+
+		await applyResearch(
+			oneKey,
+			userId,
+			bookId,
+			normalizeResearch(research({ arLevel: "4.4", lexile: "680L" })),
+			notices,
+		);
+
+		const { book } = (await client.request(`/api/books/${bookId}`)).body.data;
+		expect(book.readingLevel).toMatchObject({ source: "ai", ar: 4.4, lexile: "680L" });
+	});
+
+	/** 확인된 값과 짐작한 값이 한 줄에 섞이면 부모가 어느 쪽이 어느 쪽인지 알 수 없다. */
+	it("웹에서 하나라도 찾았으면 짐작으로 채우지 않는다", async () => {
+		const { client, bookId, userId } = await bookReady();
+		mockTavily([
+			{
+				url: "https://hub.lexile.com/charlottes-web",
+				title: "Charlotte's Web | Lexile Hub",
+				content: "Lexile measure: 680L",
+				score: 0.95,
+			},
+		]);
+
+		// 모델은 AR 까지 짐작해 보내지만, 웹이 렉사일을 찾았으므로 손대지 않는다.
+		await applyResearch(
+			oneKey,
+			userId,
+			bookId,
+			normalizeResearch(research({ arLevel: "9.9", lexile: "990L" })),
+			notices,
+		);
+
+		const { book } = (await client.request(`/api/books/${bookId}`)).body.data;
+		expect(book.readingLevel).toMatchObject({ source: "web", lexile: "680L", ar: null });
+	});
+
+	it("한국어 책에는 짐작도 하지 않는다", async () => {
+		const { client, bookId, userId } = await bookReady("마당을 나온 암탉");
+
+		await applyResearch(
+			oneKey,
+			userId,
+			bookId,
+			normalizeResearch(
+				research({ title: "마당을 나온 암탉", bookLanguage: "ko", arLevel: "4.4", lexile: "680L" }),
+			),
+			notices,
+		);
+
+		const { book } = (await client.request(`/api/books/${bookId}`)).body.data;
+		expect(book.readingLevel).toBeNull();
 	});
 
 	/** 줄거리를 못 찾은 것과 등급이 없는 것은 다른 일이다. */

@@ -75,9 +75,11 @@ const MIN_CHUNK = 6;
  * 뽑는 것보다 훨씬 비싸다.
  *
  *   24개 → [9, 9, 9]   12개 → [7, 7]   7개 → [7]
+ *
+ * `maxParallel` 로 동시 호출 수를 더 조일 수 있다. 제공자마다 견디는 정도가 다르다.
  */
-export function planChunks(want: number): number[] {
-	const count = Math.min(MAX_PARALLEL_CALLS, Math.max(1, Math.floor(want / MIN_CHUNK)));
+export function planChunks(want: number, maxParallel = MAX_PARALLEL_CALLS): number[] {
+	const count = Math.min(maxParallel, Math.max(1, Math.floor(want / MIN_CHUNK)));
 	const total = count > 1 ? want + count : want;
 	const base = Math.floor(total / count);
 	const extra = total % count;

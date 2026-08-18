@@ -303,22 +303,25 @@ describe("문제 생성 릴레이", { timeout: 30_000 }, () => {
 	});
 
 	/**
-	 * 릴레이도 서버 경로와 같이 나눠서 동시에 부른다.
+	 * **릴레이는 나누지 않는다.** 서버 경로는 셋으로 나누는데 여기만 다른 이유는 실측이다.
 	 *
-	 * 실측(Gemini, 20문항): 한 덩어리로 뽑으니 생성에만 82초가 걸렸다. 출력 토큰을 만드는
-	 * 시간이 임계 경로라, 나눠 나란히 부르면 가장 느린 하나만 기다리게 된다.
+	 * 2026-08-18, Gemini 무료 등급 키 · 20문항:
+	 *   한 덩어리로        생성 82초 → 전체 207초
+	 *   셋으로 나눠 동시에  429·503 이 돌아와 재시도·모델 교체로 번짐. 198초에도 생성 중
+	 *
+	 * 부모의 키로 브라우저가 직접 부르는 경로라 무료 등급의 동시 호출 제한을 그대로 맞는다.
+	 * 요청을 배열로 주고받는 구조는 남겨 두었다 — 견디는 키를 가려낼 수 있게 되면 숫자만 올린다.
 	 */
-	it("많이 필요하면 요청을 나눠 내려준다", async () => {
+	it("요청을 나누지 않고 하나로 내려준다", async () => {
 		const client = await parentWithGemini();
 		const bookId = await bookReadyForQuiz(client);
-		// 기본 20문항 — 여유분을 더하면 24라 셋으로 나뉜다.
 		const quizId = (await client.post("/api/quizzes", { bookId })).body.data.quiz.id;
 
 		const plan = await client.post("/api/ai/plan", { kind: "generate", quizId, rejected: [] });
 
 		expect(plan.body.data.need).toBe(20);
-		expect(plan.body.data.calls).toHaveLength(3);
-		for (const call of plan.body.data.calls) expect(call.url).toContain(":generateContent");
+		expect(plan.body.data.calls).toHaveLength(1);
+		expect(plan.body.data.calls[0].url).toContain(":generateContent");
 	});
 
 	/** 청크마다 1번부터 매겨 오므로 합친 자리에서 다시 매겨야 판정이 엉뚱한 문항에 붙지 않는다. */

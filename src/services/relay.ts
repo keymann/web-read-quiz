@@ -218,6 +218,15 @@ export async function planResearch(
 		}),
 	);
 
+	/*
+	 * Tavily 가 넉넉히 물어다 주었으면 내장 검색을 켜지 않는다(서버 경로와 같은 규칙).
+	 *
+	 * 릴레이에서 특히 크다 — 무료 등급 Gemini 키는 내장 검색에 429 를 내고, 브라우저는 그걸
+	 * 보고 검색 없이 한 번 더 부른다. 즉 **호출 하나를 통째로 버린다.** 켜지 않으면 그 왕복이
+	 * 아예 없다.
+	 */
+	const grounded = book.hasTavilyGrounding(row.title, web);
+
 	return {
 		...buildGeminiCall(
 			buildResearchRequest(
@@ -230,7 +239,7 @@ export async function planResearch(
 					bib,
 					web,
 				},
-				useWebSearch,
+				useWebSearch && !grounded,
 			),
 		),
 		model,
@@ -252,9 +261,17 @@ export async function applyResearch(
 	const groundingSources = extractGroundingSources(response as never);
 	const { model } = await settings.getRuntime(env, userId);
 
+	/*
+	 * 근거가 있는지는 **서버가 다시 판단한다.** 브라우저는 "내장 검색을 켜고 불렀는가" 만
+	 * 알지, Tavily 발췌가 프롬프트에 실렸는지는 모른다. 그 자료가 있으면 내장 검색을 켜지
+	 * 않았어도 근거는 있는 것이고, 겁주는 안내를 띄울 이유가 없다.
+	 */
+	const row = await book.requireOwned(env, userId, bookId);
+	const grounded = groundingUsed || book.hasTavilyGrounding(row.title, book.cachedWeb(row));
+
 	return book.applyResearch(env, userId, bookId, normalizeResearch(raw), {
-		groundingUsed,
-		searchNotice: groundingUsed
+		groundingUsed: grounded,
+		searchNotice: grounded
 			? null
 			: "이 키로는 웹 검색을 쓸 수 없어 모델이 아는 지식으로 정리했습니다. 책 정보를 꼭 직접 확인해 주세요.",
 		modelNotice: null,

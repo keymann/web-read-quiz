@@ -235,6 +235,20 @@ export async function applyIdentity(
 	};
 }
 
+/**
+ * Tavily 가 이 책을 다룬 자료를 넉넉히 가져왔는가.
+ *
+ * 넉넉하면 **제공자 내장 웹 검색을 켜지 않는다.** 그 발췌를 이미 프롬프트에 싣고 있어 같은
+ * 일을 두 번 하는 셈이고, 내장 검색은 호출당 5~30초를 더 쓴다. 무료 등급 Gemini 키는 내장
+ * 검색에 429 를 내므로 실패한 호출 하나를 통째로 버리고 다시 부르게 된다 — 실측에서 조사
+ * 화면에 매번 "이 키로는 웹 검색을 쓸 수 없어…" 가 뜬 것이 그 낭비된 호출이다.
+ *
+ * 기준은 문제를 만들 수 있다고 보는 최소 근거 수와 같게 둔다. 그만큼 모였으면 모델이 기억을
+ * 끌어올 필요가 없다.
+ */
+export const hasTavilyGrounding = (title: string, web: tavily.WebSource[]): boolean =>
+	tavily.relevantCount(web, title) >= MIN_SOURCES_FOR_QUIZ;
+
 /* ── 3. 정보 검색 ────────────────────────────────────── */
 
 export interface SearchResult {
@@ -242,7 +256,10 @@ export interface SearchResult {
 	research: BookResearch;
 	sourceCount: number;
 	readyForQuiz: boolean;
-	/** 웹 검색을 실제로 썼는지. false 면 모델이 아는 지식만으로 답한 것이라 근거가 약하다. */
+	/**
+	 * 이 답이 **웹 자료에 근거하는지**. Tavily 발췌든 제공자 내장 검색이든 하나라도 있으면 참.
+	 * false 면 모델이 아는 지식만으로 답한 것이라 근거가 약하다.
+	 */
 	groundingUsed: boolean;
 	/** 근거가 얇은지. 만들 수는 있지만 검수를 더 꼼꼼히 해야 한다. */
 	evidenceWeak: boolean;
@@ -299,6 +316,9 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 
 	// 웹 검색을 쓸 수 없는 키가 있다(Gemini 무료 등급). 그 경우 조사 자체를 포기하지 말고
 	// 모델이 아는 지식만으로 한 번 더 시도하되, 근거가 약하다는 사실을 부모에게 알린다.
+	// Tavily 가 충분히 물어다 주었으면 내장 검색은 켜지 않는다.
+	const tavilyGrounded = hasTavilyGrounding(row.title, web);
+
 	let groundingUsed = true;
 	let searchNotice: string | null = null;
 	let found: BookResearch;
@@ -322,12 +342,15 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 		);
 
 	try {
-		({ value: found, fellBackFrom, modelUsed } = await attempt(true));
+		({ value: found, fellBackFrom, modelUsed } = await attempt(!tavilyGrounded));
 	} catch (err) {
 		if (!(err instanceof ApiError) || err.code !== "search_unavailable") throw err;
 
-		groundingUsed = false;
-		searchNotice = `${err.message} 웹 검색 없이 정리했으니 책 정보를 꼭 직접 확인해 주세요.`;
+		// 내장 검색이 막혔다. Tavily 자료가 있으면 근거는 여전히 있으므로 겁주지 않는다.
+		groundingUsed = tavilyGrounded;
+		searchNotice = tavilyGrounded
+			? null
+			: `${err.message} 웹 검색 없이 정리했으니 책 정보를 꼭 직접 확인해 주세요.`;
 		({ value: found, fellBackFrom, modelUsed } = await attempt(false));
 	}
 

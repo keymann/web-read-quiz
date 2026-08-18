@@ -123,6 +123,24 @@ describe("표 모으기", () => {
 		expect(out.lexile).toBe("680L");
 	});
 
+	/**
+	 * 실측에서 이렇게 갈렸다(Charlotte's Web).
+	 *
+	 *   arbookfind 인쇄용 페이지(다른 레코드)  흥미수준 UG 만 하나
+	 *   arbookfind 상세 페이지(맞는 책)        흥미수준 MG · AR 4.4 · 5.0 포인트
+	 *
+	 * 머릿수로만 세면 1:1 이고 관련도가 앞선 인쇄용 페이지가 이겨 **UG 가 뽑혔다.**
+	 * 실제 흥미수준은 MG 다.
+	 */
+	it("여러 항목을 함께 내놓은 출처를 더 믿는다", () => {
+		const out = vote([
+			src({ arInterestLevel: "UG" }, "https://print.example"),
+			src({ arInterestLevel: "MG", arLevel: "4.4", arPoints: "5.0" }, "https://detail.example"),
+		]);
+
+		expect(out.arInterestLevel).toBe("MG");
+	});
+
 	it("항목마다 따로 센다", () => {
 		const out = vote([
 			src({ arLevel: "4.4" }, "https://a.example"),

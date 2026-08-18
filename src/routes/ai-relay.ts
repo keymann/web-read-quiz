@@ -36,7 +36,7 @@ async function credential({ env, principal }: RouteCtx): Promise<Response> {
 }
 
 /** 다음에 보낼 요청을 만들어 준다. */
-async function plan({ request, env, principal }: RouteCtx): Promise<Response> {
+async function plan({ request, env, ctx, principal }: RouteCtx): Promise<Response> {
 	const parent = requireParent(principal);
 	await rateLimit(env, "ai", parent.userId, 200, 60 * 60);
 
@@ -55,6 +55,7 @@ async function plan({ request, env, principal }: RouteCtx): Promise<Response> {
 			return ok(
 				await relay.planResearch(
 					env,
+					ctx,
 					parent.userId,
 					v.str(body, "bookId", "책"),
 					body.webSearch !== false,

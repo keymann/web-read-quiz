@@ -5,6 +5,7 @@ import type { BookRow } from "../repositories/books";
 import * as bibliographic from "../search/bibliographic";
 import * as tavily from "../search/tavily";
 import { research, type BookResearch } from "../search/web";
+import { WEB_SECTION } from "./grounding";
 import * as budget from "./search-budget";
 import * as settings from "./settings";
 import type { AppEnv } from "../types";
@@ -228,9 +229,8 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 	// 공개 서지 API 와 웹 검색은 성격이 다르다. 전자는 서지정보의 기준점, 후자는 줄거리 원천.
 	// 여기서 받은 것을 책에 적어 두고, 반영 단계(applyResearch)가 같은 값을 읽는다.
 	const bib = await prepareBib(env, userId, row);
-	// 웹 자료도 지금 확보해 둔다. 반영 단계가 이 캐시를 읽어 참고 자료에 남긴다.
-	// 조사 프롬프트에 싣는 것은 Phase 2 다 — 여기서는 근거를 모으는 것까지만 한다.
-	await prepareWeb(env, userId, row);
+	// 웹 자료가 있으면 조사 지시가 "기억으로 정리" 에서 "자료에서 발췌" 로 바뀐다.
+	const web = await prepareWeb(env, userId, row);
 
 	const hint = {
 		title: row.title,
@@ -238,6 +238,7 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 		publisher: row.publisher ?? "",
 		isbn: row.isbn13 ?? row.isbn10 ?? "",
 		bib,
+		web,
 	};
 
 	// 웹 검색을 쓸 수 없는 키가 있다(Gemini 무료 등급). 그 경우 조사 자체를 포기하지 말고
@@ -554,7 +555,8 @@ export async function applyResearch(
 	const bib = await readBib(env, userId, row);
 
 	// 준비 단계가 적어 둔 웹 자료. 여기서 새로 검색하지 않는다 — 크레딧을 두 번 쓰게 된다.
-	const sources = collectSources(bookId, bib, found, { ...notices, webSources: cachedWeb(row) });
+	const webSources = cachedWeb(row);
+	const sources = collectSources(bookId, bib, found, { ...notices, webSources });
 	await booksRepo.replaceSources(env, bookId, sources);
 
 	// 책을 특정하지 못했으면 그 결과의 서지정보를 받아들이지 않는다. 엉뚱한 책의 정보가 섞이면
@@ -575,7 +577,9 @@ export async function applyResearch(
 	await booksRepo.update(env, userId, bookId, {
 		...merged,
 		// 부모가 적어 둔 줄거리는 조사가 성공해도 남긴다. 가장 믿을 만한 출처다.
-		...(found.found ? { brief: buildBrief(row.title, merged, found, bib, row.manual_plot ?? "") } : {}),
+		...(found.found
+			? { brief: buildBrief(row.title, merged, found, bib, row.manual_plot ?? "", webSources) }
+			: {}),
 		searched_at: new Date().toISOString(),
 	});
 
@@ -648,6 +652,9 @@ function mergeMetadata(
 	};
 }
 
+/** Brief 에 실을 웹 자료 수. 프롬프트가 매 라운드 실리므로 조심해서 정한다. */
+const MAX_BRIEF_WEB = 6;
+
 /** 부모가 적은 줄거리의 최소 길이. 이보다 짧으면 문제를 만들 만한 내용이 안 된다. */
 export const MIN_MANUAL_PLOT = 50;
 /** 상한. 프롬프트가 한없이 길어지지 않게 한다. */
@@ -714,7 +721,7 @@ export async function saveManualPlot(
 	await booksRepo.update(env, userId, bookId, {
 		manual_plot: text || null,
 		// 비우면 Brief 도 없앤다. 부모가 지웠는데 그 내용으로 문제가 나오면 안 된다.
-		brief: text === "" ? null : buildBrief(row.title, merged, empty, bib, text),
+		brief: text === "" ? null : buildBrief(row.title, merged, empty, bib, text, cachedWeb(row)),
 	});
 
 	const updated = await requireOwned(env, userId, bookId);
@@ -743,6 +750,8 @@ function buildBrief(
 	bib: bibliographic.BibRecord[] = [],
 	/** 부모가 직접 적은 줄거리. 있으면 AI 요약과 함께 `[줄거리]` 안에 들어간다. */
 	manualPlot = "",
+	/** 웹에서 읽은 페이지. 출제 근거로 인정되는 유일한 외부 글이다. */
+	web: tavily.WebSource[] = [],
 ): string {
 	/*
 	 * 부모가 적은 글도 `[줄거리]` 안에 둔다. 별도 제목을 붙이면 생성 프롬프트가 그것을
@@ -792,6 +801,24 @@ function buildBrief(
 	if (found.keyEvents.length > 0) {
 		lines.push("", "[주요 사건 — 일어난 순서]");
 		found.keyEvents.forEach((event, index) => lines.push(`${index + 1}. ${event}`));
+	}
+
+	/*
+	 * 웹에서 실제로 읽은 페이지의 글. **이 연동의 산물이 여기 들어온다.**
+	 *
+	 * `[출판사 소개]` 와 다르다. 그건 홍보 문구라 출제 근거로 쓸 수 없지만(§7), 이것은
+	 * 독후감·서평·도서관 자료에서 온 **책 내용에 관한 글**이다. 그래서 출제 근거로 인정하고
+	 * (`ai/generate.ts` 의 근거 목록에 들어 있다), 근거 검사도 이 절을 기준으로 본다.
+	 *
+	 * 소스당 상한을 건다 — Brief 는 문제 생성 프롬프트에 그대로 실리므로 여기서 부풀면
+	 * 매 라운드 비용이 늘고 모델이 중간을 흘린다.
+	 */
+	if (web.length > 0) {
+		lines.push("", WEB_SECTION);
+		web.slice(0, MAX_BRIEF_WEB).forEach((source, index) => {
+			lines.push(`[자료 ${index + 1}] ${source.title}`);
+			lines.push(source.content.slice(0, tavily.MAX_EXCERPT));
+		});
 	}
 
 	if (found.sources.length > 0) {

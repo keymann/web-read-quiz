@@ -1,6 +1,7 @@
 import { BOOK_RESEARCH_SCHEMA } from "../ai/schemas";
 import type { AiProvider, StructuredRequest } from "../ai/types";
 import type { BibRecord } from "./bibliographic";
+import { MAX_EXCERPT, type WebSource } from "./tavily";
 
 /**
  * 파이프라인 2단계 — 웹 검색으로 문제 출제에 쓸 서술 정보를 모은다(§6).
@@ -24,6 +25,9 @@ export interface BookResearch {
 	keyEvents: string[];
 	sources: { url: string; title: string; content: string }[];
 }
+
+/** 프롬프트에 실을 웹 자료 수. 6건 × 1,500자 ≈ 9,000자. */
+const MAX_WEB_SOURCES = 6;
 
 /** 출처별 발췌 상한. 원문을 그대로 쌓아 두지 않기 위한 장치다(§6). */
 export const MAX_SOURCE_CONTENT = 2_000;
@@ -82,12 +86,42 @@ const BIB_RULE = `
 - 책소개는 **어느 책인지 확인하는 용도**입니다. 책소개를 그대로 옮겨 plotSummary 를 채우지 마세요.
   책소개밖에 아는 것이 없다면 그것은 이 책을 모르는 것이므로 비워 둡니다.`;
 
+/**
+ * 웹 자료를 받았을 때의 지시. **기억으로 정리하는 것이 아니라 발췌하는 것이다.**
+ *
+ * PR #30 에서 측정한 것이 이 지시의 이유다. 모델은 『움푹산의 비밀』의 줄거리를 통째로
+ * 지어냈고, 검증된 출판사 책소개를 줘도 세부는 계속 지어냈다. 대조할 사실이 짧았기 때문이다.
+ * 이제는 실제 페이지 원문이 프롬프트에 있으므로 **"자료에 적혀 있는 것만" 이 지킬 수 있는
+ * 요구**가 된다.
+ *
+ * 그래도 프롬프트만 믿지는 않는다. 근거 검사가 이 자료를 기준으로 문항을 기계적으로
+ * 걸러낸다(§Phase 3, `services/grounding.ts`).
+ */
+const EXCERPT_INSTRUCTIONS = `당신은 어린이 책 정보를 정리하는 사서입니다.
+아래 [웹 자료] 는 이 책을 다룬 실제 웹 페이지에서 가져온 글입니다. **그 안에 적혀 있는 것만**
+정리하세요.
+
+원칙:
+- **자료에 없는 사건·인물·결말을 당신의 기억으로 채우지 마세요.** 자료가 다루지 않은 항목은
+  빈 문자열이나 빈 배열로 둡니다.
+- plotSummary 의 각 문장은 자료 어느 대목에서 나왔는지 말할 수 있어야 합니다.
+- 자료에 줄거리가 없고 판매 정보·홍보 문구뿐이라면 **plotSummary 를 비워** 두세요.
+  그건 이 책의 내용을 모르는 것과 같습니다.
+- 자료가 서로 다른 책을 말하고 있다면 제목·지은이가 맞는 자료만 씁니다.
+- 책의 **본문 원문을 길게 옮기지 마세요.** 줄거리는 당신의 말로 요약합니다.
+- plotSummary 는 결말까지 포함해 구체적으로 씁니다. 이후 이 내용으로 독서 확인 문제를 만들기
+  때문에 "감동적인 이야기" 같은 뭉뚱그린 표현이 아니라 누가 무엇을 했는지 적으세요.
+- characters 와 keyEvents 도 자료에 있는 만큼 채웁니다. keyEvents 는 일어난 순서대로 씁니다.
+- sources 에는 실제로 근거로 쓴 자료의 URL 과 제목, 그 자료에서 얻은 내용의 요약을 남깁니다.`;
+
 export interface ResearchHint {
 	title: string;
 	author: string;
 	publisher: string;
 	isbn: string;
 	bib: BibRecord[];
+	/** Tavily 로 실제로 읽은 페이지. 있으면 지시가 "기억" 에서 "발췌" 로 바뀐다. */
+	web?: WebSource[];
 }
 
 /** 조사 요청 조립. 브라우저 릴레이 경로도 이걸 그대로 쓴다. */
@@ -134,17 +168,45 @@ export function buildResearchRequest(
 		")",
 	].join("");
 
+	/*
+	 * 웹 자료를 프롬프트에 싣는다. **소스당 상한을 걸고 상위 몇 건만.**
+	 *
+	 * 원문을 통째로 넣으면 프롬프트가 수만 자가 되어 비용과 지연이 커지고, 모델이 중간을
+	 * 흘린다. Tavily 가 관련도 순으로 정렬해 주므로 앞에서 잘라도 좋은 것이 남는다.
+	 */
+	const web = (hint.web ?? []).slice(0, MAX_WEB_SOURCES);
+	const excerpts = web
+		.map((source, index) => `[자료 ${index + 1}] ${source.title}\n${source.content.slice(0, MAX_EXCERPT)}`)
+		.join("\n\n");
+
 	const prompt = [
 		`다음 책을 조사해 주세요: ${query}`,
 		known ? `\n서지 데이터베이스에서 확인된 정보:\n${known}` : "",
+		excerpts ? `\n[웹 자료]\n${excerpts}` : "",
 		"\n이 책은 초등학교 고학년 아이의 독서 확인 문제를 만드는 데 쓰입니다.",
 		"줄거리·등장인물·사건 순서를 최대한 구체적으로 정리해 주세요.",
 	].join("");
 
+	/*
+	 * 지시는 **자료가 있느냐**로 갈린다.
+	 *
+	 *   웹 자료 있음  → 발췌하라 (기억으로 채우지 마라)
+	 *   검색 툴 사용   → 검색해서 찾아라
+	 *   그 외         → 아는 것만 적어라
+	 *
+	 * 자료를 주고도 "당신이 아는 지식으로" 라고 하면 모델이 자료를 배경으로만 보고 기억으로
+	 * 답한다. 실제로 출판사 책소개에서 그런 일이 있었다.
+	 */
+	const base = excerpts
+		? EXCERPT_INSTRUCTIONS
+		: useWebSearch
+			? SEARCH_INSTRUCTIONS
+			: RECALL_INSTRUCTIONS;
+
 	return {
 		model,
 		// 서지 정보가 있을 때만 대조 규칙을 붙인다. 없는 것을 대조하라고 하면 혼란만 준다.
-		instructions: (useWebSearch ? SEARCH_INSTRUCTIONS : RECALL_INSTRUCTIONS) + (known ? BIB_RULE : ""),
+		instructions: base + (known ? BIB_RULE : ""),
 		prompt,
 		webSearch: useWebSearch,
 		schemaName: "book_research",

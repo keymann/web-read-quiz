@@ -91,8 +91,22 @@ async function patch({ request, env, principal, params }: RouteCtx): Promise<Res
 	return ok({ book: book.toView(await book.requireOwned(env, parent.userId, params.id!)) });
 }
 
+/**
+ * 부모가 직접 적은 줄거리. AI 호출이 없으므로 `ai` 레이트리밋을 쓰지 않는다.
+ *
+ * PATCH 에 필드 하나를 더하지 않고 따로 둔 이유: 이 요청만 Brief 를 다시 조립한다.
+ * 오탈자 고치는 PATCH 와 같은 문으로 들어오면 그 부수효과가 안 보인다.
+ */
+async function manualPlot({ request, env, principal, params }: RouteCtx): Promise<Response> {
+	const parent = requireParent(principal);
+	const body = await v.readJson(request);
+	// 길이 판정은 서비스가 한다. 최소 길이와 함께 한 곳에서 정해야 메시지가 갈리지 않는다.
+	return ok(await book.saveManualPlot(env, parent.userId, params.id!, v.optionalStr(body, "plot") ?? ""));
+}
+
 export const bookRoutes: Route[] = [
 	route("POST", "/api/books", upload),
+	route("PUT", "/api/books/:id/plot", manualPlot),
 	route("GET", "/api/books", list),
 	route("GET", "/api/books/:id", detail),
 	route("PATCH", "/api/books/:id", patch),

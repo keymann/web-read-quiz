@@ -35,6 +35,8 @@ export interface BookView {
 	analyzedAt: string | null;
 	searchedAt: string | null;
 	hasBrief: boolean;
+	/** 부모가 직접 적어 둔 줄거리. 화면이 그대로 다시 보여 주고 고칠 수 있게 한다. */
+	manualPlot: string | null;
 	createdAt: string;
 }
 
@@ -53,6 +55,7 @@ export const toView = (row: BookRow): BookView => ({
 	analyzedAt: row.analyzed_at,
 	searchedAt: row.searched_at,
 	hasBrief: row.brief !== null && row.brief !== "",
+	manualPlot: row.manual_plot,
 	createdAt: row.created_at,
 });
 
@@ -360,21 +363,25 @@ export async function prepareBib(
 	return bib;
 }
 
+/** 적어 둔 서지 결과만 읽는다. 없으면 빈 배열 — 외부를 부르지 않는다. */
+function cachedBib(row: BookRow): bibliographic.BibRecord[] {
+	if (!row.bib_cache) return [];
+	try {
+		const parsed: unknown = JSON.parse(row.bib_cache);
+		return Array.isArray(parsed) ? (parsed as bibliographic.BibRecord[]) : [];
+	} catch {
+		return [];
+	}
+}
+
 /** 준비 단계가 적어 둔 서지 결과. 없으면(예전에 등록된 책) 그때 새로 받는다. */
 async function readBib(
 	env: AppEnv,
 	userId: string,
 	row: BookRow,
 ): Promise<bibliographic.BibRecord[]> {
-	if (row.bib_cache) {
-		try {
-			const parsed: unknown = JSON.parse(row.bib_cache);
-			if (Array.isArray(parsed)) return parsed as bibliographic.BibRecord[];
-		} catch {
-			// 형식이 깨졌으면 새로 받는다.
-		}
-	}
-	return prepareBib(env, userId, row);
+	const cached = cachedBib(row);
+	return cached.length > 0 ? cached : prepareBib(env, userId, row);
 }
 
 /**
@@ -411,9 +418,19 @@ export async function applyResearch(
 		? mergeMetadata(row, bib[0] ?? null, found)
 		: mergeMetadata(row, bib[0] ?? null, null);
 
+	/*
+	 * 조사가 빈손이어도 **이미 저장돼 있던 줄거리는 지우지 않는다.**
+	 *
+	 * 예전에는 `found.found` 가 false 면 brief 를 통째로 null 로 덮었다. 그러면 잘 되던 책도
+	 * "정보 다시 찾기" 한 번에 줄거리를 잃고 문제 만들기 버튼이 잠긴다. 모델이 한 번 빈손으로
+	 * 돌아오는 것은 흔한 일이라(무료 등급·과부하·잘 안 알려진 책) 실제로 겪게 된다.
+	 *
+	 * 조사가 성공했을 때만 새 줄거리로 바꾼다. 실패는 **아무것도 하지 않는 것**이 맞다.
+	 */
 	await booksRepo.update(env, userId, bookId, {
 		...merged,
-		brief: found.found ? buildBrief(row.title, merged, found, bib) : null,
+		// 부모가 적어 둔 줄거리는 조사가 성공해도 남긴다. 가장 믿을 만한 출처다.
+		...(found.found ? { brief: buildBrief(row.title, merged, found, bib, row.manual_plot ?? "") } : {}),
 		searched_at: new Date().toISOString(),
 	});
 
@@ -486,6 +503,90 @@ function mergeMetadata(
 	};
 }
 
+/** 부모가 적은 줄거리의 최소 길이. 이보다 짧으면 문제를 만들 만한 내용이 안 된다. */
+export const MIN_MANUAL_PLOT = 50;
+/** 상한. 프롬프트가 한없이 길어지지 않게 한다. */
+export const MAX_MANUAL_PLOT = 4_000;
+
+/**
+ * 부모가 직접 적은 줄거리를 저장하고 Brief 를 다시 조립한다. **AI 호출이 없다.**
+ *
+ * AI 가 모르는 책이 실제로 있다 — 실측 『움푹산의 비밀』(크레용하우스)은 서지 조회로
+ * 제목·지은이·출판사·출판사 책소개까지 확인됐는데도 조사 모델이 모든 항목을 비워 돌려줬다.
+ * 무료 등급 키는 웹 검색도 못 쓰므로 그런 책은 영영 문제를 만들 수 없었다.
+ *
+ * 출판사 책소개로 대신하지 않는 이유: 그건 홍보 문구라 그것만으로 문제를 만들면 책을 읽지
+ * 않아도 풀린다(§7). 반면 부모는 그 책을 손에 들고 있다.
+ */
+export async function saveManualPlot(
+	env: AppEnv,
+	userId: string,
+	bookId: string,
+	plot: string,
+): Promise<SearchResult> {
+	const row = await requireOwned(env, userId, bookId);
+	const text = plot.trim();
+
+	if (text !== "" && text.length < MIN_MANUAL_PLOT) {
+		throw invalid(`줄거리를 ${MIN_MANUAL_PLOT}자 이상 적어 주세요. 문제를 만들 만한 내용이 필요합니다.`);
+	}
+	if (text.length > MAX_MANUAL_PLOT) {
+		throw invalid(`줄거리는 ${MAX_MANUAL_PLOT}자까지 넣을 수 있습니다.`);
+	}
+
+	/*
+	 * 여기서는 서지 조회를 **새로 하지 않는다.** 부모가 적은 글을 저장하는 데 외부 API 세 곳을
+	 * 부를 이유가 없다. 아직 조사 전이라 캐시가 비어 있으면 서지 없이 Brief 를 만든다 —
+	 * 어차피 부모가 적은 줄거리가 출제 근거다.
+	 */
+	const bib = cachedBib(row);
+	const merged: booksRepo.BookFields = {
+		author: row.author,
+		publisher: row.publisher,
+		published_at: row.published_at,
+		description: row.description,
+	};
+
+	/*
+	 * 조사 결과가 없어도 Brief 를 만들 수 있게 빈 조사 결과를 세운다. 이렇게 두면 나중에
+	 * 조사가 성공했을 때와 **같은 조립 규칙**을 탄다 — Brief 형식이 두 벌로 갈리지 않는다.
+	 */
+	const empty: BookResearch = {
+		found: text !== "",
+		title: row.title,
+		author: row.author ?? "",
+		publisher: row.publisher ?? "",
+		isbn13: row.isbn13 ?? "",
+		publishedAt: row.published_at ?? "",
+		targetAge: "",
+		description: row.description ?? "",
+		plotSummary: "",
+		characters: [],
+		keyEvents: [],
+		sources: [],
+	};
+
+	await booksRepo.update(env, userId, bookId, {
+		manual_plot: text || null,
+		// 비우면 Brief 도 없앤다. 부모가 지웠는데 그 내용으로 문제가 나오면 안 된다.
+		brief: text === "" ? null : buildBrief(row.title, merged, empty, bib, text),
+	});
+
+	const updated = await requireOwned(env, userId, bookId);
+	const sources = await booksRepo.listSources(env, bookId);
+
+	return {
+		book: toView(updated),
+		research: empty,
+		sourceCount: sources.length,
+		readyForQuiz: isReadyForQuiz(updated.brief),
+		evidenceWeak: hasWeakEvidence(evidenceCount(sources)),
+		groundingUsed: false,
+		searchNotice: null,
+		modelNotice: null,
+	};
+}
+
 /**
  * Book Brief — 문제 생성 프롬프트에 그대로 들어갈 컨텍스트(§파이프라인 3단계).
  * 별도 AI 호출 없이 서버에서 조립하고, 재생성 때 재사용한다.
@@ -495,7 +596,16 @@ function buildBrief(
 	merged: booksRepo.BookFields,
 	found: BookResearch,
 	bib: bibliographic.BibRecord[] = [],
+	/** 부모가 직접 적은 줄거리. 있으면 AI 요약과 함께 `[줄거리]` 안에 들어간다. */
+	manualPlot = "",
 ): string {
+	/*
+	 * 부모가 적은 글도 `[줄거리]` 안에 둔다. 별도 제목을 붙이면 생성 프롬프트가 그것을
+	 * 출제 근거 목록(`[줄거리]·[주요 사건]·[등장인물]`)에서 빠뜨린다 — 정작 가장 믿을 만한
+	 * 출처인데 근거로 안 쓰이게 된다.
+	 */
+	const plot = [found.plotSummary.trim(), manualPlot.trim()].filter(Boolean).join("\n");
+
 	const lines = [
 		`[책] ${title}`,
 		`지은이: ${merged.author ?? "미상"} / 출판사: ${merged.publisher ?? "미상"} / 출간: ${merged.published_at ?? "미상"}`,
@@ -505,7 +615,7 @@ function buildBrief(
 		merged.description ?? "",
 		"",
 		"[줄거리]",
-		found.plotSummary,
+		plot,
 	];
 
 	// 출판사·서점이 공개한 책소개. **모델의 기억이 아니라 확인된 글**이라 근거 검사가 인정한다.

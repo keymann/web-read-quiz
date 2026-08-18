@@ -63,6 +63,25 @@ const RECALL_INSTRUCTIONS = `당신은 어린이 책에 밝은 사서입니다.
 - characters 와 keyEvents 도 최대한 구체적으로 채웁니다. keyEvents 는 일어난 순서대로 씁니다.
 - 참고한 웹 페이지가 없으므로 **sources 는 빈 배열로 둡니다.**`;
 
+/**
+ * 서지 데이터베이스 책소개를 어떻게 대할지. 검색을 쓰든 안 쓰든 같다.
+ *
+ * 이 블록의 목적은 "책소개로 줄거리를 대신하라"가 **아니다.** 책소개는 홍보 문구라 그것만으로
+ * 문제를 만들면 책을 읽지 않아도 풀린다(§7). 목적은 **대조**다 — 모델이 떠올린 이야기가
+ * 검증된 책소개와 다르면, 그건 다른 책을 떠올린 것이다.
+ *
+ * 실측에서 모델은 『움푹산의 비밀』의 줄거리를 자신 있게 지어냈다(거인 크네 이야기를
+ * 소년과 한국 표범 이야기로). 대조할 사실이 프롬프트에 없었기 때문이다.
+ */
+const BIB_RULE = `
+서지 데이터베이스 정보에 대하여:
+- 아래 "확인된 정보"는 **공개 서지 API 로 제목·지은이를 대조해 검증한 사실**입니다.
+  당신의 기억보다 이쪽을 믿으세요.
+- 기억하는 줄거리가 책소개와 **어긋나면 다른 책을 떠올린 것입니다.** 그때는 지어내지 말고
+  **모든 항목을 비워** 두세요. 등장인물 이름이나 소재가 책소개와 맞지 않는 경우가 그렇습니다.
+- 책소개는 **어느 책인지 확인하는 용도**입니다. 책소개를 그대로 옮겨 plotSummary 를 채우지 마세요.
+  책소개밖에 아는 것이 없다면 그것은 이 책을 모르는 것이므로 비워 둡니다.`;
+
 export interface ResearchHint {
 	title: string;
 	author: string;
@@ -77,8 +96,28 @@ export function buildResearchRequest(
 	hint: ResearchHint,
 	useWebSearch = true,
 ): StructuredRequest {
+	/*
+	 * 서지 API 가 준 **책소개까지** 넣는다.
+	 *
+	 * 예전에는 제목·저자·출판사·출간일만 넣었다. 그런데 우리는 그 책소개를 이미 받아서 HTML 을
+	 * 벗기고 캐시까지 해 두고 있었다 — 그걸 조사 모델에게만 안 보여 주고 있었던 것이다.
+	 * (Brief 에는 PR #27 로 들어갔지만, 정작 `found` 를 판정하는 이 단계가 못 봤다.)
+	 *
+	 * 실측 『움푹산의 비밀』(크레용하우스): 책소개 없이 물으면 모델이 갈렸다.
+	 *   gemini-3.6-flash        모든 항목을 비워 반환 → brief 가 null → 문제를 만들 수 없다
+	 *   gemini-3-flash-preview  줄거리 404자·등장인물 4명·사건 8개를 **통째로 지어냈다**
+	 *
+	 * 두 번째가 더 위험하다. Brief 자체가 날조되면 근거 검사(`grounding`)는 그 날조를
+	 * "근거 있음"으로 인정한다 — 틀린 내용이 근거까지 갖춘다.
+	 *
+	 * 검증된 책소개는 그 두 갈래를 모두 막는다. 모르는 책에는 실마리를 주고,
+	 * 지어내려는 모델에게는 대조할 사실을 준다.
+	 */
 	const known = hint.bib
-		.map((r) => `- ${r.source}: ${r.title} / ${r.author} / ${r.publisher} / ${r.publishedAt}`)
+		.map((r) => {
+			const head = `- ${r.source}: ${r.title} / ${r.author} / ${r.publisher} / ${r.publishedAt}`;
+			return r.description?.trim() ? `${head}\n  책소개: ${r.description.trim()}` : head;
+		})
 		.join("\n");
 
 	/*
@@ -104,7 +143,8 @@ export function buildResearchRequest(
 
 	return {
 		model,
-		instructions: useWebSearch ? SEARCH_INSTRUCTIONS : RECALL_INSTRUCTIONS,
+		// 서지 정보가 있을 때만 대조 규칙을 붙인다. 없는 것을 대조하라고 하면 혼란만 준다.
+		instructions: (useWebSearch ? SEARCH_INSTRUCTIONS : RECALL_INSTRUCTIONS) + (known ? BIB_RULE : ""),
 		prompt,
 		webSearch: useWebSearch,
 		schemaName: "book_research",

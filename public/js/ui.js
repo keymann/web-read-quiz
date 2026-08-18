@@ -60,9 +60,15 @@ export function field(label, inputProps) {
 	return { wrap, input };
 }
 
-/** 여러 줄 입력. 서비스 계정 JSON 처럼 긴 값을 붙여넣을 때 쓴다. */
-export function textareaField(label, props) {
+/**
+ * 여러 줄 입력. 서비스 계정 JSON 처럼 긴 값을 붙여넣을 때 쓴다.
+ *
+ * `value` 는 속성이 아니라 프로퍼티로 넣는다. `<textarea>` 의 내용은 자식 텍스트에서 오므로
+ * `setAttribute("value", …)` 는 아무 일도 하지 않는다 — 미리 채워 넣으려다 빈 칸이 뜬다.
+ */
+export function textareaField(label, { value, ...props } = {}) {
 	const input = el("textarea", { class: "textarea", ...props });
+	if (value !== undefined && value !== null) input.value = String(value);
 	const wrap = el("label", { class: "field" }, [el("span", { class: "field__label", text: label }), input]);
 	return { wrap, input };
 }

@@ -12,3 +12,17 @@ ENCRYPTION_KEY="dev-only-change-me-xxxxxxxxxxxxxxxxxxxxxxxxx="
 
 # 회원가입 초대 코드(선택). 비워두면 가입 제한 없음.
 INVITE_CODE=""
+
+# ── 서비스 공용 외부 API 키 (부모별이 아니다) ─────────────────────
+# 셋 다 선택이다. 없으면 그 소스만 조용히 건너뛰고 나머지는 그대로 동작한다.
+
+# 알라딘 서지 조회. https://www.aladin.co.kr/ttb/wblock.aspx?pn=apiguide
+ALADIN_TTB_KEY=""
+
+# 카카오 책 검색. https://developers.kakao.com/ → 내 애플리케이션 → REST API 키
+KAKAO_REST_KEY=""
+
+# Tavily 웹 검색. https://app.tavily.com (가입 즉시 발급, 신용카드 불필요)
+# 무료 등급 월 1,000 크레딧. 서버가 상한 950 으로 스스로 막는다
+# (src/services/search-budget.ts). 자세한 내용은 docs/tavily-search-plan.md.
+TAVILY_API_KEY=""

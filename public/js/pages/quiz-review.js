@@ -1,7 +1,17 @@
 import { get, post } from "../api.js";
 import { generateQuestions, usesBrowserRelay } from "../ai-relay.js";
 import { requireSession } from "../session.js";
-import { banner, confirmAction, el, header, mount, selectField, setKidMode } from "../ui.js";
+import { navigate } from "../router.js";
+import {
+	banner,
+	confirmAction,
+	confirmDialog,
+	el,
+	header,
+	mount,
+	selectField,
+	setKidMode,
+} from "../ui.js";
 
 /**
  * 문제 생성 진행 + 검수 화면(§11·§13).
@@ -44,7 +54,8 @@ const TYPE_LABEL = {
 function phaseText(p) {
 	switch (p.phase) {
 		case "planning":
-			return `${p.round}번째 시도를 준비하고 있어요`;
+			// 서버 경로는 라운드 번호를 보내지 않는다. 단계 이름만 적고 문장은 여기서 만든다.
+			return p.round ? `${p.round}번째 시도를 준비하고 있어요` : "문제 만들 준비를 하고 있어요";
 		case "generating":
 			return p.need
 				? `AI 가 문제 ${p.need}개를 만들고 있어요`
@@ -63,7 +74,10 @@ function phaseText(p) {
 				: "기준에 못 미친 문제를 다시 만들어요";
 		case "done":
 			return "다 만들었어요";
+		case "cancelling":
+			return "멈추는 중이에요";
 		default:
+			// 서버가 아직 단계를 적기 전이거나 모르는 값일 때.
 			return "AI 가 문제를 만들고 있어요";
 	}
 }
@@ -83,6 +97,13 @@ export async function quizReviewPage({ id }) {
 	let startedAt = null;
 	/** 브라우저가 직접 생성 중일 때의 진행 상황. 서버 폴링과 달리 우리가 직접 안다. */
 	let relayProgress = null;
+	/**
+	 * 부모가 "만들기 취소" 를 눌렀다.
+	 *
+	 * 릴레이 경로는 이 값을 루프가 단계마다 읽어 스스로 멈춘다. 서버 경로는 서버에 표시를
+	 * 남기고 여기서는 화면만 바꾼다.
+	 */
+	let stopRequested = false;
 	/** 다시 만들려고 고른 문항 id. */
 	let selected = new Set();
 	let children = [];
@@ -113,6 +134,17 @@ export async function quizReviewPage({ id }) {
 			message = err.message;
 			messageKind = "error";
 		}
+		/*
+		 * 이 화면에서 시작하지 않은 생성도 살아 있는 것으로 보여야 한다.
+		 *
+		 * 예전에는 `startGeneration()` 안에서만 시계를 돌렸다. 그런데 서버 경로는 **책 화면에서**
+		 * 생성을 시작하고 이 화면으로 넘어온다 — 그러면 여기서는 아무도 시계를 켜지 않아
+		 * 경과 시간이 빈칸이고 1초마다 다시 그리지도 않는다. 화면이 멈춰 보인다.
+		 *
+		 * 그래서 **진행 중이면 누가 시작했든 여기서 시계를 켠다.**
+		 */
+		if (data?.quiz.status === "GENERATING") startTicking(data.quiz.startedAt);
+
 		render(data);
 
 		// 브라우저가 직접 돌리는 동안에는 폴링하지 않는다. 진행 상황을 이미 알고 있다.
@@ -129,12 +161,23 @@ export async function quizReviewPage({ id }) {
 		if (ticker !== null) clearInterval(ticker);
 		timer = null;
 		ticker = null;
+		// 다음 생성은 그때부터 다시 센다. 안 비우면 지난 회차 시각이 남아 몇 분째로 시작한다.
+		startedAt = null;
 	}
 
-	/** 진행 중에는 1초마다 다시 그린다. 경과 시간이 흐르는 것만으로도 살아 있다는 신호가 된다. */
-	function startTicking() {
+	/**
+	 * 진행 중에는 1초마다 다시 그린다. 경과 시간이 흐르는 것만으로도 살아 있다는 신호가 된다.
+	 *
+	 * @param serverStartedAt 서버가 적어 둔 시작 시각(ISO). 다른 화면에서 시작하고 넘어왔으면
+	 *   이 값이 있어야 **실제로 흐른 시간**을 보여줄 수 있다. 없으면 지금부터 센다.
+	 */
+	function startTicking(serverStartedAt = null) {
+		if (startedAt === null) {
+			const parsed = serverStartedAt ? Date.parse(serverStartedAt) : Number.NaN;
+			startedAt = Number.isNaN(parsed) ? Date.now() : parsed;
+		}
 		if (ticker !== null) return;
-		startedAt = Date.now();
+
 		ticker = setInterval(() => {
 			if (location.pathname !== myPath) return stop();
 			render(lastData);
@@ -143,6 +186,14 @@ export async function quizReviewPage({ id }) {
 
 	function render(data) {
 		if (data) lastData = data;
+		/*
+		 * 이미 다른 화면으로 갔으면 그리지 않는다.
+		 *
+		 * 취소하고 나가도 **돌고 있던 AI 호출은 끝까지 간다.** 그 호출이 끝나며 진행 상황을
+		 * 알려 오는데, 그때 그리면 부모가 방금 이동한 화면을 덮어써 되돌아온 것처럼 보인다.
+		 * `refresh()` 는 같은 검사를 이미 하고 있고, 여기는 릴레이 진행 콜백이 들어오는 길이다.
+		 */
+		if (location.pathname !== myPath) return;
 		if (!data) {
 			mount(header("퀴즈", [backLink()]), banner(message ?? "퀴즈를 불러오지 못했습니다."));
 			return;
@@ -166,14 +217,74 @@ export async function quizReviewPage({ id }) {
 		);
 	}
 
+	/** 지금 문제를 만들고 있는가. 서버 경로든 브라우저 경로든 하나로 본다. */
+	function isBusy() {
+		return relayProgress !== null || lastData?.quiz.status === "GENERATING";
+	}
+
 	// 화살표 함수를 const 로 두면 render() 가 먼저 실행될 때 TDZ 에 걸린다. 선언식으로 둔다.
 	function backLink(bookId) {
-		return el("a", {
+		const href = bookId ? `/parent/books/${bookId}` : "/parent/books";
+
+		/*
+		 * 만드는 중에는 링크가 아니라 버튼이다.
+		 *
+		 * 링크로 두면 눌리는 순간 화면이 바뀌어 버려 물어볼 틈이 없다. 브라우저 경로에서는
+		 * 그것이 곧 생성 중단이라 부모는 왜 문제가 안 만들어졌는지 알 수 없다.
+		 */
+		if (!isBusy()) {
+			return el("a", { class: "btn btn--ghost", href, "data-link": true, text: "← 책으로" });
+		}
+
+		return el("button", {
 			class: "btn btn--ghost",
-			href: bookId ? `/parent/books/${bookId}` : "/parent/books",
-			"data-link": true,
+			type: "button",
 			text: "← 책으로",
+			onClick: () => askBeforeLeaving(href),
 		});
+	}
+
+	/**
+	 * 만드는 중에 나가려 할 때 묻는다.
+	 *
+	 * `window.confirm` 을 쓰지 않는 이유: "확인/취소" 로는 어느 쪽이 "멈추기" 인지 알 수 없다.
+	 * 두 버튼에 각각 이름을 준다(§ui.confirmDialog).
+	 */
+	async function askBeforeLeaving(href) {
+		const stopIt = await confirmDialog({
+			title: "문제 만드는 중이예요",
+			message: "문제 만드는 중이예요. 계속하려면 조금만 기다려주세요.",
+			confirmText: "만들기 취소",
+			cancelText: "기다리기",
+		});
+
+		if (!stopIt) return;
+
+		await cancelGeneration();
+		navigate(href);
+	}
+
+	/**
+	 * 만들기를 멈춘다.
+	 *
+	 * 두 경로가 다르다.
+	 *  - 브라우저 경로: 루프가 이 화면에 있으므로 표시만 세우면 다음 단계에서 스스로 멈춘다.
+	 *  - 서버 경로: 백그라운드 작업은 밖에서 죽일 수 없어 서버에 표시를 남긴다.
+	 *
+	 * 어느 쪽이든 **지금 돌고 있는 AI 호출이 끝난 뒤** 실제로 멈춘다. 그래서 화면을 떠난
+	 * 뒤에도 몇 초 동안은 서버가 일하고 있을 수 있고, 그때까지 통과한 문항은 저장된다.
+	 */
+	async function cancelGeneration() {
+		stopRequested = true;
+		relayProgress = null;
+		stop();
+
+		try {
+			await post(`/api/quizzes/${id}/cancel`);
+		} catch {
+			// 취소를 못 알렸어도 화면은 떠난다. 브라우저 경로는 이미 멈췄고,
+			// 서버 경로는 다음 폴링에서 상태가 맞춰진다.
+		}
 	}
 
 	function elapsedText() {
@@ -191,6 +302,9 @@ export async function quizReviewPage({ id }) {
 			return el("section", { class: "card" }, [
 				el("h2", { class: "section-title", text: "문제를 만드는 중이에요" }),
 				el("p", { class: "status status--warn", text: `${phaseText(relayProgress)} · ${elapsedText()}` }),
+				stopRequested
+					? el("p", { class: "hint", text: "멈추는 중이에요. 하던 요청이 끝나면 멈춥니다." })
+					: null,
 				relayProgress.note ? el("p", { class: "hint", text: relayProgress.note }) : null,
 				el("progress", { class: "progress", value: done, max: total || 1 }),
 				el("p", { class: "hint", text: `${done} / ${total} 문제 저장됨` }),
@@ -198,7 +312,7 @@ export async function quizReviewPage({ id }) {
 					class: "hint",
 					text: "이 화면을 닫으면 중간에 멈춥니다. 1~2분 걸릴 수 있어요.",
 				}),
-			]);
+			].filter(Boolean));
 		}
 
 		if (quiz.status === "GENERATING") {
@@ -207,14 +321,19 @@ export async function quizReviewPage({ id }) {
 				el("h2", { class: "section-title", text: "문제를 만드는 중이에요" }),
 				el("p", {
 					class: "status status--warn",
-					text: `AI 가 문제를 만들고 스스로 검수하고 있어요 · ${elapsedText()}`,
+					// 서버가 적어 둔 단계를 그대로 문장으로 옮긴다. 예전에는 한 줄이 고정이라
+					// 30초 내내 같은 글자만 떠 있었고, 그러면 멈춘 것처럼 보인다.
+					text: `${phaseText({ phase: quiz.phase })} · ${elapsedText()}`,
 				}),
+				stopRequested || quiz.cancelRequested
+					? el("p", { class: "hint", text: "멈추는 중이에요. 하던 요청이 끝나면 멈춥니다." })
+					: null,
 				// CSP 가 인라인 style 을 막으므로 폭을 직접 계산해 넣을 수 없다.
 				// 네이티브 <progress> 는 값만 주면 되고 접근성도 따라온다.
 				el("progress", { class: "progress", value: progress.generated, max: progress.total }),
 				el("p", { class: "hint", text: `${progress.generated} / ${progress.total} 문제 (${percent}%)` }),
 				el("p", { class: "hint", text: "1~2분 걸릴 수 있어요. 이 화면을 열어 두세요." }),
-			]);
+			].filter(Boolean));
 		}
 
 		const complete = progress.generated >= progress.total;
@@ -436,6 +555,8 @@ export async function quizReviewPage({ id }) {
 	async function startGeneration() {
 		message = null;
 		messageKind = "info";
+		// 지난 회차에서 취소했더라도 새로 누른 것은 새로 시작한다.
+		stopRequested = false;
 
 		try {
 			if (await usesBrowserRelay()) {
@@ -445,17 +566,29 @@ export async function quizReviewPage({ id }) {
 				startTicking();
 				await refresh();
 
-				const result = await generateQuestions(id, (progress) => {
-					relayProgress = progress;
-					render(lastData);
-				});
+				const result = await generateQuestions(
+					id,
+					(progress) => {
+						relayProgress = progress;
+						render(lastData);
+					},
+					() => stopRequested,
+				);
 
 				relayProgress = null;
 				stop();
-				message = result.done
-					? "문제가 준비되었습니다."
-					: `${result.target}문제 중 ${result.accepted}개만 검수를 통과했습니다. 다시 만들면 나머지를 채웁니다.`;
-				messageKind = result.done ? "info" : "error";
+
+				if (result.cancelled) {
+					// 화면을 떠나는 중일 수도 있다. 그 경우 이 문구는 보이지 않지만,
+					// 머물러 있기로 한 경우에는 무슨 일이 있었는지 알아야 한다.
+					message = "문제 만들기를 멈췄습니다. 그때까지 만든 문제는 저장했습니다.";
+					messageKind = "info";
+				} else {
+					message = result.done
+						? "문제가 준비되었습니다."
+						: `${result.target}문제 중 ${result.accepted}개만 검수를 통과했습니다. 다시 만들면 나머지를 채웁니다.`;
+					messageKind = result.done ? "info" : "error";
+				}
 			} else {
 				await post(`/api/quizzes/${id}/generate`);
 				// 새 생성이 시작되면 간격도 처음부터. 앞 회차에서 늘어난 값을 물려받으면

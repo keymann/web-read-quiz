@@ -37,6 +37,8 @@ export interface BookRow {
 	ar_points: number | null;
 	ar_interest: string | null;
 	lexile: string | null;
+	/** 등급을 찾아본 적이 있는지. 못 찾은 책에서 같은 검색을 되풀이하지 않기 위한 표시. */
+	reading_level_searched_at: string | null;
 	analyzed_at: string | null;
 	searched_at: string | null;
 	created_at: string;
@@ -105,6 +107,7 @@ export interface BookFields {
 	ar_points?: number | null;
 	ar_interest?: string | null;
 	lexile?: string | null;
+	reading_level_searched_at?: string | null;
 	analyzed_at?: string | null;
 	searched_at?: string | null;
 }
@@ -125,6 +128,30 @@ export async function update(
 	await env.DB.prepare(`UPDATE books SET ${sets.join(", ")} WHERE id = ? AND created_by = ?`)
 		.bind(...entries.map(([, value]) => value as string | number | null), bookId, userId)
 		.run();
+}
+
+/**
+ * 등급 검색을 맡는다. **먼저 표시를 세운 쪽만** 실제로 찾아 나선다.
+ *
+ * 조사 준비 단계와 반영 단계가 동시에 같은 책을 찾는 일이 있다. 표시를 검색 뒤에 세우면
+ * 둘 다 통과해 크레딧을 두 번 쓴다. `claimForGeneration` 과 같은 방식으로, 조건과 갱신을
+ * 한 문장에 두어 하나만 통과하게 한다.
+ */
+export async function claimReadingLevelSearch(
+	env: AppEnv,
+	userId: string,
+	bookId: string,
+): Promise<boolean> {
+	const result = await env.DB.prepare(
+		`UPDATE books
+		    SET reading_level_searched_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+		        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		  WHERE id = ? AND created_by = ? AND reading_level_searched_at IS NULL`,
+	)
+		.bind(bookId, userId)
+		.run();
+
+	return (result.meta.changes ?? 0) > 0;
 }
 
 export async function listSources(env: AppEnv, bookId: string): Promise<BookSourceRow[]> {

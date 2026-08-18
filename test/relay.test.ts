@@ -246,17 +246,19 @@ describe("문제 생성 릴레이", { timeout: 30_000 }, () => {
 		const validatePlan = await client.post("/api/ai/plan", {
 			kind: "validate",
 			quizId,
-			response: geminiResponse({ questions }),
+			responses: [geminiResponse({ questions })],
 		});
 		expect(validatePlan.body.data.questions).toHaveLength(6);
-		expect(validatePlan.body.data.url).toContain(":generateContent");
+		expect(validatePlan.body.data.calls[0].url).toContain(":generateContent");
+		// 6문항은 나눌 만큼 크지 않다. 잘게 쪼개면 청크끼리 겹치기만 한다.
+		expect(validatePlan.body.data.calls).toHaveLength(1);
 
 		// 3) 검수 결과를 적용한다
 		const accepted = await client.post("/api/ai/apply", {
 			kind: "accept",
 			quizId,
 			questions: validatePlan.body.data.questions,
-			response: geminiResponse(verdictsFor(questions)),
+			responses: [geminiResponse(verdictsFor(questions))],
 		});
 
 		expect(accepted.body.data.accepted).toBe(6);
@@ -292,12 +294,52 @@ describe("문제 생성 릴레이", { timeout: 30_000 }, () => {
 			quizId,
 			questions: all,
 			// 모델이 전부 통과라고 해도
-			response: geminiResponse(verdictsFor(all)),
+			responses: [geminiResponse(verdictsFor(all))],
 		});
 
 		// 서버 사후검사를 통과한 3개만 저장된다
 		expect(accepted.body.data.accepted).toBe(3);
 		expect(accepted.body.data.rejected.length).toBe(3);
+	});
+
+	/**
+	 * 릴레이도 서버 경로와 같이 나눠서 동시에 부른다.
+	 *
+	 * 실측(Gemini, 20문항): 한 덩어리로 뽑으니 생성에만 82초가 걸렸다. 출력 토큰을 만드는
+	 * 시간이 임계 경로라, 나눠 나란히 부르면 가장 느린 하나만 기다리게 된다.
+	 */
+	it("많이 필요하면 요청을 나눠 내려준다", async () => {
+		const client = await parentWithGemini();
+		const bookId = await bookReadyForQuiz(client);
+		// 기본 20문항 — 여유분을 더하면 24라 셋으로 나뉜다.
+		const quizId = (await client.post("/api/quizzes", { bookId })).body.data.quiz.id;
+
+		const plan = await client.post("/api/ai/plan", { kind: "generate", quizId, rejected: [] });
+
+		expect(plan.body.data.need).toBe(20);
+		expect(plan.body.data.calls).toHaveLength(3);
+		for (const call of plan.body.data.calls) expect(call.url).toContain(":generateContent");
+	});
+
+	/** 청크마다 1번부터 매겨 오므로 합친 자리에서 다시 매겨야 판정이 엉뚱한 문항에 붙지 않는다. */
+	it("나눠 받은 응답을 합치며 번호를 다시 매긴다", async () => {
+		const client = await parentWithGemini();
+		const bookId = await bookReadyForQuiz(client);
+		await client.request("/api/settings/quiz", { method: "PUT", body: { questionCount: 6, passCount: 4 } });
+		const quizId = (await client.post("/api/quizzes", { bookId })).body.data.quiz.id;
+
+		// 두 청크가 각각 1·2·3번으로 매겨 온다.
+		const first = makeQuestions(3);
+		const second = makeQuestions(3, 100);
+
+		const validatePlan = await client.post("/api/ai/plan", {
+			kind: "validate",
+			quizId,
+			responses: [geminiResponse({ questions: first }), geminiResponse({ questions: second })],
+		});
+
+		const numbers = validatePlan.body.data.questions.map((q: { questionNumber: number }) => q.questionNumber);
+		expect(numbers).toEqual([1, 2, 3, 4, 5, 6]);
 	});
 
 	it("검수에서 탈락하면 저장하지 않는다", async () => {
@@ -311,7 +353,7 @@ describe("문제 생성 릴레이", { timeout: 30_000 }, () => {
 			kind: "accept",
 			quizId,
 			questions,
-			response: geminiResponse(verdictsFor(questions, false)),
+			responses: [geminiResponse(verdictsFor(questions, false))],
 		});
 
 		expect(accepted.body.data.accepted).toBe(0);
@@ -329,7 +371,7 @@ describe("문제 생성 릴레이", { timeout: 30_000 }, () => {
 			kind: "accept",
 			quizId,
 			questions,
-			response: geminiResponse(verdictsFor(questions)),
+			responses: [geminiResponse(verdictsFor(questions))],
 		});
 
 		const plan = await client.post("/api/ai/plan", { kind: "generate", quizId, rejected: [] });
@@ -362,7 +404,7 @@ describe("정답 위치 균등화는 서버가 한다", () => {
 			kind: "accept",
 			quizId,
 			questions,
-			response: geminiResponse(verdictsFor(questions)),
+			responses: [geminiResponse(verdictsFor(questions))],
 		});
 
 		const { results } = await env.DB.prepare(

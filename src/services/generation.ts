@@ -97,7 +97,7 @@ const firstReason = (settled: PromiseSettledResult<unknown>[]): unknown =>
 	new Error("문제를 만들지 못했습니다.");
 
 /** 배열을 `size` 개씩 자른다. */
-const sliceInto = <T>(items: T[], size: number): T[][] => {
+export const sliceInto = <T>(items: T[], size: number): T[][] => {
 	const out: T[][] = [];
 	for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
 	return out;

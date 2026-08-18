@@ -81,7 +81,8 @@ async function plan({ request, env, ctx, principal }: RouteCtx): Promise<Respons
 					env,
 					parent.userId,
 					v.str(body, "quizId", "퀴즈"),
-					body.response,
+					// 청크마다 하나씩. 동시 호출 상한(generation.MAX_PARALLEL_CALLS)보다 넉넉히 잡는다.
+					boundedArray(body.responses, 8),
 					avoid,
 				),
 			);
@@ -124,7 +125,7 @@ async function apply({ request, env, principal }: RouteCtx): Promise<Response> {
 					v.str(body, "quizId", "퀴즈"),
 					// 한 라운드에 만들 수 있는 문항 수를 넘길 이유가 없다. 서버가 다시 사후검사도 한다.
 					boundedArray(body.questions, 100),
-					body.response,
+					boundedArray(body.responses, 8),
 				),
 			);
 

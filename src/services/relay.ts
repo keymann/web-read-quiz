@@ -265,12 +265,21 @@ export async function applyResearch(
 
 /* ── 3. 문제 생성 ────────────────────────────────────── */
 
-export interface GeneratePlan extends Partial<PlannedCall> {
+export interface GeneratePlan {
 	/** 목표를 이미 채웠으면 더 부를 필요가 없다. */
 	done: boolean;
 	need: number;
 	target: number;
 	accepted: number;
+	/**
+	 * 브라우저가 **동시에** 보낼 요청들. 나누는 규칙은 서버 경로와 같다(`generation.planChunks`).
+	 *
+	 * 한 번에 24문항을 뽑으면 그것만 80초가 걸린다(실측). 출력 토큰을 만드는 시간이 곧
+	 * 임계 경로라, 나눠 나란히 부르면 가장 느린 하나만 기다리게 된다.
+	 */
+	calls?: { url: string; body: unknown }[];
+	model?: string;
+	modelNotice?: string | null;
 }
 
 export async function planGenerate(
@@ -298,20 +307,26 @@ export async function planGenerate(
 	const { model, modelNotice } = await chooseModel(env, userId, "text", avoid);
 	const hasWeb = await hasWebSource(env, quiz.book_id);
 
-	const call = buildGeminiCall(
-		buildGenerateRequest({
-			// 조립에만 쓰므로 실제 호출 경로는 필요 없다.
-			provider: null as never,
-			apiKey: "",
-			model,
-			brief,
-			// 탈락분을 미리 흡수해 2라운드로 넘어가지 않게 한다(generation.withBuffer).
-			count: generation.withBuffer(need),
-			existing: existing.map((q) => q.question_text),
-			rejected: rejected.slice(-10),
-			briefIsUnverified: !hasWeb,
-			language: quiz.language,
-		}),
+	/*
+	 * 여유분을 더한 뒤 몇 번에 나눠 부를지 정한다(`generation.withBuffer` · `planChunks`).
+	 * 모델은 한 번만 고른다 — 같은 라운드의 청크가 서로 다른 모델을 쓰면 문항 성격이 갈린다.
+	 */
+	const chunks = generation.planChunks(generation.withBuffer(need));
+	const calls = chunks.map((count) =>
+		buildGeminiCall(
+			buildGenerateRequest({
+				// 조립에만 쓰므로 실제 호출 경로는 필요 없다.
+				provider: null as never,
+				apiKey: "",
+				model,
+				brief,
+				count,
+				existing: existing.map((q) => q.question_text),
+				rejected: rejected.slice(-10),
+				briefIsUnverified: !hasWeb,
+				language: quiz.language,
+			}),
+		),
 	);
 
 	return {
@@ -320,16 +335,25 @@ export async function planGenerate(
 		need,
 		target: quiz.question_count,
 		accepted: existing.length,
-		...call,
+		calls,
 		model,
 		modelNotice,
 	};
 }
 
-export interface ValidatePlan extends Partial<PlannedCall> {
-	/** 사후검사를 통과해 검증으로 보낼 문항. 브라우저는 이걸 그대로 accept 단계에 돌려준다. */
+export interface ValidatePlan {
+	/**
+	 * 사후검사를 통과해 검증으로 보낼 문항. 브라우저는 이걸 그대로 accept 단계에 돌려준다.
+	 *
+	 * 청크를 합치면서 **번호를 다시 매긴 뒤**의 문항이다. 번호는 검수 결과를 문항에 도로
+	 * 잇는 열쇠라(각 청크가 1번부터 매겨 온다) 여기서 정한 번호를 끝까지 써야 한다.
+	 */
 	questions: GeneratedQuestion[];
 	rejected: { questionText: string; reason: string }[];
+	/** 검증도 나눠서 동시에 부른다. */
+	calls?: { url: string; body: unknown }[];
+	model?: string;
+	modelNotice?: string | null;
 }
 
 /**
@@ -340,7 +364,8 @@ export async function planValidate(
 	env: AppEnv,
 	userId: string,
 	quizId: string,
-	response: unknown,
+	/** 청크마다 하나씩. 브라우저가 동시에 받아 온 생성 응답들이다. */
+	responses: unknown[],
 	avoid: string[] = [],
 ): Promise<ValidatePlan> {
 	await assertRelayProvider(env, userId);
@@ -352,13 +377,29 @@ export async function planValidate(
 	const brief = bookRow?.brief;
 	if (!bookRow || !brief) throw invalid("책 정보(Brief)가 없습니다.");
 
-	const generated = parseGenerateContentResponse<{ questions: GeneratedQuestion[] }>(
-		"gemini",
-		response as never,
-	);
+	/*
+	 * 청크 응답을 합치고 **번호를 다시 매긴다.** 각 청크가 1번부터 매겨 오므로 그대로 두면
+	 * 번호가 겹치고, 그러면 검수 결과가 엉뚱한 문항에 붙는다.
+	 *
+	 * 하나가 깨져도 나머지로 간다 — 나눈 만큼 실패할 자리도 늘어난다.
+	 */
+	const merged: GeneratedQuestion[] = [];
+	for (const response of responses) {
+		try {
+			const parsed = parseGenerateContentResponse<{ questions: GeneratedQuestion[] }>(
+				"gemini",
+				response as never,
+			);
+			merged.push(...(parsed.questions ?? []));
+		} catch (err) {
+			console.warn("generate chunk unreadable", err);
+		}
+	}
+	const generated = generation.renumber(merged);
 
 	const existing = await questionsRepo.listActive(env, quizId);
-	const screened = screen(generated.questions ?? [], {
+	// 청크 사이의 중복도 여기서 걸린다 — 같은 `seen` 목록에 쌓으며 훑기 때문이다.
+	const screened = screen(generated, {
 		accepted: existing.map((q) => q.question_text),
 		title: bookRow.title,
 		author: bookRow.author ?? "",
@@ -367,26 +408,31 @@ export async function planValidate(
 
 	const rejected = screened.failed.map((failure) => ({
 		questionText:
-			(generated.questions ?? []).find((q) => q.questionNumber === failure.questionNumber)
-				?.questionText ?? "",
+			generated.find((q) => q.questionNumber === failure.questionNumber)?.questionText ?? "",
 		reason: failure.reason,
 	}));
 
 	if (screened.passed.length === 0) return { questions: [], rejected };
 
 	const { model, modelNotice } = await chooseModel(env, userId, "text", avoid);
-	const call = buildGeminiCall(
-		buildValidateRequest({
-			provider: null as never,
-			apiKey: "",
-			model,
-			brief,
-			questions: screened.passed,
-			language: quiz.language,
-		}),
+	const groups = generation.sliceInto(
+		screened.passed,
+		Math.ceil(screened.passed.length / Math.max(1, responses.length)),
+	);
+	const calls = groups.map((questions) =>
+		buildGeminiCall(
+			buildValidateRequest({
+				provider: null as never,
+				apiKey: "",
+				model,
+				brief,
+				questions,
+				language: quiz.language,
+			}),
+		),
 	);
 
-	return { questions: screened.passed, rejected, ...call, model, modelNotice };
+	return { questions: screened.passed, rejected, calls, model, modelNotice };
 }
 
 export interface AcceptResult {
@@ -408,7 +454,8 @@ export async function applyAccept(
 	userId: string,
 	quizId: string,
 	questions: GeneratedQuestion[],
-	response: unknown,
+	/** 검증 청크마다 하나씩. 브라우저가 동시에 받아 온 응답들이다. */
+	responses: unknown[],
 ): Promise<AcceptResult> {
 	await assertRelayProvider(env, userId);
 
@@ -418,7 +465,23 @@ export async function applyAccept(
 	const bookRow = await booksRepo.findOwned(env, userId, quiz.book_id);
 	if (!bookRow) throw notFound("책을 찾을 수 없습니다.");
 
-	const verdicts = parseGenerateContentResponse<{ results: Verdict[] }>("gemini", response as never);
+	/*
+	 * 청크 응답을 합친다. 판정은 문항 번호로 이어지므로 순서는 상관없다.
+	 * 하나가 깨져도 나머지로 간다 — 판정을 못 받은 문항은 그냥 통과하지 못할 뿐이다.
+	 */
+	const results: Verdict[] = [];
+	for (const response of responses) {
+		try {
+			const parsed = parseGenerateContentResponse<{ results: Verdict[] }>(
+				"gemini",
+				response as never,
+			);
+			results.push(...(parsed.results ?? []));
+		} catch (err) {
+			console.warn("validate chunk unreadable", err);
+		}
+	}
+	const verdicts = { results };
 
 	const existing = await questionsRepo.listActive(env, quizId);
 	// 클라이언트가 보낸 문항을 그대로 믿지 않는다. 구조 규칙은 여기서 다시 확인한다.

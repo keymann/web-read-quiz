@@ -11,6 +11,14 @@ export default defineWorkersConfig(async () => {
 	return {
 		test: {
 			setupFiles: ["./test/setup.ts"],
+			/*
+			 * 기본 5초로는 모자란다.
+			 *
+			 * 가입 한 번에 PBKDF2 10만 회를 workerd 안에서 돈다. 계정을 두엇 만들고 책까지
+			 * 올리는 테스트는 평상시에도 4초를 넘나들어, 전체 실행의 부하에서 자주 넘어갔다.
+			 * 진짜로 멈춘 것은 30초로도 잡힌다.
+			 */
+			testTimeout: 30_000,
 			poolOptions: {
 				workers: {
 					singleWorker: true,

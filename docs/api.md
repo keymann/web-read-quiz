@@ -116,10 +116,21 @@ AR·Lexile 은 **영문책에만 매겨진다.** 값은 조사 모델에게 묻�
 | Method | Path | 설명 |
 | --- | --- | --- |
 | GET | `/api/ai/credential` | ✅ 브라우저가 쓸 Gemini 키·모델. **제공자가 gemini 일 때만** |
-| POST | `/api/ai/plan` | ✅ `{kind, …}` → 브라우저가 그대로 보낼 `{url, body}` |
+| POST | `/api/ai/plan` | ✅ `{kind, …}` → 브라우저가 그대로 보낼 요청 |
 | POST | `/api/ai/apply` | ✅ 브라우저가 받아 온 Gemini 원본 응답을 서버가 해석·반영 |
 
 `kind` — plan: `identify` · `research` · `generate` · `validate` / apply: `identify` · `research` · `accept`
+
+**문제 생성·검증은 요청이 여러 개다.** `generate`·`validate` 의 plan 은 `{url, body}` 대신
+`calls: [{url, body}, …]` 를 돌려주고, 브라우저가 그것을 **동시에** 보낸 뒤 받은 응답들을
+`responses: […]` 로 되돌려준다. 나누는 규칙은 서버 경로와 같다(`generation.planChunks`).
+
+한 덩어리로 뽑으면 그것만 80초가 걸린다(실측 Gemini, 20문항). 출력 토큰을 만드는 시간이
+곧 임계 경로라, 나눠 나란히 부르면 가장 느린 하나만 기다린다.
+
+청크는 서로의 결과를 못 보므로 번호가 겹친다. `validate` plan 이 합치면서 **번호를 다시
+매기고**, 그 번호를 `accept` 까지 그대로 쓴다 — 번호가 검수 결과를 문항에 잇는 열쇠다.
+하나가 깨져도 나머지로 간다. 책 식별·조사는 호출이 하나뿐이라 예전 모양 그대로다.
 
 자세한 배경은 [architecture.md](architecture.md) 의 "브라우저 릴레이" 참고.
 

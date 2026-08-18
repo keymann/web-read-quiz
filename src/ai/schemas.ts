@@ -36,26 +36,6 @@ export const BOOK_RESEARCH_SCHEMA = {
 			type: "string",
 			description: "이 책이 쓰인 언어의 ISO 639-1 두 글자(영어 en, 한국어 ko). 모르면 빈 문자열.",
 		},
-		// 아래 넷은 영문책에만 있는 척도다. 한국어 책이면 전부 빈 문자열이어야 한다.
-		// 지어낸 등급은 없는 것보다 나쁘다 — 부모가 그 숫자로 아이에게 맞는 책인지 고른다.
-		arLevel: {
-			type: "string",
-			description:
-				"Accelerated Reader 의 ATOS 북 레벨(예: 4.7). 확실히 확인한 값만. 모르면 빈 문자열. 추측 금지.",
-		},
-		arPoints: {
-			type: "string",
-			description: "AR 포인트(예: 5.0). 확실히 확인한 값만. 모르면 빈 문자열. 추측 금지.",
-		},
-		arInterestLevel: {
-			type: "string",
-			description: "AR 흥미 수준. LG · MG · MG+ · UG 중 하나. 모르면 빈 문자열.",
-		},
-		lexile: {
-			type: "string",
-			description:
-				"렉사일 지수를 접두어까지 그대로(예: 620L, AD540L, BR200L). 확실히 확인한 값만. 모르면 빈 문자열. 추측 금지.",
-		},
 		description: { type: "string", description: "책 소개 2~4문장." },
 		plotSummary: { type: "string", description: "줄거리 요약. 결말을 포함해 최대한 구체적으로." },
 		characters: {
@@ -99,10 +79,6 @@ export const BOOK_RESEARCH_SCHEMA = {
 		"publishedAt",
 		"targetAge",
 		"bookLanguage",
-		"arLevel",
-		"arPoints",
-		"arInterestLevel",
-		"lexile",
 		"description",
 		"plotSummary",
 		"characters",

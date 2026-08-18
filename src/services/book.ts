@@ -4,6 +4,7 @@ import * as booksRepo from "../repositories/books";
 import type { BookRow } from "../repositories/books";
 import * as bibliographic from "../search/bibliographic";
 import * as tavily from "../search/tavily";
+import * as readingLevel from "../search/reading-level";
 import { research, type BookResearch } from "../search/web";
 import { WEB_SECTION } from "./grounding";
 import * as budget from "./search-budget";
@@ -607,8 +608,18 @@ export async function applyResearch(
 	 *
 	 * 조사가 성공했을 때만 새 줄거리로 바꾼다. 실패는 **아무것도 하지 않는 것**이 맞다.
 	 */
+	/*
+	 * 읽기 난이도는 조사와 **따로** 찾는다. 줄거리를 찾는 질의로는 등급이 적힌 페이지가
+	 * 결과에 들어오지 않아, 곁다리로 물었을 때 획득률이 0 이었다.
+	 *
+	 * 조사가 빈손이어도 찾는다 — 줄거리를 못 찾은 것과 등급이 없는 것은 다른 일이고,
+	 * 등급만이라도 있으면 부모가 아이에게 맞는 책인지 가늠할 수 있다.
+	 */
+	const levels = await fillReadingLevel(env, row, merged);
+
 	await booksRepo.update(env, userId, bookId, {
 		...merged,
+		...levels,
 		// 부모가 적어 둔 줄거리는 조사가 성공해도 남긴다. 가장 믿을 만한 출처다.
 		...(found.found
 			? { brief: buildBrief(row.title, merged, found, bib, row.manual_plot ?? "", webSources) }
@@ -668,6 +679,56 @@ export const evidenceCount = (sources: { source: string }[]): number =>
  * 비어 있는 칸만 채운다. 부모가 직접 고쳐 둔 값을 검색 결과가 덮어쓰면 안 된다.
  * 우선순위: 기존 값 > 공개 서지 API > 웹 검색.
  */
+/**
+ * 이 책이 영문책인가.
+ *
+ * AR·Lexile 은 영문책에만 매겨지므로, 아닐 때 찾아 나서면 크레딧만 버린다.
+ * 조사 모델이 언어를 특정했으면 그것을 믿고, 못 했으면 제목으로 가른다 — 한글이 섞여
+ * 있으면 한국책이다. 애매하면 찾아본다(빈손으로 끝나도 1 크레딧이다).
+ */
+function isEnglishBook(language: string | null, title: string): boolean {
+	if (language === "en") return true;
+	if (language !== null && language !== "") return false;
+	return !/[가-힣]/.test(title);
+}
+
+/**
+ * 읽기 난이도를 채운다. 이미 있는 값은 건드리지 않고 **빈 자리만** 메운다.
+ *
+ * 조사 모델에게 곁다리로 묻던 것을 전용 검색으로 바꾼 이유는 `search/reading-level.ts`
+ * 머리말에 적어 두었다 — 한 줄로 줄이면, 줄거리를 찾는 질의로는 등급이 적힌 페이지가
+ * 결과에 들어오지 않는다.
+ */
+async function fillReadingLevel(
+	env: AppEnv,
+	row: BookRow,
+	merged: booksRepo.BookFields,
+): Promise<booksRepo.BookFields> {
+	if (!isEnglishBook(merged.book_language ?? null, row.title)) return {};
+
+	/*
+	 * 이미 있는 값은 **행에서** 읽는다. `merged` 에는 등급이 없다 — 조사 결과에서 오지
+	 * 않으니 `mergeMetadata` 가 손대지 않는다. 여기서 merged 를 보면 늘 비어 보여
+	 * 확인해 둔 등급을 매번 덮어쓰게 된다.
+	 */
+	if (row.ar_level !== null && (row.lexile ?? "") !== "") return {};
+
+	const found = await readingLevel.lookup(env, {
+		title: row.title,
+		// 조사로 막 알아낸 지은이가 있으면 그쪽이 낫다. 질의가 책을 더 좁게 짚는다.
+		author: merged.author ?? row.author ?? "",
+	});
+
+	// 빈 자리만 채운다. 앞서 확인한 값이 이번 검색 결과로 흔들리면 안 된다.
+	const fields: booksRepo.BookFields = {};
+	if (row.ar_level === null && found.arLevel !== "") fields.ar_level = Number(found.arLevel);
+	if (row.ar_points === null && found.arPoints !== "") fields.ar_points = Number(found.arPoints);
+	if (!row.ar_interest && found.arInterestLevel !== "") fields.ar_interest = found.arInterestLevel;
+	if (!row.lexile && found.lexile !== "") fields.lexile = found.lexile;
+
+	return fields;
+}
+
 function mergeMetadata(
 	row: BookRow,
 	bib: bibliographic.BibRecord | null,
@@ -677,13 +738,10 @@ function mergeMetadata(
 		current || candidates.find((value) => value.trim() !== "") || null;
 
 	/*
-	 * 읽기 난이도는 조사 결과에서만 온다 — 서지 API 는 AR·Lexile 을 주지 않는다.
-	 * 값은 `normalizeResearch` 가 이미 형식을 검사해 통과시킨 것이라 여기서는 형만 맞춘다.
-	 * 다른 필드와 같이 **이미 있는 값이 이긴다** — 다시 조사할 때마다 등급이 흔들리면 안 된다.
+	 * 읽기 난이도(ar_*·lexile)는 여기서 다루지 않는다. 조사 모델에게 묻지 않고
+	 * `fillReadingLevel` 이 전용 검색으로 따로 채운다 — 추측한 값이 근거 있는 값을
+	 * 밀어내지 않도록 출처를 하나로 둔다.
 	 */
-	const number = (current: number | null, candidate: string): number | null =>
-		current ?? (candidate === "" ? null : Number.parseFloat(candidate));
-
 	return {
 		author: pick(row.author, bib?.author ?? "", found?.author ?? ""),
 		publisher: pick(row.publisher, bib?.publisher ?? "", found?.publisher ?? ""),
@@ -691,10 +749,6 @@ function mergeMetadata(
 		published_at: pick(row.published_at, bib?.publishedAt ?? "", found?.publishedAt ?? ""),
 		description: pick(row.description, found?.description ?? "", bib?.description ?? ""),
 		book_language: pick(row.book_language, found?.bookLanguage ?? ""),
-		ar_level: number(row.ar_level, found?.arLevel ?? ""),
-		ar_points: number(row.ar_points, found?.arPoints ?? ""),
-		ar_interest: pick(row.ar_interest, found?.arInterestLevel ?? ""),
-		lexile: pick(row.lexile, found?.lexile ?? ""),
 	};
 }
 
@@ -757,13 +811,7 @@ export async function saveManualPlot(
 		isbn13: row.isbn13 ?? "",
 		publishedAt: row.published_at ?? "",
 		targetAge: "",
-		// 이미 알아낸 읽기 난이도는 그대로 들고 간다. 여기서 빈 값을 넣으면 `mergeMetadata`
-		// 가 지우지는 않지만(현재 값이 이긴다), 조사 결과라는 형태를 일관되게 유지한다.
 		bookLanguage: row.book_language ?? "",
-		arLevel: row.ar_level === null ? "" : String(row.ar_level),
-		arPoints: row.ar_points === null ? "" : String(row.ar_points),
-		arInterestLevel: row.ar_interest ?? "",
-		lexile: row.lexile ?? "",
 		description: row.description ?? "",
 		plotSummary: "",
 		characters: [],

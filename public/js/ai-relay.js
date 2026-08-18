@@ -99,36 +99,70 @@ async function callGemini(apiKey, plan) {
  * `onPlan` 은 긴 호출을 보내기 직전에, `onNote` 는 재시도·모델 교체 때 불린다 — 둘 다
  * 화면이 "지금 무엇을 하고 있는지" 를 계속 보여줄 수 있게 하기 위한 것이다.
  */
+/** 한 요청을 재시도까지 밀어붙인다. 끝내 안 되면 마지막 오류를 던진다. */
+async function callWithRetry(apiKey, call, { fatal, onNote }) {
+	let lastError;
+
+	for (let attempt = 1; attempt <= 3; attempt++) {
+		try {
+			return await callGemini(apiKey, call);
+		} catch (err) {
+			if (fatal?.(err)) throw err;
+			lastError = err;
+			if (err.status === QUOTA_EXHAUSTED) break; // 기다려도 안 풀린다. 모델을 바꾼다.
+			if (!RETRYABLE.has(err.status)) throw err;
+			if (attempt < 3) {
+				onNote?.(`AI 가 지금 붐벼서 잠시 뒤 다시 시도합니다 (${attempt}/3)`);
+				await wait(attempt * 1500);
+			}
+		}
+	}
+
+	throw lastError;
+}
+
+/**
+ * 서버가 준 계획을 요청 목록으로 편다.
+ *
+ * 문제 생성·검증은 나눠서 **동시에** 부르므로 여러 개가 오고, 책 식별·조사는 하나뿐이라
+ * 예전 모양(`url`·`body`)으로 온다. 부르는 쪽이 둘을 구분하지 않아도 되게 여기서 맞춘다.
+ */
+const callsOf = (plan) =>
+	plan.calls ?? (plan.url === undefined ? [] : [{ url: plan.url, body: plan.body }]);
+
 async function runStep(apiKey, request, { fatal, onNote, onPlan } = {}) {
 	const avoid = [];
 
 	for (;;) {
 		const plan = await post("/api/ai/plan", { ...request, avoid });
+		const calls = callsOf(plan);
 		// 서버가 "더 할 일 없음" 이라고 하면 호출할 것도 없다.
-		if (plan.done || plan.url === undefined) return { plan, response: null };
+		if (plan.done || calls.length === 0) return { plan, responses: [] };
 
 		// 호출을 보내기 **전에** 알린다. 응답을 기다리는 수십 초 동안 화면이 멈춰 보이면 안 된다.
 		onPlan?.(plan);
 
-		let lastError;
-		for (let attempt = 1; attempt <= 3; attempt++) {
-			try {
-				return { plan, response: await callGemini(apiKey, plan) };
-			} catch (err) {
-				if (fatal?.(err)) throw err;
-				lastError = err;
-				if (err.status === QUOTA_EXHAUSTED) break; // 기다려도 안 풀린다. 모델을 바꾼다.
-				if (!RETRYABLE.has(err.status)) throw err;
-				if (attempt < 3) {
-					onNote?.(`AI 가 지금 붐벼서 잠시 뒤 다시 시도합니다 (${attempt}/3)`);
-					await wait(attempt * 1500);
-				}
-			}
-		}
+		/*
+		 * 나눠 받은 요청을 **한꺼번에** 보낸다. 출력 토큰을 만드는 시간이 임계 경로라,
+		 * 줄을 세우면 나눈 보람이 없다.
+		 *
+		 * 하나가 깨져도 나머지로 간다. 나눈 만큼 실패할 자리도 늘어나므로, 전부 실패했을
+		 * 때만 모델을 바꾼다. 서버가 합칠 때 모자란 만큼은 다음 라운드가 채운다.
+		 */
+		const settled = await Promise.allSettled(
+			calls.map((call) => callWithRetry(apiKey, call, { fatal, onNote })),
+		);
+
+		const fatalFailure = settled.find((r) => r.status === "rejected" && fatal?.(r.reason));
+		if (fatalFailure) throw fatalFailure.reason;
+
+		const responses = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+		if (responses.length > 0) return { plan, responses };
 
 		// 재시도로 안 풀렸다. 이 모델은 빼고 서버에게 다시 물어본다.
+		const lastError = settled.find((r) => r.status === "rejected")?.reason;
 		avoid.push(plan.model);
-		if (avoid.length >= 3) throw lastError;
+		if (avoid.length >= 3) throw lastError ?? new Error("문제를 만들지 못했습니다.");
 		onNote?.(`${plan.model} 모델이 응답하지 않아 다른 모델로 바꿉니다`);
 	}
 }
@@ -170,8 +204,8 @@ export async function fetchGeminiModels(apiKey) {
 
 export async function identifyBook(bookId) {
 	return withCredential(async ({ apiKey }) => {
-		const { plan, response } = await runStep(apiKey, { kind: "identify", bookId });
-		const result = await post("/api/ai/apply", { kind: "identify", bookId, response });
+		const { plan, responses } = await runStep(apiKey, { kind: "identify", bookId });
+		const result = await post("/api/ai/apply", { kind: "identify", bookId, response: responses[0] });
 		return { ...result, modelNotice: plan.modelNotice ?? result.modelNotice ?? null };
 	});
 }
@@ -183,7 +217,7 @@ export async function researchBook(bookId) {
 		// 먼저 웹 검색을 켜고 시도한다. 무료 등급 키는 그라운딩이 막혀 있어 429 가 온다.
 		for (const webSearch of [true, false]) {
 			try {
-				const { plan, response } = await runStep(
+				const { plan, responses } = await runStep(
 					apiKey,
 					{ kind: "research", bookId, webSearch },
 					// 검색을 켠 상태의 429 는 계정 등급 문제다. 재시도도 모델 교체도 소용없다.
@@ -192,7 +226,7 @@ export async function researchBook(bookId) {
 				const result = await post("/api/ai/apply", {
 					kind: "research",
 					bookId,
-					response,
+					response: responses[0],
 					groundingUsed: webSearch,
 				});
 				return { ...result, modelNotice: plan.modelNotice ?? result.modelNotice ?? null };
@@ -243,7 +277,7 @@ export async function generateQuestions(quizId, onProgress, shouldStop) {
 
 			// 1) 이번 라운드에 몇 개가 더 필요한지 서버가 정하고, 브라우저가 그 요청을 보낸다.
 			//    onPlan 은 **긴 호출 직전**에 불린다 — 기다림이 시작되기 전에 알려야 의미가 있다.
-			const { plan, response: generated } = await runStep(
+			const { plan, responses: generated } = await runStep(
 				apiKey,
 				{ kind: "generate", quizId, rejected },
 				{
@@ -258,9 +292,9 @@ export async function generateQuestions(quizId, onProgress, shouldStop) {
 			// 2) 만든 문제를 서버가 사후검사하고, 남은 것만 AI 검수로 보낸다
 			report({ phase: "screening", round, accepted: plan.accepted, target: plan.target });
 
-			const { plan: validatePlan, response: verdicts } = await runStep(
+			const { plan: validatePlan, responses: verdicts } = await runStep(
 				apiKey,
-				{ kind: "validate", quizId, response: generated },
+				{ kind: "validate", quizId, responses: generated },
 				{
 					onPlan: (p) => report({ phase: "validating", round, checking: p.questions?.length ?? 0 }),
 					onNote: (note) => report({ note }),
@@ -283,7 +317,7 @@ export async function generateQuestions(quizId, onProgress, shouldStop) {
 				kind: "accept",
 				quizId,
 				questions: validatePlan.questions,
-				response: verdicts,
+				responses: verdicts,
 			});
 			rejected = [...rejected, ...last.rejected].slice(-20);
 

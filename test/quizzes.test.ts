@@ -247,8 +247,7 @@ describe("문제 생성", { timeout: 30_000 }, () => {
 	});
 });
 
-// `readyBook()` 이 업로드·분석·검색까지 도는 무거운 준비라 기본 5초로는 모자란다.
-describe("생성 권한·상태", { timeout: 30_000 }, () => {
+describe("생성 권한·상태", () => {
 	it("다른 부모의 퀴즈는 조회·생성할 수 없다", async () => {
 		const { client, bookId } = await readyBook();
 		const quizId = await createQuiz(client, bookId);

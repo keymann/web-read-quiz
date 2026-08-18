@@ -139,6 +139,29 @@ export function extract(text: string): Omit<ReadingLevel, "sources"> {
 	};
 }
 
+/**
+ * 아무 데서나 온 등급 값을 **같은 잣대로** 다듬는다.
+ *
+ * 웹에서 뽑아낸 값이든 모델이 짐작한 값이든 형식 검사는 같아야 한다. 짐작이라고 해서
+ * `약 4학년` 이나 `680`(끝의 L 없음)을 그대로 저장할 이유는 없다.
+ */
+export function cleanLevel(raw: {
+	arLevel?: string;
+	arPoints?: string;
+	arInterestLevel?: string;
+	lexile?: string;
+}): Omit<ReadingLevel, "sources"> {
+	const text = [
+		raw.arLevel ? `ATOS Book Level: ${raw.arLevel}` : "",
+		raw.arPoints ? `AR Points: ${raw.arPoints}` : "",
+		raw.arInterestLevel ? `Interest Level: ${raw.arInterestLevel}` : "",
+		raw.lexile ? `Lexile measure: ${raw.lexile}` : "",
+	].join(" ");
+
+	// 뽑아내는 규칙을 그대로 태운다. 검사를 두 벌로 두면 언젠가 어긋난다.
+	return extract(text);
+}
+
 /* ── 여러 페이지의 값 모으기 ──────────────────────────── */
 
 type Field = keyof Omit<ReadingLevel, "sources">;

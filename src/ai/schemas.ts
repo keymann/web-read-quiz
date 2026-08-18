@@ -36,6 +36,31 @@ export const BOOK_RESEARCH_SCHEMA = {
 			type: "string",
 			description: "이 책이 쓰인 언어의 ISO 639-1 두 글자(영어 en, 한국어 ko). 모르면 빈 문자열.",
 		},
+		/*
+		 * 아래 넷은 영문책에만 있는 척도다. 한국어 책이면 전부 빈 문자열이어야 한다.
+		 *
+		 * **여기서는 짐작을 받는다.** 서버가 먼저 전용 검색으로 실제 페이지에서 찾아보고,
+		 * 거기서 못 찾았을 때만 이 값을 쓴다. 그 경우 화면에 "AI가 추측한 등급" 이라고
+		 * 분명히 적어 내보내므로, 부모가 확인된 값으로 오해하지 않는다.
+		 */
+		arLevel: {
+			type: "string",
+			description:
+				"Accelerated Reader 의 ATOS 북 레벨(예: 4.7). 아는 값이 있으면 그것을, 없으면 책의 어휘·문장 길이·분량으로 미루어 짐작한 값을 적으세요. 짐작할 근거도 없으면 빈 문자열.",
+		},
+		arPoints: {
+			type: "string",
+			description: "AR 포인트(예: 5.0). 분량에 비례합니다. 모르면 짐작해도 됩니다. 근거가 없으면 빈 문자열.",
+		},
+		arInterestLevel: {
+			type: "string",
+			description: "AR 흥미 수준. LG(K-3) · MG(4-8) · MG+(6-8) · UG(9-12) 중 하나. 모르면 빈 문자열.",
+		},
+		lexile: {
+			type: "string",
+			description:
+				"렉사일 지수를 접두어까지 그대로(예: 620L, AD540L). 아는 값이 없으면 짐작한 값을 적으세요. 근거가 없으면 빈 문자열.",
+		},
 		description: { type: "string", description: "책 소개 2~4문장." },
 		plotSummary: { type: "string", description: "줄거리 요약. 결말을 포함해 최대한 구체적으로." },
 		characters: {
@@ -79,6 +104,10 @@ export const BOOK_RESEARCH_SCHEMA = {
 		"publishedAt",
 		"targetAge",
 		"bookLanguage",
+		"arLevel",
+		"arPoints",
+		"arInterestLevel",
+		"lexile",
 		"description",
 		"plotSummary",
 		"characters",

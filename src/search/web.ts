@@ -1,4 +1,5 @@
 import { BOOK_RESEARCH_SCHEMA } from "../ai/schemas";
+import * as readingLevel from "./reading-level";
 import type { AiProvider, StructuredRequest } from "../ai/types";
 import type { BibRecord } from "./bibliographic";
 import { MAX_EXCERPT, type WebSource } from "./tavily";
@@ -22,11 +23,20 @@ export interface BookResearch {
 	/**
 	 * 이 책이 쓰인 언어(ISO 639-1). 모르면 빈 문자열.
 	 *
-	 * 영문책일 때만 AR·Lexile 을 찾아 나서므로 그 판정에 쓴다. 등급 자체는 여기서 묻지
-	 * 않는다 — 줄거리를 찾는 질의로는 등급이 적힌 페이지가 결과에 들어오지 않아 늘
-	 * 빈손이었다. 지금은 `search/reading-level.ts` 가 전용 질의로 따로 찾는다.
+	 * 영문책일 때만 AR·Lexile 을 찾아 나서므로 그 판정에 쓴다.
 	 */
 	bookLanguage: string;
+	/*
+	 * 영문책의 읽기 난이도 — **모델이 짐작한 값**이다.
+	 *
+	 * 실제 값은 `search/reading-level.ts` 가 전용 질의로 따로 찾는다(줄거리를 찾는 질의로는
+	 * 등급이 적힌 페이지가 결과에 들어오지 않는다). 여기 것은 그 검색이 빈손일 때만 쓰는
+	 * 마지막 수단이고, 그때는 화면에 "AI가 추측한 등급" 이라고 적어 내보낸다.
+	 */
+	arLevel: string;
+	arPoints: string;
+	arInterestLevel: string;
+	lexile: string;
 	description: string;
 	plotSummary: string;
 	characters: { name: string; role: string }[];
@@ -238,10 +248,19 @@ export function normalizeResearch(result: BookResearch): BookResearch {
 	// 모델이 실제로 내용을 채웠는지로 판정한다. 스스로 신고하게 하지 않는다.
 	const found = result.plotSummary?.trim() !== "" || (result.characters?.length ?? 0) > 0;
 
+	const bookLanguage = cleanLanguage(result.bookLanguage);
+	/*
+	 * AR·Lexile 은 영문책에만 매겨진다. 한국어로 특정된 책에 등급이 달려 오면 모델이 다른
+	 * 책(원서·다른 번역본)을 떠올린 것이므로 버린다.
+	 */
+	const level =
+		bookLanguage === "ko" ? readingLevel.cleanLevel({}) : readingLevel.cleanLevel(result);
+
 	return {
 		...result,
 		found,
-		bookLanguage: cleanLanguage(result.bookLanguage),
+		bookLanguage,
+		...level,
 		sources: (result.sources ?? [])
 			.filter((s) => s.url.startsWith("http"))
 			.map((s) => ({ ...s, content: (s.content ?? "").slice(0, MAX_SOURCE_CONTENT) })),

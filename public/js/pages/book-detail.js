@@ -145,16 +145,30 @@ export async function bookDetailPage({ id }) {
 			level.lexile ? `Lexile ${level.lexile}` : null,
 		].filter(Boolean);
 
+		/*
+		 * 짐작한 값은 **확인된 값과 다르게 보여야 한다.**
+		 *
+		 * 부모는 이 숫자로 아이에게 맞는 책인지 고른다. 웹에서 확인한 값과 모델이 짐작한
+		 * 값이 똑같이 보이면, 짐작을 확인된 값으로 믿게 된다 — 그건 없는 것보다 나쁘다.
+		 * 그래서 이름표를 달고 색도 달리한다.
+		 */
+		const guessed = level.source === "ai";
+
 		return el("div", { class: "field" }, [
-			el("span", { class: "field__label", text: "읽기 난이도" }),
+			el("div", { class: "level__head" }, [
+				el("span", { class: "field__label", text: "읽기 난이도" }),
+				guessed ? el("span", { class: "tag tag--warn", text: "AI가 추측한 등급" }) : null,
+			]),
 			el(
 				"div",
 				{ class: "row" },
-				tags.map((text) => el("span", { class: "tag tag--ok", text })),
+				tags.map((text) => el("span", { class: `tag ${guessed ? "tag--guess" : "tag--ok"}`, text })),
 			),
 			el("p", {
 				class: "hint",
-				text: "미국 학교에서 쓰는 척도예요. AR 4.7 은 4학년 7개월 수준을 뜻해요.",
+				text: guessed
+					? "웹에서 이 책의 등급을 찾지 못해 AI가 추측한 값이에요. 실제와 다를 수 있으니 arbookfind.com · lexile.com 에서 확인해 주세요."
+					: "미국 학교에서 쓰는 척도예요. AR 4.7 은 4학년 7개월 수준을 뜻해요.",
 			}),
 		]);
 	}

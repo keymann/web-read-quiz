@@ -229,6 +229,51 @@ describe("릴레이 모델 폴백", () => {
 	});
 });
 
+describe("Tavily 자료가 있으면 내장 검색을 켜지 않는다", () => {
+	/**
+	 * 무료 등급 Gemini 키는 `googleSearch` 툴을 붙이는 순간 429 를 낸다. 브라우저는 그걸 보고
+	 * 검색 없이 한 번 더 부르므로 **호출 하나를 통째로 버린다.** Tavily 발췌를 이미 프롬프트에
+	 * 싣고 있으면 켤 이유가 없다.
+	 */
+	async function planFor(client: Client, webCache: unknown[]): Promise<Record<string, never>> {
+		const form = new FormData();
+		form.append("cover", new File([PNG], "cover.png", { type: "image/png" }));
+		const bookId = (await client.upload("/api/books", form)).body.data.book.id as string;
+		await client.patch(`/api/books/${bookId}`, { title: "마당을 나온 암탉", author: "황선미" });
+
+		// 준비 단계가 적어 두는 캐시를 직접 채운다. 여기 있으면 Tavily 를 새로 부르지 않는다.
+		await env.DB.prepare("UPDATE books SET web_cache = ?, web_searches = 1, bib_cache = '[]' WHERE id = ?")
+			.bind(JSON.stringify(webCache), bookId)
+			.run();
+
+		const res = await client.post("/api/ai/plan", { kind: "research", bookId, webSearch: true });
+		return res.body.data.body;
+	}
+
+	/** 제목이 담긴 자료 — `relevantCount` 가 이 책을 다룬 것으로 센다. */
+	const relevant = (n: number) =>
+		Array.from({ length: n }, (_, i) => ({
+			url: `https://example.com/${i}`,
+			title: `마당을 나온 암탉 서평 ${i}`,
+			content: "잎싹은 양계장을 나와 초록머리를 기른다.",
+			score: 0.9,
+		}));
+
+	it("자료가 넉넉하면 툴을 붙이지 않는다", async () => {
+		const client = await parentWithGemini();
+		const body = await planFor(client, relevant(3));
+
+		expect(body).not.toHaveProperty("tools");
+	});
+
+	it("자료가 없으면 그대로 켠다", async () => {
+		const client = await parentWithGemini();
+		const body = await planFor(client, []);
+
+		expect(body).toHaveProperty("tools");
+	});
+});
+
 describe("문제 생성 릴레이", { timeout: 30_000 }, () => {
 	it("서버가 라운드를 이끌고 통과분만 저장한다", async () => {
 		const client = await parentWithGemini();

@@ -138,6 +138,23 @@ async function callOnce(
 	broad: boolean,
 ): Promise<WebSource[]> {
 	const { query, country } = buildQuery(hint, broad);
+	return runQuery(env, { query, country, depth });
+}
+
+export interface QuerySpec {
+	query: string;
+	country?: string;
+	depth: Depth;
+}
+
+/**
+ * 질의 하나를 던지고 결과를 정규화해 돌려준다. **크레딧을 실제로 쓰는 곳**이다.
+ *
+ * 질의를 만드는 일과 분리해 둔다 — 줄거리 검색과 읽기 난이도 검색은 찾는 것이 전혀 달라
+ * 질의도 다르지만, 키 회전·예산·오류 처리는 똑같아야 한다.
+ */
+export async function runQuery(env: AppEnv, spec: QuerySpec): Promise<WebSource[]> {
+	const { query, country, depth } = spec;
 	const body = JSON.stringify({
 		query,
 		search_depth: depth,

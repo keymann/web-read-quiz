@@ -51,6 +51,58 @@ const RECENT_REJECTIONS = 10;
 export const withBuffer = (need: number): number =>
 	need + Math.min(5, Math.max(1, Math.ceil(need * 0.2)));
 
+/**
+ * 한 번의 AI 호출에 몰아넣지 않고 나눠서 **동시에** 부른다.
+ *
+ * 구조화 출력은 출력 토큰을 만드는 시간이 곧 임계 경로다. 20문항에 여유분을 더한 24문항을
+ * 한 응답으로 뽑으면 그것만 60~90초가 걸린다. 8문항씩 셋으로 나눠 나란히 부르면 벽시계가
+ * 대략 셋 중 가장 느린 하나로 줄어든다.
+ *
+ * 쪼갠 만큼 위험도 생긴다 — 청크끼리 서로의 결과를 못 보므로 비슷한 문제가 겹칠 수 있다.
+ * 그건 `screen()` 이 배치 안의 중복까지 걸러 주고(같은 `seen` 목록에 쌓는다), 겹쳐서 줄어든
+ * 만큼은 아래 여유분이 메운다.
+ */
+const MAX_PARALLEL_CALLS = 3;
+
+/** 이보다 잘게 쪼개면 중복만 늘고 얻는 시간이 없다. */
+const MIN_CHUNK = 6;
+
+/**
+ * 요청 `want` 개를 몇 번에 나눠 부를지. 적게 필요할 때는 나누지 않는다.
+ *
+ * 나눠 부르면 청크끼리 서로의 결과를 못 봐 비슷한 문제가 겹칠 수 있다. 그래서 나눌 때만
+ * **나눈 수만큼 더** 뽑는다 — 겹쳐서 모자라 라운드를 한 번 더 도는 편이 문항 몇 개를 더
+ * 뽑는 것보다 훨씬 비싸다.
+ *
+ *   24개 → [9, 9, 9]   12개 → [7, 7]   7개 → [7]
+ */
+export function planChunks(want: number): number[] {
+	const count = Math.min(MAX_PARALLEL_CALLS, Math.max(1, Math.floor(want / MIN_CHUNK)));
+	const total = count > 1 ? want + count : want;
+	const base = Math.floor(total / count);
+	const extra = total % count;
+	return Array.from({ length: count }, (_, i) => base + (i < extra ? 1 : 0));
+}
+
+/**
+ * 청크를 합치면 문항 번호가 겹친다(각 청크가 1번부터 매긴다). 번호는 검수 결과를 문항에
+ * 도로 잇는 열쇠라(`applyVerdicts`), 합친 자리에서 다시 매겨 유일하게 만든다.
+ */
+export const renumber = (questions: GeneratedQuestion[]): GeneratedQuestion[] =>
+	questions.map((question, index) => ({ ...question, questionNumber: index + 1 }));
+
+/** 전부 실패했을 때 올릴 오류. 첫 번째 사유가 가장 설명이 된다. */
+const firstReason = (settled: PromiseSettledResult<unknown>[]): unknown =>
+	settled.find((r) => r.status === "rejected")?.reason ??
+	new Error("문제를 만들지 못했습니다.");
+
+/** 배열을 `size` 개씩 자른다. */
+const sliceInto = <T>(items: T[], size: number): T[][] => {
+	const out: T[][] = [];
+	for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+	return out;
+};
+
 export interface AcceptedQuestion {
 	question: GeneratedQuestion;
 	verdict: Verdict;
@@ -118,22 +170,25 @@ async function cancelled(env: AppEnv, quizId: string): Promise<boolean> {
 	return quizzesRepo.isCancelled(env, quizId);
 }
 
-/** 취소로 끝낼 때의 마무리. 저장할 것이 있으면 저장하고 상태를 되돌린다. */
+/**
+ * 취소로 끝낼 때의 마무리. 상태만 되돌린다.
+ *
+ * 통과한 문항은 라운드마다 이미 저장돼 있다. 예전에는 여기서 저장했는데, 그때는 모든
+ * 라운드가 끝나야 저장했기 때문이다.
+ */
 async function finishCancelled(
 	env: AppEnv,
 	quizId: string,
 	kept: number,
-	accepted: AcceptedQuestion[],
+	saved: number,
 ): Promise<void> {
-	if (accepted.length > 0) await persistAccepted(env, quizId, accepted);
-
-	const total = kept + accepted.length;
+	const total = kept + saved;
 	await quizzesRepo.setStatus(
 		env,
 		quizId,
 		total > 0 ? "REVIEW" : "DRAFT",
-		accepted.length > 0
-			? `문제 만들기를 멈췄습니다. 그때까지 만든 ${accepted.length}문제는 저장했습니다.`
+		saved > 0
+			? `문제 만들기를 멈췄습니다. 그때까지 만든 ${saved}문제는 저장했습니다.`
 			: "문제 만들기를 멈췄습니다.",
 	);
 }
@@ -179,36 +234,61 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 
 		// 이미 있는 문항과 겹치는 문제를 만들지 않도록 본문을 프롬프트와 중복 검사에 넘긴다.
 		const keptTexts = kept.map((q) => q.question_text);
-		const accepted: AcceptedQuestion[] = [];
+		/** 이번 실행에서 **이미 저장한** 문항. 다음 라운드의 중복 회피와 마지막 로그에 쓴다. */
+		const saved: GeneratedQuestion[] = [];
 		const rejected: { questionText: string; reason: string }[] = [];
 
-		for (let round = 1; round <= MAX_ROUNDS && accepted.length < target; round++) {
-			const need = target - accepted.length;
+		for (let round = 1; round <= MAX_ROUNDS && saved.length < target; round++) {
+			const need = target - saved.length;
+			const existing = [...keptTexts, ...saved.map((q) => q.questionText)];
 
-			if (await cancelled(env, quizId)) return finishCancelled(env, quizId, kept.length, accepted);
+			if (await cancelled(env, quizId)) {
+				return finishCancelled(env, quizId, kept.length, saved.length);
+			}
 			await quizzesRepo.setPhase(env, quizId, round === 1 ? "generating" : "retrying");
 
-			const { value: fresh } = await withModelFallback(ai.provider, ai.apiKey, ai.model, (model) =>
-				generateQuestions({
-					provider: ai.provider,
-					apiKey: ai.apiKey,
-					model,
-					brief,
-					// 탈락분을 미리 흡수해 2라운드로 넘어가지 않게 한다.
-					count: withBuffer(need),
-					existing: [...keptTexts, ...accepted.map((a) => a.question.questionText)],
-					rejected: rejected.slice(-RECENT_REJECTIONS),
-					briefIsUnverified,
-					language: quiz.language,
-				}),
-			);
+			// 나눠서 동시에 부른다. 몇 개씩 몇 번에 나눌지는 `planChunks` 가 정한다.
+			const chunks = planChunks(withBuffer(need));
 
-			if (await cancelled(env, quizId)) return finishCancelled(env, quizId, kept.length, accepted);
+			/*
+			 * 하나가 실패해도 나머지로 간다.
+			 *
+			 * `Promise.all` 이면 청크 하나가 넘어질 때 라운드 전체가 무너진다. 나눠 부르는
+			 * 만큼 실패할 자리도 늘어나므로, 예전(호출 하나)보다 오히려 잘 깨지게 된다.
+			 * 전부 실패했을 때만 예전처럼 오류를 올린다.
+			 */
+			const settled = await Promise.allSettled(
+				chunks.map((count) =>
+					withModelFallback(ai.provider, ai.apiKey, ai.model, (model) =>
+						generateQuestions({
+							provider: ai.provider,
+							apiKey: ai.apiKey,
+							model,
+							brief,
+							count,
+							existing,
+							rejected: rejected.slice(-RECENT_REJECTIONS),
+							briefIsUnverified,
+							language: quiz.language,
+						}),
+					).then((r) => r.value),
+				),
+			);
+			const batches = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+			if (batches.length === 0) throw firstReason(settled);
+
+			// 청크마다 1번부터 매겨 오므로 합친 자리에서 다시 매긴다.
+			const fresh = renumber(batches.flat());
+
+			if (await cancelled(env, quizId)) {
+				return finishCancelled(env, quizId, kept.length, saved.length);
+			}
 			await quizzesRepo.setPhase(env, quizId, "screening");
 
 			// 1) AI 를 부르기 전에 서버가 걸러낸다. 여기서 줄어든 만큼 검증 비용이 준다.
+			//    청크 사이의 중복도 여기서 걸린다 — 같은 `seen` 목록에 쌓으며 훑기 때문이다.
 			const screened = screen(fresh, {
-				accepted: [...keptTexts, ...accepted.map((a) => a.question.questionText)],
+				accepted: existing,
 				title: book.title,
 				author: book.author ?? "",
 				brief,
@@ -221,37 +301,69 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 
 			await quizzesRepo.setPhase(env, quizId, "validating");
 
-			// 2) 살아남은 문항만 AI 검증에 보낸다.
-			const { value: verdicts } = await withModelFallback(ai.provider, ai.apiKey, ai.model, (model) =>
-				validateQuestions({
-					provider: ai.provider,
-					apiKey: ai.apiKey,
-					model,
-					brief,
-					questions: screened.passed,
-					language: quiz.language,
-				}),
+			// 2) 살아남은 문항만 AI 검증에 보낸다. 이쪽도 나눠서 동시에 부른다.
+			const groups = sliceInto(
+				screened.passed,
+				Math.ceil(screened.passed.length / chunks.length),
 			);
+			const judged = await Promise.allSettled(
+				groups.map((questions) =>
+					withModelFallback(ai.provider, ai.apiKey, ai.model, (model) =>
+						validateQuestions({
+							provider: ai.provider,
+							apiKey: ai.apiKey,
+							model,
+							brief,
+							questions,
+							language: quiz.language,
+						}),
+					).then((r) => r.value),
+				),
+			);
+
+			/*
+			 * 검수를 못 받은 묶음은 **아예 없던 것으로 친다.**
+			 *
+			 * 판정이 없는 문항을 그대로 넘기면 `applyVerdicts` 가 탈락으로 처리한다. 그러면
+			 * 심사조차 받지 못한 문항이 "이렇게 만들지 마라" 목록에 올라 다음 라운드 프롬프트를
+			 * 잘못 이끈다.
+			 */
+			const reviewed: GeneratedQuestion[] = [];
+			const verdicts: Verdict[] = [];
+			judged.forEach((result, index) => {
+				if (result.status !== "fulfilled") return;
+				reviewed.push(...groups[index]!);
+				verdicts.push(...result.value);
+			});
+			if (reviewed.length === 0) throw firstReason(judged);
 
 			// 루프 변수 `round` 를 가리지 않게 다른 이름을 쓴다. 예전에는 같은 이름이라
 			// 이 줄 위에서 라운드 번호를 읽을 수 없었다.
-			const outcome = applyVerdicts(screened.passed, verdicts, target - accepted.length);
-			accepted.push(...outcome.accepted);
+			const outcome = applyVerdicts(reviewed, verdicts, target - saved.length);
 			rejected.push(...outcome.rejected);
+
+			/*
+			 * **라운드마다 저장한다.**
+			 *
+			 * 예전에는 모든 라운드가 끝난 뒤에 한꺼번에 넣었다. 그동안 화면의 진행률은
+			 * `0 / 20` 에 멈춰 있어, 1~3분 내내 아무 일도 일어나지 않는 것처럼 보였다.
+			 * 번호는 `persistAccepted` 가 그때그때 비어 있는 자리를 찾아 매기므로 나눠
+			 * 넣어도 부딪히지 않는다.
+			 */
+			if (outcome.accepted.length > 0) {
+				await quizzesRepo.setPhase(env, quizId, "saving");
+				await persistAccepted(env, quizId, outcome.accepted);
+				saved.push(...outcome.accepted.map((a) => a.question));
+			}
 		}
 
-		if (accepted.length === 0) {
+		if (saved.length === 0) {
 			const notice = shortfallNotice(quiz.question_count, kept.length, rejected);
 			await quizzesRepo.setStatus(env, quizId, kept.length > 0 ? "REVIEW" : "DRAFT", notice);
 			return;
 		}
 
-		if (await cancelled(env, quizId)) return finishCancelled(env, quizId, kept.length, accepted);
-		await quizzesRepo.setPhase(env, quizId, "saving");
-
-		await persistAccepted(env, quizId, accepted);
-
-		const total = kept.length + accepted.length;
+		const total = kept.length + saved.length;
 		const shortfall = quiz.question_count - total;
 
 		await quizzesRepo.setStatus(
@@ -263,7 +375,7 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 
 		console.log(
 			`quiz ${quizId}: ${total}/${quiz.question_count} accepted, ${rejected.length} rejected`,
-			typeDistribution(accepted.map((a) => a.question)),
+			typeDistribution(saved),
 		);
 	} catch (err) {
 		console.error("generation failed", err);

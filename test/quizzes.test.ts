@@ -43,6 +43,20 @@ function mockResponses(payload: unknown, times = 1) {
 		.times(times);
 }
 
+/**
+ * 한 라운드분 목킹.
+ *
+ * 생성·검증을 각각 청크로 나눠 **동시에** 부르므로(`planChunks`) 호출이 한 번이 아니다.
+ * 목은 매번 같은 묶음을 돌려주고, 서버가 합친 뒤 중복을 걸러 원래 수만 남긴다 —
+ * 청크끼리 겹친 문항을 `screen()` 이 걸러내는 것과 같은 길이다.
+ */
+const ROUND_CALLS = 3;
+
+function mockRound(questions: unknown[], verdicts: unknown) {
+	mockResponses({ questions }, ROUND_CALLS);
+	mockResponses(verdicts, ROUND_CALLS);
+}
+
 function mockModels(times = 1) {
 	fetchMock
 		.get("https://api.openai.com")
@@ -116,13 +130,12 @@ async function createQuiz(client: Client, bookId: string): Promise<string> {
 }
 
 describe("문제 생성", { timeout: 30_000 }, () => {
-	it("정상 경로는 AI 호출 2회로 20문제를 만든다", async () => {
+	it("정상 경로는 한 라운드로 20문제를 만든다", async () => {
 		const { client, bookId } = await readyBook();
 		const quizId = await createQuiz(client, bookId);
 
 		const questions = makeQuestions(20);
-		mockResponses({ questions }); // 1) 생성
-		mockResponses(verdictsFor(questions)); // 2) 검증
+		mockRound(questions, verdictsFor(questions));
 
 		const detail = await generateAndWait(client, quizId);
 		expect(detail.body.data.quiz.status).toBe("REVIEW");
@@ -135,9 +148,8 @@ describe("문제 생성", { timeout: 30_000 }, () => {
 		const quizId = await createQuiz(client, bookId);
 
 		const first = makeQuestions(20);
-		mockResponses({ questions: first });
 		// 앞 5개만 통과시킨다
-		mockResponses({
+		mockRound(first, {
 			results: first.map((q, i) => ({
 				questionNumber: q.questionNumber,
 				valid: i < 5,
@@ -149,8 +161,7 @@ describe("문제 생성", { timeout: 30_000 }, () => {
 
 		// 2라운드에서 나머지 15개를 채운다
 		const second = makeQuestions(15, 100);
-		mockResponses({ questions: second });
-		mockResponses(verdictsFor(second));
+		mockRound(second, verdictsFor(second));
 
 		const detail = await generateAndWait(client, quizId);
 		expect(detail.body.data.questions).toHaveLength(20);
@@ -163,8 +174,7 @@ describe("문제 생성", { timeout: 30_000 }, () => {
 		// 3라운드 모두 전멸
 		for (let round = 0; round < 3; round++) {
 			const questions = makeQuestions(20, round * 100);
-			mockResponses({ questions });
-			mockResponses(verdictsFor(questions, false));
+			mockRound(questions, verdictsFor(questions, false));
 		}
 
 		const detail = await generateAndWait(client, quizId);
@@ -178,8 +188,7 @@ describe("문제 생성", { timeout: 30_000 }, () => {
 		const quizId = await createQuiz(client, bookId);
 
 		const questions = makeQuestions(20);
-		mockResponses({ questions });
-		mockResponses(verdictsFor(questions));
+		mockRound(questions, verdictsFor(questions));
 		await generateAndWait(client, quizId);
 
 		const counts = await env.DB.prepare(
@@ -206,8 +215,7 @@ describe("문제 생성", { timeout: 30_000 }, () => {
 
 		// 모델이 전부 1번을 정답으로 내놓아도 서버가 고르게 편다(§9-10)
 		const questions = makeQuestions(20).map((q) => ({ ...q, correctChoice: 1 }));
-		mockResponses({ questions });
-		mockResponses(verdictsFor(questions));
+		mockRound(questions, verdictsFor(questions));
 		await generateAndWait(client, quizId);
 
 		const { results } = await env.DB.prepare(
@@ -239,7 +247,8 @@ describe("문제 생성", { timeout: 30_000 }, () => {
 	});
 });
 
-describe("생성 권한·상태", () => {
+// `readyBook()` 이 업로드·분석·검색까지 도는 무거운 준비라 기본 5초로는 모자란다.
+describe("생성 권한·상태", { timeout: 30_000 }, () => {
 	it("다른 부모의 퀴즈는 조회·생성할 수 없다", async () => {
 		const { client, bookId } = await readyBook();
 		const quizId = await createQuiz(client, bookId);

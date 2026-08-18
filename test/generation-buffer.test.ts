@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyVerdicts, withBuffer } from "../src/services/generation";
+import { applyVerdicts, planChunks, renumber, withBuffer } from "../src/services/generation";
 import { makeQuestions, verdictsFor } from "./helpers";
 
 /**
@@ -62,5 +62,53 @@ describe("자리가 없어 못 쓴 문항", () => {
 		expect(result.accepted).toHaveLength(3);
 		expect(result.rejected).toHaveLength(9);
 		expect(result.surplus).toBe(0);
+	});
+});
+
+describe("나눠 부르기", () => {
+	/**
+	 * 구조화 출력은 출력 토큰을 만드는 시간이 곧 임계 경로다. 24문항을 한 응답으로 뽑으면
+	 * 그것만 60~90초다. 나눠서 나란히 부르면 벽시계가 가장 느린 하나로 줄어든다.
+	 */
+	it("많이 필요하면 나눠 부른다", () => {
+		expect(planChunks(24)).toEqual([9, 9, 9]);
+		expect(planChunks(12)).toEqual([7, 7]);
+	});
+
+	it("적게 필요하면 나누지 않는다", () => {
+		// 잘게 쪼개면 청크끼리 겹치기만 하고 얻는 시간이 없다.
+		expect(planChunks(7)).toEqual([7]);
+		expect(planChunks(1)).toEqual([1]);
+	});
+
+	/** 제공자 분당 호출 한도를 생각해 동시 호출 수에 뚜껑을 씌운다. */
+	it("아무리 많아도 동시 호출은 셋을 넘지 않는다", () => {
+		expect(planChunks(35)).toHaveLength(3);
+		expect(planChunks(100)).toHaveLength(3);
+	});
+
+	/** 청크끼리 서로를 못 보므로 겹칠 수 있다. 그만큼 더 뽑아 라운드를 한 번 더 도는 것을 막는다. */
+	it("나눌 때는 나눈 수만큼 더 뽑는다", () => {
+		expect(planChunks(24).reduce((a, b) => a + b, 0)).toBe(27);
+		// 나누지 않으면 얹지 않는다.
+		expect(planChunks(7).reduce((a, b) => a + b, 0)).toBe(7);
+	});
+});
+
+describe("번호 다시 매기기", () => {
+	/**
+	 * 번호는 검수 결과를 문항에 도로 잇는 열쇠다(`applyVerdicts`). 청크마다 1번부터
+	 * 매겨 오므로 합친 자리에서 다시 매기지 않으면 판정이 엉뚱한 문항에 붙는다.
+	 */
+	it("합친 뒤 1번부터 유일하게 매긴다", () => {
+		const merged = renumber([
+			{ questionNumber: 1, questionText: "가" },
+			{ questionNumber: 2, questionText: "나" },
+			{ questionNumber: 1, questionText: "다" },
+		] as never);
+
+		expect(merged.map((q) => q.questionNumber)).toEqual([1, 2, 3]);
+		// 본문은 그대로 둔다.
+		expect(merged.map((q) => q.questionText)).toEqual(["가", "나", "다"]);
 	});
 });

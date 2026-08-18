@@ -258,13 +258,35 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 		throw invalid("먼저 책 정보를 분석하거나 제목을 입력해 주세요.");
 	}
 
-	const ai = await settings.getRuntime(env, userId);
-
-	// 공개 서지 API 와 웹 검색은 성격이 다르다. 전자는 서지정보의 기준점, 후자는 줄거리 원천.
-	// 여기서 받은 것을 책에 적어 두고, 반영 단계(applyResearch)가 같은 값을 읽는다.
-	const bib = await prepareBib(env, userId, row);
-	// 웹 자료가 있으면 조사 지시가 "기억으로 정리" 에서 "자료에서 발췌" 로 바뀐다.
-	const web = await prepareWeb(env, userId, row);
+	/*
+	 * 셋을 **한꺼번에 띄운다.** 서로 기다릴 이유가 없는데 줄을 세워 두었었다.
+	 *
+	 * 공개 서지 API 와 웹 검색은 성격이 다르다 — 전자는 서지정보의 기준점, 후자는 줄거리
+	 * 원천이고, 둘 다 같은 책 행만 있으면 된다. 여기서 받은 것을 책에 적어 두고 반영
+	 * 단계(applyResearch)가 같은 값을 읽는다.
+	 *
+	 * 서지 조회는 최대 8초, Tavily 는 basic+advanced 로 최대 50초다. 줄을 세우면 그 합을
+	 * 기다리지만 나란히 두면 둘 중 긴 쪽만 기다린다. 각자 다른 컬럼에 쓰므로 겹쳐도 안전하다.
+	 */
+	/*
+	 * 둘 다 **보조 단계라 실패해도 조사는 계속한다.** 그래서 각자 자기 실패를 삼킨다.
+	 *
+	 * 삼키지 않으면 나란히 돌릴 때 한쪽이 거부되는 순간 `Promise.all` 이 곧바로 끝나면서
+	 * 다른 쪽 거부가 갈 곳을 잃는다(unhandled rejection). 줄을 세워 두었을 때는 없던 일이다.
+	 * AI 키 조회는 다르다 — 키가 없으면 조사를 할 수 없으므로 그대로 올린다.
+	 */
+	const [ai, bib, web] = await Promise.all([
+		settings.getRuntime(env, userId),
+		prepareBib(env, userId, row).catch((err: unknown) => {
+			console.warn("bibliographic lookup failed", err);
+			return [] as bibliographic.BibRecord[];
+		}),
+		// 웹 자료가 있으면 조사 지시가 "기억으로 정리" 에서 "자료에서 발췌" 로 바뀐다.
+		prepareWeb(env, userId, row).catch((err: unknown) => {
+			console.warn("web search failed", err);
+			return [] as tavily.WebSource[];
+		}),
+	]);
 
 	const hint = {
 		title: row.title,
@@ -283,6 +305,17 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 	let fellBackFrom: string | null;
 	let modelUsed: string;
 
+	/*
+	 * 읽기 난이도 검색을 **조사와 나란히** 띄운다.
+	 *
+	 * 등급 검색은 조사 결과를 전혀 쓰지 않는다(제목·저자만 있으면 된다). 조사 뒤에 두면
+	 * 최대 25초를 그냥 더 기다리게 된다. 실패해도 조사를 무너뜨리지 않도록 여기서 삼킨다 —
+	 * 등급을 못 찾은 것은 책 정보를 못 찾은 것과 다른 일이다.
+	 */
+	const levelWork = ensureReadingLevel(env, userId, row).catch((err: unknown) => {
+		console.warn("reading level lookup failed", err);
+	});
+
 	const attempt = (useWebSearch: boolean) =>
 		withModelFallback(ai.provider, ai.apiKey, ai.model, (model) =>
 			research(ai.provider, ai.apiKey, model, hint, useWebSearch),
@@ -297,6 +330,9 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 		searchNotice = `${err.message} 웹 검색 없이 정리했으니 책 정보를 꼭 직접 확인해 주세요.`;
 		({ value: found, fellBackFrom, modelUsed } = await attempt(false));
 	}
+
+	// 조사가 도는 동안 끝났을 것이다. 여기서 만나야 아래에서 읽는 책 행에 등급이 들어 있다.
+	await levelWork;
 
 	return applyResearch(env, userId, bookId, found, {
 		groundingUsed,
@@ -609,23 +645,27 @@ export async function applyResearch(
 	 * 조사가 성공했을 때만 새 줄거리로 바꾼다. 실패는 **아무것도 하지 않는 것**이 맞다.
 	 */
 	/*
-	 * 읽기 난이도는 조사와 **따로** 찾는다. 줄거리를 찾는 질의로는 등급이 적힌 페이지가
-	 * 결과에 들어오지 않아, 곁다리로 물었을 때 획득률이 0 이었다.
+	 * 읽기 난이도를 **여기서 기다리지 않고 먼저 띄운다.** 조사 결과를 책에 적는 일과
+	 * 서로 아무 상관이 없어, 순서대로 하면 그만큼 부모가 더 기다린다.
 	 *
-	 * 조사가 빈손이어도 찾는다 — 줄거리를 못 찾은 것과 등급이 없는 것은 다른 일이고,
-	 * 등급만이라도 있으면 부모가 아이에게 맞는 책인지 가늠할 수 있다.
+	 * 서버 경로는 이미 조사와 나란히 돌려 두었으므로 여기서는 표시를 보고 바로 끝난다.
+	 * 값이 있는 쪽은 브라우저 릴레이 경로다 — 거기서는 이 자리가 처음이다.
 	 */
-	const levels = await fillReadingLevel(env, row, merged);
+	const levelWork = ensureReadingLevel(env, userId, row).catch((err: unknown) => {
+		console.warn("reading level lookup failed", err);
+	});
 
 	await booksRepo.update(env, userId, bookId, {
 		...merged,
-		...levels,
 		// 부모가 적어 둔 줄거리는 조사가 성공해도 남긴다. 가장 믿을 만한 출처다.
 		...(found.found
 			? { brief: buildBrief(row.title, merged, found, bib, row.manual_plot ?? "", webSources) }
 			: {}),
 		searched_at: new Date().toISOString(),
 	});
+
+	// 화면이 등급을 바로 볼 수 있게 여기서 만난다. 위의 저장과 겹쳐 돌았다.
+	await levelWork;
 
 	const updated = await requireOwned(env, userId, bookId);
 
@@ -693,40 +733,36 @@ function isEnglishBook(language: string | null, title: string): boolean {
 }
 
 /**
- * 읽기 난이도를 채운다. 이미 있는 값은 건드리지 않고 **빈 자리만** 메운다.
+ * 읽기 난이도를 찾아 책에 적는다. 이미 있는 값은 건드리지 않고 **빈 자리만** 메운다.
  *
- * 조사 모델에게 곁다리로 묻던 것을 전용 검색으로 바꾼 이유는 `search/reading-level.ts`
- * 머리말에 적어 두었다 — 한 줄로 줄이면, 줄거리를 찾는 질의로는 등급이 적힌 페이지가
- * 결과에 들어오지 않는다.
+ * 전용 검색을 쓰는 이유는 `search/reading-level.ts` 머리말에 적어 두었다 — 줄거리를 찾는
+ * 질의로는 등급이 적힌 페이지가 결과에 들어오지 않는다.
+ *
+ * **부르는 쪽이 기다리지 않아도 되게** 스스로 저장까지 한다. 조사(AI)와 나란히 돌리려면
+ * 결과를 반환값으로 넘겨받는 것보다 각자 자기 컬럼에 쓰는 편이 얽히지 않는다.
  */
-async function fillReadingLevel(
+export async function ensureReadingLevel(
 	env: AppEnv,
+	userId: string,
 	row: BookRow,
-	merged: booksRepo.BookFields,
-): Promise<booksRepo.BookFields> {
-	if (!isEnglishBook(merged.book_language ?? null, row.title)) return {};
+): Promise<void> {
+	if (!isEnglishBook(row.book_language, row.title)) return;
+	// 이미 다 찼으면 더 찾을 것이 없다.
+	if (row.ar_level !== null && (row.lexile ?? "") !== "") return;
 
-	/*
-	 * 이미 있는 값은 **행에서** 읽는다. `merged` 에는 등급이 없다 — 조사 결과에서 오지
-	 * 않으니 `mergeMetadata` 가 손대지 않는다. 여기서 merged 를 보면 늘 비어 보여
-	 * 확인해 둔 등급을 매번 덮어쓰게 된다.
-	 */
-	if (row.ar_level !== null && (row.lexile ?? "") !== "") return {};
+	// 표시를 먼저 세운 쪽만 찾는다. 한 번 찾아본 책은 다시 찾지 않는다 —
+	// AR·Lexile 이 아예 없는 책이 흔해서, 그 반복이 크레딧을 그냥 태운다.
+	if (!(await booksRepo.claimReadingLevelSearch(env, userId, row.id))) return;
 
-	const found = await readingLevel.lookup(env, {
-		title: row.title,
-		// 조사로 막 알아낸 지은이가 있으면 그쪽이 낫다. 질의가 책을 더 좁게 짚는다.
-		author: merged.author ?? row.author ?? "",
-	});
+	const found = await readingLevel.lookup(env, { title: row.title, author: row.author ?? "" });
 
-	// 빈 자리만 채운다. 앞서 확인한 값이 이번 검색 결과로 흔들리면 안 된다.
 	const fields: booksRepo.BookFields = {};
 	if (row.ar_level === null && found.arLevel !== "") fields.ar_level = Number(found.arLevel);
 	if (row.ar_points === null && found.arPoints !== "") fields.ar_points = Number(found.arPoints);
 	if (!row.ar_interest && found.arInterestLevel !== "") fields.ar_interest = found.arInterestLevel;
 	if (!row.lexile && found.lexile !== "") fields.lexile = found.lexile;
 
-	return fields;
+	if (Object.keys(fields).length > 0) await booksRepo.update(env, userId, row.id, fields);
 }
 
 function mergeMetadata(

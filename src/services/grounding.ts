@@ -100,6 +100,78 @@ const hasHangul = (text: string): boolean => /[가-힣]/.test(text);
 
 const sharesScript = (a: string, b: string): boolean => hasHangul(a) === hasHangul(b);
 
+/* ── 무엇과 대조하는가 (§Phase 3) ─────────────────────── */
+
+/**
+ * 웹에서 읽은 페이지가 실리는 Brief 절의 이름. `book.ts` 가 이 이름으로 쓰고 여기서 찾는다.
+ */
+export const WEB_SECTION = "[웹 자료]";
+
+/**
+ * 출제 근거로 인정하는 절들.
+ *
+ * `[소개]`·`[출판사 소개]` 는 **빠져 있다.** 그건 홍보 문구라 그것만으로 답할 수 있는 문제는
+ * 책을 읽지 않아도 풀린다(§7). `[출처]` 는 URL 목록이라 근거가 아니다.
+ */
+const EVIDENCE_SECTIONS = [WEB_SECTION, "[줄거리]", "[등장인물]", "[주요 사건"];
+
+/**
+ * 절 머리로 볼 줄. **괄호만 있는 줄**이어야 한다.
+ *
+ * 처음에는 `[` 로 시작하기만 하면 절 머리로 봤다가 `[웹 자료]` 의 본문이 통째로 사라졌다 —
+ * 그 안의 자료 이름표가 `[자료 1] 움푹산의 비밀 서평` 이라 새 절로 잘렸기 때문이다.
+ * `buildBrief` 는 절 머리를 항상 한 줄에 단독으로 쓰므로 이 규칙으로 정확히 갈린다.
+ */
+const HEADER = /^\[[^\]]+\]$/;
+
+/** 절 머리를 경계로 Brief 를 자른다. */
+function sectionsOf(brief: string): { header: string; body: string }[] {
+	const out: { header: string; body: string }[] = [];
+	let current: { header: string; body: string } | null = null;
+
+	for (const line of brief.split("\n")) {
+		if (HEADER.test(line.trim())) {
+			current = { header: line.trim(), body: "" };
+			out.push(current);
+			continue;
+		}
+		if (current) current.body += `${line}\n`;
+	}
+	return out;
+}
+
+/**
+ * 근거를 대조할 범위를 정한다.
+ *
+ * **웹 자료가 있을 때만 좁힌다.** 없으면 Brief 전체를 그대로 쓴다 — 지금 잘 되는 책이
+ * 갑자기 전부 탈락하면 안 된다.
+ *
+ * 좁혀야 하는 이유는 PR #30 에서 측정한 것이다. 지금은 모델이 기억으로 쓴 `[줄거리]` 도
+ * 대조 대상이라 **모델이 자기가 지어낸 줄거리를 근거로 자기 문항을 정당화**할 수 있다.
+ * 웹 자료가 있으면 그 자료가 기준점이 되고, 홍보 문구(`[소개]`)는 근거에서 빠진다.
+ *
+ * `[줄거리]` 를 남기는 이유: 웹 자료를 발췌해 만든 요약이고, 부모가 직접 적은 줄거리도
+ * 거기 들어간다(PR #30) — 가장 믿을 만한 출처를 근거에서 빼면 안 된다.
+ */
+export function evidenceBase(brief: string): string {
+	if (!brief.includes(WEB_SECTION)) return brief;
+
+	const kept = sectionsOf(brief).filter((section) =>
+		EVIDENCE_SECTIONS.some((name) => section.header.startsWith(name)),
+	);
+
+	/*
+	 * **머리글이 아니라 본문이 있는지**를 본다.
+	 *
+	 * `[웹 자료]` 절만 있고 그 아래가 비어 있는 Brief 가 나올 수 있다. 머리글 글자로 빈 것을
+	 * 판정하면 그 경우를 놓치고, 근거 범위가 "[웹 자료]" 여섯 글자가 되어 **모든 문항이
+	 * 탈락한다.**
+	 */
+	if (kept.every((section) => section.body.trim() === "")) return brief;
+
+	return kept.map((section) => `${section.header}\n${section.body}`).join("\n");
+}
+
 export interface GroundingResult {
 	ok: boolean;
 	/** 왜 떨어졌는지. 재생성 프롬프트에 그대로 실어 같은 실수를 반복하지 않게 한다. */
@@ -121,12 +193,21 @@ export function checkGrounding(
 	const idle = { ok: true, reason: null, evidenceRatio: 1, questionRatio: 1 };
 	if (brief.trim() === "") return idle;
 
-	const evidenceRatio = groundedRatio(question.evidence ?? "", brief);
+	/*
+	 * 근거는 **출제 근거로 인정되는 절**과만 대조한다(웹 자료가 있을 때). 홍보 문구를 인용한
+	 * 문항이 근거 검사를 통과하면 §7 이 무력해진다.
+	 */
+	const base = evidenceBase(brief);
+	const evidenceRatio = groundedRatio(question.evidence ?? "", base);
 
 	const answer = question.choices?.[question.correctChoice - 1] ?? "";
 	const asked = `${question.questionText} ${answer}`;
 	// 문항과 Brief 의 문자 체계가 다르면(영어 출제 + 한국어 정보) 글자 대조가 성립하지 않는다.
 	const comparable = sharesScript(asked, brief);
+	/*
+	 * 문제 본문은 **Brief 전체**와 대조한다. 소개에만 나오는 배경 낱말(시리즈명·수상 이력)을
+	 * 문제 문장에 쓰는 것 자체는 잘못이 아니다 — 금지되는 것은 그것을 **근거로 삼는** 것이다.
+	 */
 	const questionRatio = comparable ? groundedRatio(asked, brief) : 1;
 
 	if (evidenceRatio < MIN_EVIDENCE_GROUNDING) {

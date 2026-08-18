@@ -110,7 +110,7 @@ npx wrangler kv namespace create IMAGES
 ```bash
 npx wrangler secret put SESSION_SECRET
 npx wrangler secret put ENCRYPTION_KEY
-npx wrangler secret put INVITE_CODE      # 선택
+npx wrangler secret put INVITE_CODE      # 필수 — 없으면 가입이 막힌다
 ```
 
 AI API Key 는 Secret 이 아니다. **부모가 앱의 설정 화면에서 직접 입력**하고,

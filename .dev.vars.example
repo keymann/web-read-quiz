@@ -10,8 +10,12 @@ SESSION_SECRET="dev-only-change-me-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 #   openssl rand -base64 32
 ENCRYPTION_KEY="dev-only-change-me-xxxxxxxxxxxxxxxxxxxxxxxxx="
 
-# 회원가입 초대 코드(선택). 비워두면 가입 제한 없음.
-INVITE_CODE=""
+# 회원가입 초대 코드. **반드시 설정해야 한다.**
+# 비워 두면 가입이 막힌다 — 열린 채로 두는 것보다 안전한 쪽으로 닫는다.
+#
+# 이 저장소는 공개다. 실제 코드는 여기 적지 말고 `.dev.vars`(로컬)와
+# `wrangler secret put INVITE_CODE`(배포)에만 둔다.
+INVITE_CODE="change-me"
 
 # ── 서비스 공용 외부 API 키 (부모별이 아니다) ─────────────────────
 # 셋 다 선택이다. 없으면 그 소스만 조용히 건너뛰고 나머지는 그대로 동작한다.

@@ -1,8 +1,8 @@
-import { get, patch, post } from "../api.js";
+import { get, patch, post, put } from "../api.js";
 import { identifyBook, researchBook, usesBrowserRelay } from "../ai-relay.js";
 import { navigate } from "../router.js";
 import { requireSession } from "../session.js";
-import { banner, el, field, header, mount, selectField, setKidMode } from "../ui.js";
+import { banner, el, field, header, mount, selectField, setKidMode, textareaField } from "../ui.js";
 
 /**
  * 책 분석 화면 — AI 식별 → 부모 확인/보정 → 정보 검색(§5·§6).
@@ -15,9 +15,11 @@ import { banner, el, field, header, mount, selectField, setKidMode } from "../ui
 const SOURCE_LABEL = {
 	web: "웹 검색",
 	aladin: "알라딘",
+	"kakao-book": "카카오 책",
 	"google-books": "구글 북스",
 	"open-library": "오픈 라이브러리",
 	ai: "AI 모델 지식",
+	parent: "부모가 직접 입력",
 };
 
 export async function bookDetailPage({ id }) {
@@ -64,7 +66,9 @@ export async function bookDetailPage({ id }) {
 				message ? banner(message, messageKind) : null,
 				coverCard(book),
 				infoCard(book),
-				sourcesCard(sources, evidenceWeak),
+				sourcesCard(sources, evidenceWeak, readyForQuiz),
+				// AI 가 줄거리를 못 찾았거나 부모가 이미 적어 둔 경우에만 띄운다. 잘 된 책에는 군더더기다.
+				!readyForQuiz || book.manualPlot ? plotCard(book, readyForQuiz) : null,
 				attempts.length > 0 ? attemptsCard() : null,
 				quizzes.length > 0 ? roundsCard() : null,
 				quizCard(book, readyForQuiz, evidenceWeak),
@@ -135,11 +139,18 @@ export async function bookDetailPage({ id }) {
 							"search",
 							(relay) => (relay ? researchBook(id) : post(`/api/books/${id}/search`)),
 							"책 정보를 찾아 정리했습니다.",
+							/*
+							 * 실패했을 때 무엇이 없는지를 정확히 말한다.
+							 *
+							 * 예전 문구는 "근거 자료가 부족합니다" 였는데, 참고 자료는 멀쩡히 2건이
+							 * 쌓여 있고 바로 위 카드가 "근거 자료가 충분합니다" 라고 말하는 상황에서도
+							 * 그렇게 떴다. 없는 것은 참고 자료가 아니라 **줄거리**다.
+							 */
 							(data) =>
 								data.readyForQuiz
 									? data.searchNotice
 									: (data.searchNotice ??
-										"근거 자료가 부족합니다. 제목·지은이를 다시 확인하거나 정보를 한 번 더 찾아 주세요."),
+										"AI 가 이 책의 줄거리를 알지 못합니다. 아래에 줄거리를 직접 적어 주시면 문제를 만들 수 있습니다."),
 						),
 				}),
 			]),
@@ -166,15 +177,60 @@ export async function bookDetailPage({ id }) {
 		return form;
 	}
 
-	function sourcesCard(sources, evidenceWeak) {
+	/**
+	 * 부모가 줄거리를 직접 적는 곳.
+	 *
+	 * AI 가 모르는 책이 실제로 있다(실측 『움푹산의 비밀』). 무료 등급 키는 웹 검색도 못 쓰므로
+	 * 그런 책은 이 입력 없이는 영영 문제를 만들 수 없다. 출판사 책소개로 대신하지 않는다 —
+	 * 홍보 문구로 문제를 만들면 책을 읽지 않아도 풀린다.
+	 */
+	function plotCard(book, readyForQuiz) {
+		const plot = textareaField("줄거리", {
+			rows: 8,
+			value: book.manualPlot ?? "",
+			placeholder:
+				"누가 무엇을 했는지 순서대로 적어 주세요. 결말까지 적으면 더 좋은 문제가 나옵니다.\n예) 잎싹은 양계장을 나와 초록머리를 기른다. …",
+		});
+
+		const card = el("section", { class: "card" }, [
+			el("h2", { class: "section-title", text: "줄거리 직접 입력" }),
+			el("p", {
+				class: "hint",
+				text: readyForQuiz
+					? "적어 두신 줄거리입니다. 고치면 문제 만들기에 바로 반영됩니다."
+					: "AI 가 이 책을 알지 못합니다. 책을 보고 줄거리를 적어 주시면 그 내용으로 문제를 만듭니다.",
+			}),
+			plot.wrap,
+			el("button", {
+				class: "btn",
+				type: "button",
+				text: busy === "plot" ? "저장하는 중…" : "줄거리 저장",
+				disabled: busy !== null,
+				onClick: () =>
+					run("plot", () => put(`/api/books/${id}/plot`, { plot: plot.input.value }), "줄거리를 저장했습니다."),
+			}),
+		]);
+
+		return card;
+	}
+
+	/*
+	 * 참고 자료의 수와 **줄거리가 있는지**는 다른 이야기다.
+	 *
+	 * 예전에는 여기서 자료 수만 보고 "근거 자료가 충분합니다" 라고 했다. 그래서 줄거리를 못 찾은
+	 * 책에서 이 카드는 "충분합니다", 바로 아래 퀴즈 카드는 "먼저 책 정보를 찾아 주세요" 라고
+	 * 동시에 말했다. 같은 화면이 서로 반대되는 말을 하면 저장이 고장 난 것처럼 보인다.
+	 */
+	function sourcesCard(sources, evidenceWeak, readyForQuiz) {
+		const status = !readyForQuiz
+			? { kind: "warn", text: "자료는 찾았지만 줄거리를 얻지 못했습니다. 이 자료만으로는 문제를 만들 수 없습니다." }
+			: evidenceWeak
+				? { kind: "warn", text: "웹에서 찾은 근거가 2건 미만입니다. 문제는 만들 수 있지만 내용이 맞는지 더 꼼꼼히 확인해 주세요." }
+				: { kind: "ok", text: "근거 자료가 충분합니다." };
+
 		return el("section", { class: "card" }, [
 			el("h2", { class: "section-title", text: `참고 자료 ${sources.length}건` }),
-			el("p", {
-				class: evidenceWeak ? "status status--warn" : "status status--ok",
-				text: evidenceWeak
-					? "웹에서 찾은 근거가 2건 미만입니다. 문제는 만들 수 있지만 내용이 맞는지 더 꼼꼼히 확인해 주세요."
-					: "근거 자료가 충분합니다.",
-			}),
+			el("p", { class: `status status--${status.kind}`, text: status.text }),
 			sources.length === 0
 				? el("p", { class: "hint", text: "아직 찾은 자료가 없습니다." })
 				: el(
@@ -306,7 +362,10 @@ export async function bookDetailPage({ id }) {
 					})
 				: el("p", {
 						class: "status status--warn",
-						text: "먼저 책 정보를 찾아 주세요. 줄거리 없이는 문제를 만들 수 없습니다.",
+						// 이미 찾아 본 책에 "먼저 찾아 주세요" 라고 하면 저장이 안 된 것처럼 읽힌다.
+						text: book.searchedAt
+							? "책 정보는 찾았지만 AI 가 줄거리를 정리하지 못했습니다. 위에 줄거리를 직접 적어 주시면 문제를 만들 수 있습니다."
+							: "먼저 책 정보를 찾아 주세요. 줄거리 없이는 문제를 만들 수 없습니다.",
 					}),
 			readyForQuiz && evidenceWeak
 				? el("p", { class: "hint", text: "근거가 얇으니 만들어진 문제를 꼭 검수해 주세요." })
@@ -349,7 +408,8 @@ export async function bookDetailPage({ id }) {
 	 */
 	async function run(kind, execute, successMessage, warn) {
 		busy = kind;
-		message = "잠시만 기다려 주세요. AI 가 작업 중입니다.";
+		// 줄거리 저장은 AI 를 부르지 않는다. 부르지도 않은 것을 기다리라고 하지 않는다.
+		message = kind === "plot" ? "저장하는 중입니다." : "잠시만 기다려 주세요. AI 가 작업 중입니다.";
 		messageKind = "info";
 		await refresh();
 

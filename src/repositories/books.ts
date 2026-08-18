@@ -22,6 +22,8 @@ export interface BookRow {
 	ai_extracted: string | null;
 	ai_confidence: number | null;
 	brief: string | null;
+	/** 부모가 직접 적은 줄거리. AI 가 모르는 책의 유일한 입력이다. */
+	manual_plot: string | null;
 	/** 이번 조사에서 받은 서지 결과(JSON 배열). 프롬프트와 병합이 같은 값을 쓰게 한다. */
 	bib_cache: string | null;
 	analyzed_at: string | null;
@@ -83,6 +85,7 @@ export interface BookFields {
 	ai_extracted?: string | null;
 	ai_confidence?: number | null;
 	brief?: string | null;
+	manual_plot?: string | null;
 	bib_cache?: string | null;
 	analyzed_at?: string | null;
 	searched_at?: string | null;

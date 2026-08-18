@@ -93,6 +93,11 @@ async function detail({ env, principal, params }: RouteCtx): Promise<Response> {
 			passCount: quiz.pass_count,
 			language: quiz.language,
 			error: quiz.generation_error,
+			/** 지금 무엇을 하고 있는지. 화면이 문장으로 옮긴다. */
+			phase: quiz.generation_phase,
+			/** 이번 생성이 시작된 시각. 화면 진입 시각이 아니라 여기서부터 경과를 센다. */
+			startedAt: quiz.generation_started_at,
+			cancelRequested: quiz.cancel_requested === 1,
 			createdAt: quiz.created_at,
 		},
 		questions: questions.map(toQuestionView),
@@ -190,10 +195,28 @@ async function listForBook({ env, principal, params }: RouteCtx): Promise<Respon
 	});
 }
 
+/**
+ * 문제 만들기를 멈춘다.
+ *
+ * 백그라운드 작업은 밖에서 죽일 수 없다. 표시만 남기고 루프가 다음 단계에서 스스로 멈춘다.
+ * 즉 **지금 돌고 있는 AI 호출이 끝난 뒤** 실제로 멈춘다 — 화면에는 곧바로 응답한다.
+ *
+ * 브라우저 릴레이 경로는 루프가 브라우저에 있어 그쪽이 곧바로 멈춘다. 그래도 이 표시를
+ * 남겨 두어야 서버 상태가 어긋나지 않는다.
+ */
+async function cancel({ env, principal, params }: RouteCtx): Promise<Response> {
+	const parent = requireParent(principal);
+	if (!(await quizzesRepo.requestCancel(env, parent.userId, params.id!))) {
+		throw notFound("퀴즈를 찾을 수 없습니다.");
+	}
+	return ok({ cancelled: true });
+}
+
 export const quizRoutes: Route[] = [
 	route("POST", "/api/quizzes", create),
 	route("GET", "/api/quizzes/:id", detail),
 	route("POST", "/api/quizzes/:id/generate", generate),
+	route("POST", "/api/quizzes/:id/cancel", cancel),
 	route("POST", "/api/quizzes/:id/regenerate", regenerate),
 	route("POST", "/api/quizzes/:id/assign", assignToChild),
 	route("GET", "/api/books/:id/quizzes", listForBook),

@@ -113,6 +113,7 @@
 | --- | --- | --- | --- |
 | POST | `/api/quizzes` | PARENT | ✅ `{ bookId, language? }` — 퀴즈 생성 (status=DRAFT, round 자동 증가) |
 | POST | `/api/quizzes/:id/generate` | PARENT | ✅ **빈 자리만** 채운다. **202** 반환 후 백그라운드 실행 |
+| POST | `/api/quizzes/:id/cancel` | PARENT | ✅ 만들기 중단 요청. **표시만 남기고 곧바로 응답한다** |
 | POST | `/api/quizzes/:id/regenerate` | PARENT | ✅ `{ questionIds }` — 고른 문항만 비활성화. 채우기는 `generate` |
 | GET | `/api/quizzes/:id` | PARENT | ✅ 퀴즈 + 문제 + 진행 상태 + 내준 아이 |
 | POST | `/api/quizzes/:id/assign` | PARENT | ✅ `{ childId }` → assignment 생성, status=ASSIGNED |

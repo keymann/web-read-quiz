@@ -218,8 +218,15 @@ const MAX_ROUNDS = 3;
  * 보이고, 부모는 고장 났다고 생각해 새로고침한다(그러면 정말로 중단된다). 그래서 무엇을
  * 하려는 참인지를 먼저 알리고, 기다리는 동안에도 무슨 일이 벌어지는지 계속 보이게 한다.
  */
-export async function generateQuestions(quizId, onProgress) {
+export async function generateQuestions(quizId, onProgress, shouldStop) {
 	return withCredential(async ({ apiKey }) => {
+		/**
+		 * 부모가 취소를 눌렀는지. **각 단계 사이에서** 본다.
+		 *
+		 * Gemini 호출 한 번이 10~30초라 호출 중간에는 멈출 수 없다. 그래서 취소를 눌러도
+		 * 지금 돌고 있는 호출이 끝난 뒤에 멈춘다. 그때까지 저장된 문항은 그대로 남는다.
+		 */
+		const stopped = () => shouldStop?.() === true;
 		let rejected = [];
 		let last = null;
 		/** 마지막으로 알린 상태. 곁가지 소식(재시도 등)이 숫자를 지우지 않게 들고 있는다. */
@@ -231,6 +238,7 @@ export async function generateQuestions(quizId, onProgress) {
 		};
 
 		for (let round = 1; round <= MAX_ROUNDS; round++) {
+			if (stopped()) return { ...state, cancelled: true, done: false };
 			report({ phase: "planning", round });
 
 			// 1) 이번 라운드에 몇 개가 더 필요한지 서버가 정하고, 브라우저가 그 요청을 보낸다.
@@ -245,6 +253,7 @@ export async function generateQuestions(quizId, onProgress) {
 				},
 			);
 			if (plan.done) return { accepted: plan.accepted, target: plan.target, done: true };
+			if (stopped()) return { ...state, cancelled: true, done: false };
 
 			// 2) 만든 문제를 서버가 사후검사하고, 남은 것만 AI 검수로 보낸다
 			report({ phase: "screening", round, accepted: plan.accepted, target: plan.target });
@@ -264,6 +273,8 @@ export async function generateQuestions(quizId, onProgress) {
 				report({ phase: "retrying", round, dropped: validatePlan.rejected.length });
 				continue;
 			}
+
+			if (stopped()) return { ...state, cancelled: true, done: false };
 
 			// 3) 서버가 임계값을 적용하고 통과분만 저장한다
 			report({ phase: "saving", round });

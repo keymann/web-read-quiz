@@ -94,3 +94,54 @@ export function header(title, actions = []) {
 
 /** 파괴적 동작 전 확인. 브라우저 기본 confirm 으로 충분한 자리에만 쓴다. */
 export const confirmAction = (message) => window.confirm(message);
+
+/**
+ * 버튼 이름을 정할 수 있는 확인 창.
+ *
+ * `window.confirm` 은 "확인/취소" 로 고정이라 **어느 쪽이 무엇인지 헷갈리는 자리**에 쓸 수
+ * 없다. "문제 만들기를 멈출까요?" 에 확인/취소가 붙으면 취소가 "멈추기" 인지 "계속하기" 인지
+ * 알 수 없다. 그래서 두 버튼에 각각 이름을 준다.
+ *
+ * 네이티브 `<dialog>` 를 쓴다 — 모달 동작·포커스 가둠·Esc 닫기가 따라오고 인라인 style 이
+ * 필요 없어 CSP 를 건드리지 않는다.
+ *
+ * @returns 확인 버튼을 누르면 true. Esc·바깥 클릭은 false(= 하던 일을 계속한다).
+ */
+export function confirmDialog({ title, message, confirmText, cancelText }) {
+	return new Promise((resolve) => {
+		let answer = false;
+
+		const dialog = el("dialog", { class: "dialog" }, [
+			title ? el("h2", { class: "dialog__title", text: title }) : null,
+			el("p", { class: "dialog__body", text: message }),
+			el("div", { class: "dialog__actions" }, [
+				// 하던 일을 계속하는 쪽을 오른쪽에 두고 기본 포커스를 준다.
+				// Enter 를 눌렀을 때 멈추는 쪽이 걸리면 안 된다.
+				el("button", {
+					class: "btn btn--secondary",
+					type: "button",
+					text: confirmText,
+					onClick: () => {
+						answer = true;
+						dialog.close();
+					},
+				}),
+				el("button", {
+					class: "btn",
+					type: "button",
+					text: cancelText,
+					autofocus: true,
+					onClick: () => dialog.close(),
+				}),
+			]),
+		]);
+
+		dialog.addEventListener("close", () => {
+			dialog.remove();
+			resolve(answer);
+		});
+
+		document.body.append(dialog);
+		dialog.showModal();
+	});
+}

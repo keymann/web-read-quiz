@@ -15,6 +15,12 @@ export interface QuizRow {
 	/** 이 퀴즈의 문제를 낸 언어. 부족한 문항을 채울 때도 이 값을 따른다. */
 	language: QuestionLanguage;
 	generation_error: string | null;
+	/** 지금 무엇을 하고 있는지. 화면이 그대로 문장으로 옮긴다. */
+	generation_phase: string | null;
+	/** 이번 생성이 시작된 시각. 경과 시간을 여기서부터 센다. */
+	generation_started_at: string | null;
+	/** 부모가 취소를 눌렀다는 표시. 루프가 단계마다 보고 스스로 멈춘다. */
+	cancel_requested: number;
 	created_at: string;
 	updated_at: string;
 }
@@ -101,11 +107,17 @@ export async function setStatus(
 /**
  * 이미 생성 중이면 다시 시작하지 않는다.
  * 상태 확인과 전이를 한 문장으로 처리해, 동시에 두 번 눌러도 하나만 통과하게 한다.
+ *
+ * 시작 시각과 단계를 여기서 함께 세운다. 지난 회차의 취소 표시도 지운다 — 안 지우면
+ * 새 생성이 시작하자마자 취소된 것으로 보인다.
  */
 export async function claimForGeneration(env: AppEnv, quizId: string): Promise<boolean> {
 	const result = await env.DB.prepare(
 		`UPDATE quizzes
 		    SET status = 'GENERATING', generation_error = NULL,
+		        generation_phase = 'planning',
+		        generation_started_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+		        cancel_requested = 0,
 		        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
 		  WHERE id = ? AND status IN ('DRAFT', 'REVIEW')`,
 	)
@@ -113,4 +125,45 @@ export async function claimForGeneration(env: AppEnv, quizId: string): Promise<b
 		.run();
 
 	return (result.meta.changes ?? 0) > 0;
+}
+
+/**
+ * 진행 단계를 적는다. 화면이 폴링으로 읽어 부모에게 보여준다.
+ *
+ * 라운드 번호나 문항 수 같은 곁가지는 `phase` 문자열에 담지 않는다 — 화면이 문장을
+ * 만들고 여기는 단계 이름만 둔다. 그래야 문구를 고칠 때 서버를 건드리지 않는다.
+ */
+export async function setPhase(env: AppEnv, quizId: string, phase: string): Promise<void> {
+	await env.DB.prepare(
+		`UPDATE quizzes SET generation_phase = ? WHERE id = ? AND status = 'GENERATING'`,
+	)
+		.bind(phase, quizId)
+		.run();
+}
+
+/**
+ * 취소를 요청한다. 백그라운드 작업은 밖에서 죽일 수 없으므로 표시만 남기고,
+ * 루프가 다음 단계로 넘어갈 때 스스로 멈춘다.
+ *
+ * 소유자 확인을 이 문장 안에서 한다 — 남의 퀴즈를 멈출 수 있으면 안 된다.
+ */
+export async function requestCancel(env: AppEnv, userId: string, quizId: string): Promise<boolean> {
+	const result = await env.DB.prepare(
+		`UPDATE quizzes
+		    SET cancel_requested = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		  WHERE id = ? AND parent_user_id = ?`,
+	)
+		.bind(quizId, userId)
+		.run();
+
+	return (result.meta.changes ?? 0) > 0;
+}
+
+/** 취소가 걸렸는지. 루프가 단계마다 부른다. */
+export async function isCancelled(env: AppEnv, quizId: string): Promise<boolean> {
+	const row = await env.DB.prepare("SELECT cancel_requested FROM quizzes WHERE id = ?")
+		.bind(quizId)
+		.first<{ cancel_requested: number }>();
+
+	return (row?.cancel_requested ?? 0) === 1;
 }

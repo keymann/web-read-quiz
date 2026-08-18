@@ -108,6 +108,37 @@ export async function createQuiz(
 /* ── 생성 실행 ───────────────────────────────────────── */
 
 /**
+ * 부모가 취소를 눌렀는지. 각 단계 사이에서 확인한다.
+ *
+ * AI 호출 한 번이 10~30초라 **호출 중간에는 멈출 수 없다.** 그래서 취소를 눌러도 실제로는
+ * 지금 돌고 있는 호출이 끝난 뒤에 멈춘다. 대신 그때까지 통과한 문항은 버리지 않고 저장한다 —
+ * 30초를 기다린 결과를 취소했다고 없애면 그 비용이 그냥 사라진다.
+ */
+async function cancelled(env: AppEnv, quizId: string): Promise<boolean> {
+	return quizzesRepo.isCancelled(env, quizId);
+}
+
+/** 취소로 끝낼 때의 마무리. 저장할 것이 있으면 저장하고 상태를 되돌린다. */
+async function finishCancelled(
+	env: AppEnv,
+	quizId: string,
+	kept: number,
+	accepted: AcceptedQuestion[],
+): Promise<void> {
+	if (accepted.length > 0) await persistAccepted(env, quizId, accepted);
+
+	const total = kept + accepted.length;
+	await quizzesRepo.setStatus(
+		env,
+		quizId,
+		total > 0 ? "REVIEW" : "DRAFT",
+		accepted.length > 0
+			? `문제 만들기를 멈췄습니다. 그때까지 만든 ${accepted.length}문제는 저장했습니다.`
+			: "문제 만들기를 멈췄습니다.",
+	);
+}
+
+/**
  * 백그라운드에서 도는 본체.
  *
  * 라우트는 이 함수를 `ctx.waitUntil` 에 넘기고 곧바로 202 를 돌려준다. 20문항 생성과 검증은
@@ -154,6 +185,9 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 		for (let round = 1; round <= MAX_ROUNDS && accepted.length < target; round++) {
 			const need = target - accepted.length;
 
+			if (await cancelled(env, quizId)) return finishCancelled(env, quizId, kept.length, accepted);
+			await quizzesRepo.setPhase(env, quizId, round === 1 ? "generating" : "retrying");
+
 			const { value: fresh } = await withModelFallback(ai.provider, ai.apiKey, ai.model, (model) =>
 				generateQuestions({
 					provider: ai.provider,
@@ -169,6 +203,9 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 				}),
 			);
 
+			if (await cancelled(env, quizId)) return finishCancelled(env, quizId, kept.length, accepted);
+			await quizzesRepo.setPhase(env, quizId, "screening");
+
 			// 1) AI 를 부르기 전에 서버가 걸러낸다. 여기서 줄어든 만큼 검증 비용이 준다.
 			const screened = screen(fresh, {
 				accepted: [...keptTexts, ...accepted.map((a) => a.question.questionText)],
@@ -182,6 +219,8 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 			}
 			if (screened.passed.length === 0) continue;
 
+			await quizzesRepo.setPhase(env, quizId, "validating");
+
 			// 2) 살아남은 문항만 AI 검증에 보낸다.
 			const { value: verdicts } = await withModelFallback(ai.provider, ai.apiKey, ai.model, (model) =>
 				validateQuestions({
@@ -194,9 +233,11 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 				}),
 			);
 
-			const round = applyVerdicts(screened.passed, verdicts, target - accepted.length);
-			accepted.push(...round.accepted);
-			rejected.push(...round.rejected);
+			// 루프 변수 `round` 를 가리지 않게 다른 이름을 쓴다. 예전에는 같은 이름이라
+			// 이 줄 위에서 라운드 번호를 읽을 수 없었다.
+			const outcome = applyVerdicts(screened.passed, verdicts, target - accepted.length);
+			accepted.push(...outcome.accepted);
+			rejected.push(...outcome.rejected);
 		}
 
 		if (accepted.length === 0) {
@@ -204,6 +245,9 @@ export async function runGeneration(env: AppEnv, userId: string, quizId: string)
 			await quizzesRepo.setStatus(env, quizId, kept.length > 0 ? "REVIEW" : "DRAFT", notice);
 			return;
 		}
+
+		if (await cancelled(env, quizId)) return finishCancelled(env, quizId, kept.length, accepted);
+		await quizzesRepo.setPhase(env, quizId, "saving");
 
 		await persistAccepted(env, quizId, accepted);
 

@@ -148,14 +148,26 @@ const FIELDS: Field[] = ["arLevel", "arPoints", "arInterestLevel", "lexile"];
  * 항목마다 **가장 많은 페이지가 같다고 말한 값**을 고른다.
  *
  * 한 페이지만 말해도 받아들인다. 여러 곳이 일치할 때까지 기다리면, 자료가 얇은 책은
- * 영영 빈칸이 된다 — 그것이 지금 고치려는 문제다. 대신 표가 갈리면 다수를 따르고,
- * 같으면 관련도가 높은 페이지를 따른다.
+ * 영영 빈칸이 된다 — 그것이 지금 고치려는 문제다.
+ *
+ * 표는 **여러 항목을 함께 내놓은 출처에 더 무겁게** 센다. 실측에서 이렇게 갈렸다.
+ *
+ *   arbookfind 인쇄용 페이지(다른 레코드)  흥미수준 UG 만 하나
+ *   arbookfind 상세 페이지(맞는 책)        흥미수준 MG · AR 4.4 · 5.0 포인트
+ *
+ * 표를 머릿수로만 세면 1:1 이 되고, 관련도가 앞선 인쇄용 페이지의 UG 가 이긴다.
+ * 그런데 AR 레벨·포인트까지 함께 적어 둔 쪽이 그 책을 제대로 다룬 페이지다 — 곁다리로
+ * 한 항목만 걸린 페이지보다 믿을 만하다.
  */
 export function vote(
     perSource: { value: Omit<ReadingLevel, "sources">; url: string; title: string }[],
 ): ReadingLevel {
 	const out: ReadingLevel = { ...EMPTY, sources: [] };
 	const used = new Map<string, { url: string; title: string }>();
+
+	/** 그 출처가 몇 항목을 내놓았는지. 많이 내놓을수록 그 책을 제대로 다룬 페이지다. */
+	const weightOf = (value: Omit<ReadingLevel, "sources">): number =>
+		FIELDS.filter((field) => value[field] !== "").length;
 
 	for (const field of FIELDS) {
 		const tally = new Map<string, number>();
@@ -164,12 +176,12 @@ export function vote(
 		for (const s of perSource) {
 			const value = s.value[field];
 			if (value === "") continue;
-			tally.set(value, (tally.get(value) ?? 0) + 1);
+			tally.set(value, (tally.get(value) ?? 0) + weightOf(s.value));
 			if (!firstSeen.has(value)) firstSeen.set(value, { url: s.url, title: s.title });
 		}
 		if (tally.size === 0) continue;
 
-		// 표가 같으면 먼저 나온 것 — perSource 는 관련도 순이다.
+		// 무게가 같으면 먼저 나온 것 — perSource 는 관련도 순이다.
 		let best = "";
 		let bestCount = 0;
 		for (const [value, count] of tally) {

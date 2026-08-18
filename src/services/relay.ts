@@ -167,6 +167,8 @@ export async function applyIdentify(
 
 export async function planResearch(
 	env: AppEnv,
+	/** 등급 검색을 응답 뒤에도 계속 돌리기 위해 받는다. */
+	ctx: ExecutionContext,
 	userId: string,
 	bookId: string,
 	useWebSearch: boolean,
@@ -180,11 +182,41 @@ export async function planResearch(
 	}
 
 	const { model, modelNotice } = await chooseModel(env, userId, "text", avoid);
-	// 여기서 받은 것을 책에 적어 두고, 반영 단계(applyResearch)가 같은 값을 읽는다.
-	// 두 번 부르면 프롬프트가 본 서지와 병합에 쓰는 서지가 달라질 수 있다.
-	const bib = await book.prepareBib(env, userId, row);
-	// 웹 자료도 같은 이유로 여기서 확보해 캐시에 둔다. 반영 단계가 그 캐시를 읽는다.
-	const web = await book.prepareWeb(env, userId, row);
+	/*
+	 * 서지와 웹 자료를 **나란히** 받는다(서버 경로의 `book.search` 와 같은 이유).
+	 * 둘 다 같은 책 행만 있으면 되는데 줄을 세우면 서지 최대 8초 + Tavily 최대 50초의
+	 * 합을 기다린다. 보조 단계라 각자 자기 실패를 삼킨다 — 나란히 돌릴 때 한쪽 거부가
+	 * 다른 쪽 거부를 갈 곳 없게 만드는 것도 함께 막는다.
+	 *
+	 * 여기서 받은 것을 책에 적어 두고, 반영 단계(applyResearch)가 같은 값을 읽는다.
+	 * 두 번 부르면 프롬프트가 본 서지와 병합에 쓰는 서지가 달라질 수 있다.
+	 */
+	const [bib, web] = await Promise.all([
+		book.prepareBib(env, userId, row).catch((err: unknown) => {
+			console.warn("bibliographic lookup failed", err);
+			return [];
+		}),
+		book.prepareWeb(env, userId, row).catch((err: unknown) => {
+			console.warn("web search failed", err);
+			return [];
+		}),
+	]);
+
+	/*
+	 * 읽기 난이도 검색을 **여기서 띄운다.**
+	 *
+	 * 릴레이는 이 계획을 받아 브라우저가 Gemini 를 부르고, 그 뒤 반영 단계로 돌아온다.
+	 * 등급 검색을 반영 단계에 두면 Gemini 가 끝나기를 기다렸다가 다시 25초를 더 기다린다.
+	 * 여기서 시작해 두면 브라우저가 Gemini 와 이야기하는 동안 함께 돈다.
+	 *
+	 * 응답을 붙잡지 않도록 `waitUntil` 에 맡긴다. 두 번 찾는 일은 없다 — 검색 전에 세우는
+	 * 표시가 자물쇠 노릇을 한다(`claimReadingLevelSearch`).
+	 */
+	ctx.waitUntil(
+		book.ensureReadingLevel(env, userId, row).catch((err: unknown) => {
+			console.warn("reading level lookup failed", err);
+		}),
+	);
 
 	return {
 		...buildGeminiCall(

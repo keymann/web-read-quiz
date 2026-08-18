@@ -21,8 +21,16 @@ export interface AppEnv extends Env {
 	 */
 	ALADIN_TTB_KEY?: string;
 	KAKAO_REST_KEY?: string;
-	/** Tavily 웹 검색. 서비스 공용이며 없으면 웹 검색만 건너뛴다. */
+	/*
+	 * Tavily 웹 검색. 서비스 공용이며 없으면 웹 검색만 건너뛴다.
+	 *
+	 * 무료 등급은 **계정당** 월 1,000 크레딧이라 계정을 여럿 두고 번호 순서대로 쓴다.
+	 * 하나가 바닥나면(432) 다음 키로 넘어간다 — `services/search-budget.ts`.
+	 */
 	TAVILY_API_KEY?: string;
+	TAVILY_API_KEY2?: string;
+	TAVILY_API_KEY3?: string;
+	TAVILY_API_KEY4?: string;
 }
 
 export type Role = "PARENT" | "CHILD";

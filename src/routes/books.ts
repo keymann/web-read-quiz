@@ -45,7 +45,7 @@ async function detail({ env, principal, params }: RouteCtx): Promise<Response> {
 		// 재검색 버튼이 남은 횟수를 보여줄 수 있게 함께 내린다. 크레딧을 쓰는 조작이므로
 		// 누르기 전에 몇 번 남았는지 알아야 한다.
 		web: {
-			enabled: Boolean(env.TAVILY_API_KEY),
+			enabled: budget.slots(env).length > 0,
 			searchesLeft: Math.max(0, budget.MAX_SEARCHES_PER_BOOK - row.web_searches),
 			creditsLeft: await budget.remaining(env),
 		},

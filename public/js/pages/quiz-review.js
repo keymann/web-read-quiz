@@ -252,8 +252,10 @@ export async function quizReviewPage({ id }) {
 	 */
 	async function askBeforeLeaving(href) {
 		const stopIt = await confirmDialog({
-			title: "문제 만드는 중이예요",
-			message: "문제 만드는 중이예요. 계속하려면 조금만 기다려주세요.",
+			title: "문제 만드는 중이에요",
+			// 제목을 되풀이하지 않고 **나가면 무슨 일이 벌어지는지**를 적는다. 그것을 알아야
+			// 두 버튼 중 하나를 고를 수 있다.
+			message: "지금 나가면 만들기가 멈춰요. 그때까지 만든 문제는 저장됩니다.",
 			confirmText: "만들기 취소",
 			cancelText: "기다리기",
 		});

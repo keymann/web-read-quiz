@@ -58,16 +58,66 @@ const QUOTA_EXHAUSTED = 429;
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * 호출 하나가 이만큼을 넘기면 끊는다. 서버 경로도 같은 값을 쓴다(`ai/generate.ts`).
+ * 실측한 20문항 생성이 82초라 두 배 남짓의 여유를 둔다.
+ */
+const CALL_TIMEOUT_MS = 180_000;
+
+/**
+ * 한 단계(생성·검증)는 재시도와 모델 교체를 다 합쳐도 이만큼을 넘기지 않는다.
+ *
+ * 이게 없으면 최악이 `3회 재시도 × 3모델 × 180초 = 27분` 이다. 그때까지 부모는 화면을
+ * 열어 둔 채 기다리게 된다 — 어느 시점부터는 기다리는 것보다 다시 시작하는 편이 낫다.
+ */
+const STEP_DEADLINE_MS = 6 * 60 * 1000;
+
+/**
+ * 여러 신호 중 **먼저 울리는 것**을 따르는 신호를 만든다.
+ *
+ * `AbortSignal.any` 가 있으면 그것을 쓰고, 없는 브라우저를 위해 같은 일을 직접 한다.
+ */
+function anySignal(signals) {
+	if (typeof AbortSignal.any === "function") return AbortSignal.any(signals);
+
+	const controller = new AbortController();
+	for (const signal of signals) {
+		if (signal.aborted) {
+			controller.abort(signal.reason);
+			break;
+		}
+		signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
+	}
+	return controller.signal;
+}
+
+/** 중단된 호출인지. 재시도해도 소용없고 모델을 바꿀 일도 아니다. */
+const isAbort = (err) => err?.name === "AbortError" || err?.name === "TimeoutError";
+
 /** 서버가 만들어 준 요청을 Gemini 로 보낸다. 실패해도 키가 로그에 남지 않게 한다. */
-async function callGemini(apiKey, plan) {
+async function callGemini(apiKey, plan, signal) {
 	let response;
 	try {
 		response = await fetch(plan.url, {
 			method: "POST",
 			headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
 			body: JSON.stringify(plan.body),
+			signal,
 		});
-	} catch {
+	} catch (err) {
+		/*
+		 * 예전에는 `signal` 이 아예 없어서, 응답이 오지 않으면 **영원히** 기다렸다.
+		 * 그러면 취소도 듣지 않는다 — 취소는 단계와 단계 사이에서만 확인하기 때문이다.
+		 */
+		if (isAbort(err)) {
+			const aborted = new Error(
+				err.name === "TimeoutError"
+					? "AI 응답이 너무 오래 걸려 멈췄습니다."
+					: "문제 만들기를 멈췄습니다.",
+			);
+			aborted.aborted = true;
+			throw aborted;
+		}
 		throw new Error("Gemini 에 연결하지 못했습니다. 네트워크를 확인해 주세요.");
 	}
 
@@ -100,13 +150,18 @@ async function callGemini(apiKey, plan) {
  * 화면이 "지금 무엇을 하고 있는지" 를 계속 보여줄 수 있게 하기 위한 것이다.
  */
 /** 한 요청을 재시도까지 밀어붙인다. 끝내 안 되면 마지막 오류를 던진다. */
-async function callWithRetry(apiKey, call, { fatal, onNote }) {
+async function callWithRetry(apiKey, call, { fatal, onNote, signal }) {
 	let lastError;
 
 	for (let attempt = 1; attempt <= 3; attempt++) {
+		// 호출마다 타임아웃을 새로 건다. 단계 데드라인·취소는 밖에서 들어온 신호가 맡는다.
+		const perCall = anySignal([AbortSignal.timeout(CALL_TIMEOUT_MS), signal]);
+
 		try {
-			return await callGemini(apiKey, call);
+			return await callGemini(apiKey, call, perCall);
 		} catch (err) {
+			// 끊긴 호출은 다시 걸어도 같다. 취소든 시간 초과든 여기서 끝낸다.
+			if (err.aborted) throw err;
 			if (fatal?.(err)) throw err;
 			lastError = err;
 			if (err.status === QUOTA_EXHAUSTED) break; // 기다려도 안 풀린다. 모델을 바꾼다.
@@ -130,8 +185,15 @@ async function callWithRetry(apiKey, call, { fatal, onNote }) {
 const callsOf = (plan) =>
 	plan.calls ?? (plan.url === undefined ? [] : [{ url: plan.url, body: plan.body }]);
 
-async function runStep(apiKey, request, { fatal, onNote, onPlan } = {}) {
+async function runStep(apiKey, request, { fatal, onNote, onPlan, signal } = {}) {
 	const avoid = [];
+	/*
+	 * 재시도와 모델 교체를 다 합쳐도 한 단계는 데드라인을 넘기지 않는다. 밖에서 들어온
+	 * 취소 신호와 묶어 두면, 둘 중 무엇이 울리든 진행 중인 호출이 즉시 끊긴다.
+	 */
+	const deadline = anySignal(
+		[AbortSignal.timeout(STEP_DEADLINE_MS), signal].filter(Boolean),
+	);
 
 	for (;;) {
 		const plan = await post("/api/ai/plan", { ...request, avoid });
@@ -150,11 +212,15 @@ async function runStep(apiKey, request, { fatal, onNote, onPlan } = {}) {
 		 * 때만 모델을 바꾼다. 서버가 합칠 때 모자란 만큼은 다음 라운드가 채운다.
 		 */
 		const settled = await Promise.allSettled(
-			calls.map((call) => callWithRetry(apiKey, call, { fatal, onNote })),
+			calls.map((call) => callWithRetry(apiKey, call, { fatal, onNote, signal: deadline })),
 		);
 
 		const fatalFailure = settled.find((r) => r.status === "rejected" && fatal?.(r.reason));
 		if (fatalFailure) throw fatalFailure.reason;
+
+		// 끊겼으면 모델을 바꿔 다시 시도할 일이 아니다. 그대로 알린다.
+		const abortedFailure = settled.find((r) => r.status === "rejected" && r.reason?.aborted);
+		if (abortedFailure) throw abortedFailure.reason;
 
 		const responses = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
 		if (responses.length > 0) return { plan, responses };
@@ -251,16 +317,27 @@ const MAX_ROUNDS = 3;
  * 생성 한 번이 30초를 넘기는 일이 흔하다. 끝난 뒤에만 알리면 그 시간 내내 화면이 멈춰
  * 보이고, 부모는 고장 났다고 생각해 새로고침한다(그러면 정말로 중단된다). 그래서 무엇을
  * 하려는 참인지를 먼저 알리고, 기다리는 동안에도 무슨 일이 벌어지는지 계속 보이게 한다.
+ *
+ * `shouldStop` 이 참이 되면 **돌고 있는 호출까지 끊는다.** 서버 경로와 달리 여기서는
+ * 브라우저가 곧 실행 주체라 그렇게 할 수 있다.
  */
 export async function generateQuestions(quizId, onProgress, shouldStop) {
 	return withCredential(async ({ apiKey }) => {
-		/**
-		 * 부모가 취소를 눌렀는지. **각 단계 사이에서** 본다.
-		 *
-		 * Gemini 호출 한 번이 10~30초라 호출 중간에는 멈출 수 없다. 그래서 취소를 눌러도
-		 * 지금 돌고 있는 호출이 끝난 뒤에 멈춘다. 그때까지 저장된 문항은 그대로 남는다.
-		 */
+		/** 부모가 취소를 눌렀는지. 각 단계 사이에서 본다. */
 		const stopped = () => shouldStop?.() === true;
+
+		/*
+		 * 취소를 **진행 중인 호출까지** 전한다.
+		 *
+		 * 예전에는 단계와 단계 사이에서만 취소를 봤다. Gemini 호출 하나가 1분을 넘기는 일이
+		 * 흔해서, 취소를 눌러도 그만큼 기다려야 실제로 멈췄다. `shouldStop` 은 물어보는
+		 * 함수라 그대로는 fetch 에 넘길 수 없으니, 짧은 주기로 보고 신호로 옮긴다.
+		 */
+		const cancel = new AbortController();
+		const watchCancel = setInterval(() => {
+			if (stopped()) cancel.abort();
+		}, 250);
+
 		let rejected = [];
 		let last = null;
 		/** 마지막으로 알린 상태. 곁가지 소식(재시도 등)이 숫자를 지우지 않게 들고 있는다. */
@@ -271,66 +348,76 @@ export async function generateQuestions(quizId, onProgress, shouldStop) {
 			onProgress?.(state);
 		};
 
-		for (let round = 1; round <= MAX_ROUNDS; round++) {
-			if (stopped()) return { ...state, cancelled: true, done: false };
-			report({ phase: "planning", round });
+		try {
+			for (let round = 1; round <= MAX_ROUNDS; round++) {
+				if (stopped()) return { ...state, cancelled: true, done: false };
+				report({ phase: "planning", round });
 
-			// 1) 이번 라운드에 몇 개가 더 필요한지 서버가 정하고, 브라우저가 그 요청을 보낸다.
-			//    onPlan 은 **긴 호출 직전**에 불린다 — 기다림이 시작되기 전에 알려야 의미가 있다.
-			const { plan, responses: generated } = await runStep(
-				apiKey,
-				{ kind: "generate", quizId, rejected },
-				{
-					onPlan: (p) =>
-						report({ phase: "generating", round, need: p.need, accepted: p.accepted, target: p.target }),
-					onNote: (note) => report({ note }),
-				},
-			);
-			if (plan.done) return { accepted: plan.accepted, target: plan.target, done: true };
-			if (stopped()) return { ...state, cancelled: true, done: false };
+				// 1) 이번 라운드에 몇 개가 더 필요한지 서버가 정하고, 브라우저가 그 요청을 보낸다.
+				//    onPlan 은 **긴 호출 직전**에 불린다 — 기다림이 시작되기 전에 알려야 의미가 있다.
+				const { plan, responses: generated } = await runStep(
+					apiKey,
+					{ kind: "generate", quizId, rejected },
+					{
+						onPlan: (p) =>
+							report({ phase: "generating", round, need: p.need, accepted: p.accepted, target: p.target }),
+						onNote: (note) => report({ note }),
+						signal: cancel.signal,
+					},
+				);
+				if (plan.done) return { accepted: plan.accepted, target: plan.target, done: true };
+				if (stopped()) return { ...state, cancelled: true, done: false };
 
-			// 2) 만든 문제를 서버가 사후검사하고, 남은 것만 AI 검수로 보낸다
-			report({ phase: "screening", round, accepted: plan.accepted, target: plan.target });
+				// 2) 만든 문제를 서버가 사후검사하고, 남은 것만 AI 검수로 보낸다
+				report({ phase: "screening", round, accepted: plan.accepted, target: plan.target });
 
-			const { plan: validatePlan, responses: verdicts } = await runStep(
-				apiKey,
-				{ kind: "validate", quizId, responses: generated },
-				{
-					onPlan: (p) => report({ phase: "validating", round, checking: p.questions?.length ?? 0 }),
-					onNote: (note) => report({ note }),
-				},
-			);
-			rejected = [...rejected, ...validatePlan.rejected].slice(-20);
+				const { plan: validatePlan, responses: verdicts } = await runStep(
+					apiKey,
+					{ kind: "validate", quizId, responses: generated },
+					{
+						onPlan: (p) => report({ phase: "validating", round, checking: p.questions?.length ?? 0 }),
+						onNote: (note) => report({ note }),
+						signal: cancel.signal,
+					},
+				);
+				rejected = [...rejected, ...validatePlan.rejected].slice(-20);
 
-			// 사후검사에서 전멸했으면 검증할 게 없다. 다음 라운드로.
-			if (validatePlan.questions.length === 0) {
-				report({ phase: "retrying", round, dropped: validatePlan.rejected.length });
-				continue;
+				// 사후검사에서 전멸했으면 검증할 게 없다. 다음 라운드로.
+				if (validatePlan.questions.length === 0) {
+					report({ phase: "retrying", round, dropped: validatePlan.rejected.length });
+					continue;
+				}
+
+				if (stopped()) return { ...state, cancelled: true, done: false };
+
+				// 3) 서버가 임계값을 적용하고 통과분만 저장한다
+				report({ phase: "saving", round });
+
+				last = await post("/api/ai/apply", {
+					kind: "accept",
+					quizId,
+					questions: validatePlan.questions,
+					responses: verdicts,
+				});
+				rejected = [...rejected, ...last.rejected].slice(-20);
+
+				report({
+					phase: last.done ? "done" : "retrying",
+					round,
+					dropped: last.rejected.length,
+					accepted: last.accepted,
+					target: last.target,
+				});
+				if (last.done) return last;
 			}
 
-			if (stopped()) return { ...state, cancelled: true, done: false };
-
-			// 3) 서버가 임계값을 적용하고 통과분만 저장한다
-			report({ phase: "saving", round });
-
-			last = await post("/api/ai/apply", {
-				kind: "accept",
-				quizId,
-				questions: validatePlan.questions,
-				responses: verdicts,
-			});
-			rejected = [...rejected, ...last.rejected].slice(-20);
-
-			report({
-				phase: last.done ? "done" : "retrying",
-				round,
-				dropped: last.rejected.length,
-				accepted: last.accepted,
-				target: last.target,
-			});
-			if (last.done) return last;
+			return last ?? { accepted: 0, target: 0, done: false };
+		} catch (err) {
+			// 취소로 끊긴 것은 실패가 아니다. 그때까지 저장된 문항은 서버에 그대로 남아 있다.
+			if (err?.aborted && stopped()) return { ...state, cancelled: true, done: false };
+			throw err;
+		} finally {
+			clearInterval(watchCancel);
 		}
-
-		return last ?? { accepted: 0, target: 0, done: false };
 	});
 }

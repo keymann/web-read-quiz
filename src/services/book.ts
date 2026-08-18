@@ -40,7 +40,38 @@ export interface BookView {
 	hasBrief: boolean;
 	/** 부모가 직접 적어 둔 줄거리. 화면이 그대로 다시 보여 주고 고칠 수 있게 한다. */
 	manualPlot: string | null;
+	/** 책이 쓰인 언어(ISO 639-1). 화면이 영문책일 때만 읽기 난이도 자리를 만든다. */
+	language: string | null;
+	/**
+	 * 영문책의 읽기 난이도. **하나라도 알아낸 게 있을 때만** 채운다.
+	 *
+	 * 통째로 null 이면 화면이 "아직 못 찾았다"와 "해당 없다"를 `language` 로 구분한다.
+	 */
+	readingLevel: ReadingLevelView | null;
 	createdAt: string;
+}
+
+/** AR·Lexile. 미국 학교에서 쓰는 두 척도이고 영문책에만 존재한다. */
+export interface ReadingLevelView {
+	/** ATOS 북 레벨. 4.7 = 4학년 7개월. */
+	ar: number | null;
+	/** 다 읽었을 때 받는 AR 포인트. 분량에 비례한다. */
+	arPoints: number | null;
+	/** 흥미 수준 LG · MG · MG+ · UG. */
+	arInterest: string | null;
+	/** 렉사일 지수. 접두어를 포함한 문자열(620L · AD540L). */
+	lexile: string | null;
+}
+
+/** 아무것도 못 알아냈으면 null. 화면이 빈 칸만 늘어놓지 않게 한다. */
+function readingLevelOf(row: BookRow): ReadingLevelView | null {
+	const level = {
+		ar: row.ar_level,
+		arPoints: row.ar_points,
+		arInterest: row.ar_interest,
+		lexile: row.lexile,
+	};
+	return Object.values(level).some((v) => v !== null && v !== "") ? level : null;
 }
 
 export const toView = (row: BookRow): BookView => ({
@@ -59,6 +90,8 @@ export const toView = (row: BookRow): BookView => ({
 	searchedAt: row.searched_at,
 	hasBrief: row.brief !== null && row.brief !== "",
 	manualPlot: row.manual_plot,
+	language: row.book_language,
+	readingLevel: readingLevelOf(row),
 	createdAt: row.created_at,
 });
 
@@ -643,12 +676,25 @@ function mergeMetadata(
 	const pick = (current: string | null, ...candidates: string[]): string | null =>
 		current || candidates.find((value) => value.trim() !== "") || null;
 
+	/*
+	 * 읽기 난이도는 조사 결과에서만 온다 — 서지 API 는 AR·Lexile 을 주지 않는다.
+	 * 값은 `normalizeResearch` 가 이미 형식을 검사해 통과시킨 것이라 여기서는 형만 맞춘다.
+	 * 다른 필드와 같이 **이미 있는 값이 이긴다** — 다시 조사할 때마다 등급이 흔들리면 안 된다.
+	 */
+	const number = (current: number | null, candidate: string): number | null =>
+		current ?? (candidate === "" ? null : Number.parseFloat(candidate));
+
 	return {
 		author: pick(row.author, bib?.author ?? "", found?.author ?? ""),
 		publisher: pick(row.publisher, bib?.publisher ?? "", found?.publisher ?? ""),
 		isbn13: pick(row.isbn13, bib?.isbn13 ?? "", found?.isbn13 ?? ""),
 		published_at: pick(row.published_at, bib?.publishedAt ?? "", found?.publishedAt ?? ""),
 		description: pick(row.description, found?.description ?? "", bib?.description ?? ""),
+		book_language: pick(row.book_language, found?.bookLanguage ?? ""),
+		ar_level: number(row.ar_level, found?.arLevel ?? ""),
+		ar_points: number(row.ar_points, found?.arPoints ?? ""),
+		ar_interest: pick(row.ar_interest, found?.arInterestLevel ?? ""),
+		lexile: pick(row.lexile, found?.lexile ?? ""),
 	};
 }
 
@@ -711,6 +757,13 @@ export async function saveManualPlot(
 		isbn13: row.isbn13 ?? "",
 		publishedAt: row.published_at ?? "",
 		targetAge: "",
+		// 이미 알아낸 읽기 난이도는 그대로 들고 간다. 여기서 빈 값을 넣으면 `mergeMetadata`
+		// 가 지우지는 않지만(현재 값이 이긴다), 조사 결과라는 형태를 일관되게 유지한다.
+		bookLanguage: row.book_language ?? "",
+		arLevel: row.ar_level === null ? "" : String(row.ar_level),
+		arPoints: row.ar_points === null ? "" : String(row.ar_points),
+		arInterestLevel: row.ar_interest ?? "",
+		lexile: row.lexile ?? "",
 		description: row.description ?? "",
 		plotSummary: "",
 		characters: [],

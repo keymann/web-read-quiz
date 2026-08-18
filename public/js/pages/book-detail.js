@@ -114,6 +114,51 @@ export async function bookDetailPage({ id }) {
 		]);
 	}
 
+	/**
+	 * 영문책의 읽기 난이도 — AR(ATOS) 과 Lexile.
+	 *
+	 * 읽기 전용이다. AI 가 조사해 온 값이고 부모가 손으로 고칠 성격이 아니라, 위의 입력들과
+	 * 달리 form 필드가 아니라 태그로 보여 준다.
+	 *
+	 * 한국어 책에는 아예 매겨지지 않는 척도다. 그래서 **영문책일 때만** 자리를 만든다 —
+	 * 한국어 책에 빈 칸을 띄우면 부모가 오지 않을 값을 기다리게 된다.
+	 */
+	function readingLevelBlock(book) {
+		const level = book.readingLevel;
+
+		if (!level) {
+			if (book.language !== "en") return null;
+			return el("div", { class: "field" }, [
+				el("span", { class: "field__label", text: "읽기 난이도" }),
+				el("p", {
+					class: "hint",
+					text: "AR·Lexile 을 찾지 못했어요. ‘정보 다시 찾기’ 를 누르면 다시 찾아봅니다.",
+				}),
+			]);
+		}
+
+		const tags = [
+			// AR 레벨은 학년.개월이라 소수 첫째 자리를 늘 보인다(5 가 아니라 5.0).
+			level.ar !== null ? `AR ${level.ar.toFixed(1)}` : null,
+			level.arPoints !== null ? `${level.arPoints} 포인트` : null,
+			level.arInterest ? `흥미 수준 ${level.arInterest}` : null,
+			level.lexile ? `Lexile ${level.lexile}` : null,
+		].filter(Boolean);
+
+		return el("div", { class: "field" }, [
+			el("span", { class: "field__label", text: "읽기 난이도" }),
+			el(
+				"div",
+				{ class: "row" },
+				tags.map((text) => el("span", { class: "tag tag--ok", text })),
+			),
+			el("p", {
+				class: "hint",
+				text: "미국 학교에서 쓰는 척도예요. AR 4.7 은 4학년 7개월 수준을 뜻해요.",
+			}),
+		]);
+	}
+
 	function infoCard(book) {
 		const title = field("제목", { value: book.title, required: true });
 		const author = field("지은이", { value: book.author ?? "" });
@@ -127,6 +172,7 @@ export async function bookDetailPage({ id }) {
 			author.wrap,
 			publisher.wrap,
 			isbn13.wrap,
+			readingLevelBlock(book),
 			el("div", { class: "row" }, [
 				el("button", { class: "btn btn--secondary", type: "submit", text: "정보 저장", disabled: busy !== null }),
 				el("button", {

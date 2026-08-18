@@ -19,6 +19,13 @@ export interface BookResearch {
 	isbn13: string;
 	publishedAt: string;
 	targetAge: string;
+	/** 이 책이 쓰인 언어(ISO 639-1). 영문책 판정에 쓴다. 모르면 빈 문자열. */
+	bookLanguage: string;
+	/* 아래 넷은 **영문책에만 있는 척도**다. 서버가 형식을 검사한 뒤에만 살아남는다. */
+	arLevel: string;
+	arPoints: string;
+	arInterestLevel: string;
+	lexile: string;
 	description: string;
 	plotSummary: string;
 	characters: { name: string; role: string }[];
@@ -185,6 +192,10 @@ export function buildResearchRequest(
 		excerpts ? `\n[웹 자료]\n${excerpts}` : "",
 		"\n이 책은 초등학교 고학년 아이의 독서 확인 문제를 만드는 데 쓰입니다.",
 		"줄거리·등장인물·사건 순서를 최대한 구체적으로 정리해 주세요.",
+		// 영문책이면 부모가 아이 수준에 맞는지 판단할 수 있게 읽기 난이도도 찾는다.
+		// 한국어 책에는 매겨지지 않는 척도라 조건을 분명히 적는다.
+		"\n영어로 쓰인 책이면 AR(ATOS) 레벨·포인트와 Lexile 지수도 찾아 주세요.",
+		"확인하지 못했으면 빈 문자열로 두세요. 값을 지어내면 안 됩니다.",
 	].join("");
 
 	/*
@@ -214,6 +225,51 @@ export function buildResearchRequest(
 	};
 }
 
+/*
+ * ── 읽기 난이도 정리 ──────────────────────────────────
+ *
+ * 이 값들은 **부모가 책을 고르는 기준**이 된다. 그래서 형식이 조금이라도 어긋나면 고쳐 쓰지
+ * 않고 버린다 — 틀린 등급을 보여 주는 것은 아무것도 안 보여 주는 것보다 나쁘다.
+ *
+ * 브라우저 릴레이 경로에서는 모델 응답이 클라이언트를 거쳐 오므로, 검사는 반드시 여기(서버)
+ * 에서 해야 한다.
+ */
+
+/** ATOS 북 레벨. 학년.개월 꼴의 소수이고 실존 범위를 넘는 값은 버린다. */
+function cleanArLevel(raw: string): string {
+	const value = Number.parseFloat((raw ?? "").trim());
+	return Number.isFinite(value) && value > 0 && value <= 20 ? value.toFixed(1) : "";
+}
+
+/** AR 포인트. 분량에 비례하므로 두꺼운 책도 200 을 넘지 않는다. */
+function cleanArPoints(raw: string): string {
+	const value = Number.parseFloat((raw ?? "").trim());
+	return Number.isFinite(value) && value > 0 && value <= 200 ? String(value) : "";
+}
+
+/** 흥미 수준은 네 가지뿐이다. 그 밖의 값은 버린다. */
+const AR_INTEREST = new Set(["LG", "MG", "MG+", "UG"]);
+const cleanArInterest = (raw: string): string => {
+	const value = (raw ?? "").trim().toUpperCase();
+	return AR_INTEREST.has(value) ? value : "";
+};
+
+/**
+ * 렉사일 지수. 접두어가 붙을 수 있다.
+ *   AD 성인지도 · NC 비통상 · HL 흥미도높음 · IG 삽화 · GN 그래픽노블 · BR 초보(음수대)
+ */
+const LEXILE_RE = /^(AD|NC|HL|IG|GN|BR)?(\d{1,4})L$/;
+const cleanLexile = (raw: string): string => {
+	const value = (raw ?? "").trim().toUpperCase().replace(/\s+/g, "");
+	return LEXILE_RE.test(value) ? value : "";
+};
+
+/** ISO 639-1 두 글자만 받는다. */
+const cleanLanguage = (raw: string): string => {
+	const value = (raw ?? "").trim().toLowerCase();
+	return /^[a-z]{2}$/.test(value) ? value : "";
+};
+
 /**
  * 모델 응답을 다듬는다.
  *
@@ -224,9 +280,22 @@ export function normalizeResearch(result: BookResearch): BookResearch {
 	// 모델이 실제로 내용을 채웠는지로 판정한다. 스스로 신고하게 하지 않는다.
 	const found = result.plotSummary?.trim() !== "" || (result.characters?.length ?? 0) > 0;
 
+	const bookLanguage = cleanLanguage(result.bookLanguage);
+
+	/*
+	 * AR·Lexile 은 영문책에만 매겨진다. 언어를 한국어로 특정한 책에 등급이 달려 오면
+	 * 모델이 다른 책(원서·번역본)의 값을 가져온 것이므로 전부 버린다.
+	 */
+	const englishScale = bookLanguage !== "ko";
+
 	return {
 		...result,
 		found,
+		bookLanguage,
+		arLevel: englishScale ? cleanArLevel(result.arLevel) : "",
+		arPoints: englishScale ? cleanArPoints(result.arPoints) : "",
+		arInterestLevel: englishScale ? cleanArInterest(result.arInterestLevel) : "",
+		lexile: englishScale ? cleanLexile(result.lexile) : "",
 		sources: (result.sources ?? [])
 			.filter((s) => s.url.startsWith("http"))
 			.map((s) => ({ ...s, content: (s.content ?? "").slice(0, MAX_SOURCE_CONTENT) })),

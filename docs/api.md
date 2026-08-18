@@ -84,6 +84,25 @@
 | PATCH | `/api/books/:id` | PARENT | ✅ 부모가 책 정보 직접 수정 (AI 오인식 보정) |
 | GET | `/api/books/:id/history` | PARENT | 이 책의 퀴즈·풀이 이력 |
 
+`GET /api/books/:id` 의 `book` 에는 **영문책의 읽기 난이도**가 함께 실린다.
+
+```jsonc
+{
+  "language": "en",              // 책이 쓰인 말(ISO 639-1). 퀴즈의 language 와 다르다
+  "readingLevel": {              // 하나도 못 알아냈으면 null
+    "ar": 4.4,                   // ATOS 북 레벨 — 4학년 4개월
+    "arPoints": 5,               // 다 읽으면 받는 AR 포인트
+    "arInterest": "MG",          // LG · MG · MG+ · UG
+    "lexile": "680L"             // 접두어 포함(AD·NC·HL·IG·GN·BR)
+  }
+}
+```
+
+AR·Lexile 은 **영문책에만 매겨진다.** 값은 조사 모델이 찾아 오지만 서버가 형식을 검사해
+통과한 것만 저장한다 — 형식이 어긋나면 고쳐 쓰지 않고 버린다. 부모가 이 숫자로 아이에게
+맞는 책인지 고르기 때문에, 지어낸 등급은 빈칸보다 나쁘다. 언어가 `ko` 로 특정된 책에
+등급이 달려 오면 다른 책의 값이므로 전부 버린다.
+
 ## 브라우저 릴레이 (Gemini 전용 · PARENT)
 
 | Method | Path | 설명 |

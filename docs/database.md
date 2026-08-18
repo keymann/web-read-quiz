@@ -9,6 +9,7 @@ users(PARENT)
  ├── children ──────────── users(CHILD)   (children.child_user_id, 아이 로그인 계정)
  ├── parent_settings                      (OPENAI_API_KEY 암호문)
  ├── books ── book_sources                (웹 검색 출처)
+ │     └ book_language · ar_* · lexile   (영문책 읽기 난이도, 0012)
  └── quizzes
       ├── questions
       │    ├── question_versions          ← 불변 스냅샷

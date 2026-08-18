@@ -265,6 +265,27 @@ export async function applyResearch(
 
 /* ── 3. 문제 생성 ────────────────────────────────────── */
 
+/**
+ * 릴레이가 한 번에 보낼 요청 수.
+ *
+ * **1 이다. 즉 릴레이는 나누지 않는다.** 서버 경로(OpenAI·Vertex)는 셋으로 나누는데
+ * 여기만 다른 이유는 실측이다.
+ *
+ * 2026-08-18, Gemini 무료 등급 키 · `gemini-3.6-flash` · 20문항:
+ *
+ *     한 덩어리로            생성 82초 → 전체 207초
+ *     셋으로 나눠 동시에      429·503 이 돌아와 재시도·모델 교체로 번짐.
+ *                            198초에도 아직 1라운드 생성 중
+ *
+ * 릴레이는 **부모의 키로 브라우저가 직접** 부른다. 무료 등급 키는 같은 모델에 동시 호출을
+ * 못 견디고, 그 429 는 기다려도 풀리지 않아 모델 교체로 이어진다 — 나눠서 아낀 시간보다
+ * 잃는 시간이 훨씬 크다.
+ *
+ * 요청을 배열로 주고받는 구조는 그대로 둔다. 견디는 키(유료 등급)를 가려낼 방법이 생기거나
+ * 호출을 시차를 두고 보내는 방식을 붙이면, 이 숫자만 올리면 된다.
+ */
+const RELAY_MAX_PARALLEL = 1;
+
 export interface GeneratePlan {
 	/** 목표를 이미 채웠으면 더 부를 필요가 없다. */
 	done: boolean;
@@ -311,7 +332,7 @@ export async function planGenerate(
 	 * 여유분을 더한 뒤 몇 번에 나눠 부를지 정한다(`generation.withBuffer` · `planChunks`).
 	 * 모델은 한 번만 고른다 — 같은 라운드의 청크가 서로 다른 모델을 쓰면 문항 성격이 갈린다.
 	 */
-	const chunks = generation.planChunks(generation.withBuffer(need));
+	const chunks = generation.planChunks(generation.withBuffer(need), RELAY_MAX_PARALLEL);
 	const calls = chunks.map((count) =>
 		buildGeminiCall(
 			buildGenerateRequest({

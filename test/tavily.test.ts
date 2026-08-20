@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { normalize, relevantCount, search, type WebSource } from "../src/search/tavily";
+import { normalize, plotRelated, relevantCount, search, type WebSource } from "../src/search/tavily";
 import * as budget from "../src/services/search-budget";
 import type { AppEnv } from "../src/types";
 
@@ -85,6 +85,51 @@ describe("이 책을 다룬 결과인지", () => {
 			source({ title: "Dirty Bertie: Pong! review", content: "Bertie and Darren and Eugene" }),
 		];
 		expect(relevantCount(sources, "Dirty Bertie PONG!")).toBe(1);
+	});
+});
+
+describe("참고 자료로 올릴 자료인지", () => {
+	/**
+	 * 검색은 20건을 물어다 주는데 절반 이상이 판매 페이지·도서관 목록이다. 그것까지 참고 자료로
+	 * 쌓으면 부모는 정가·배송·장바구니만 적힌 발췌를 스무 개 훑어야 한다.
+	 *
+	 * 판매 페이지도 제목은 정확히 담고 있어 제목 대조만으로는 걸러지지 않는다. 그래서 줄거리를
+	 * 다루는 낱말을 함께 본다.
+	 */
+	it("판매·목록 정보뿐인 자료는 뺀다", () => {
+		const sources = [
+			source(),
+			source({
+				url: "https://shop.example.com/p/1",
+				title: "움푹산의 비밀 - 인터넷 서점",
+				content:
+					"움푹산의 비밀 정가 13,000원 판매가 11,700원 10% 적립 650원 배송 무료 장바구니 담기 바로구매 판매지수 1,240 재고 있음",
+			}),
+		];
+
+		const kept = plotRelated(sources, "움푹산의 비밀");
+		expect(kept).toHaveLength(1);
+		expect(kept[0]!.url).toBe("https://blog.example.com/a");
+	});
+
+	it("다른 책을 다룬 자료는 뺀다", () => {
+		const sources = [
+			source({ url: "https://blog.example.com/b", title: "고양이 사료 후기", content: "줄거리 주인공 결말" }),
+		];
+		expect(plotRelated(sources, "움푹산의 비밀")).toEqual([]);
+	});
+
+	// 서점 상세 페이지의 책소개는 홍보 문구지만 줄거리 조각을 담고 있다. 그건 남긴다 —
+	// 거르려는 것은 "책 내용이 없는 자료" 이고 "서점" 이 아니다.
+	it("책소개가 실린 서점 페이지는 남긴다", () => {
+		const sources = [
+			source({
+				url: "https://shop.example.com/p/2",
+				title: "움푹산의 비밀 - 인터넷 서점",
+				content: "책소개 거인 크네가 주인공이 되어 움푹산 아이들을 구해 내는 이야기. 정가 13,000원 배송 무료",
+			}),
+		];
+		expect(plotRelated(sources, "움푹산의 비밀")).toHaveLength(1);
 	});
 });
 
@@ -292,6 +337,75 @@ describe("재검색 상한", () => {
 		expect(out.sourceCount).toBeGreaterThan(0);
 		expect(out.notice).toContain("직접");
 		expect(cachedWeb(await requireOwned(e, userId, bookId)).length).toBeGreaterThan(0);
+	});
+});
+
+describe("참고 자료 적재", () => {
+	/** 실제 검색 결과의 절반 이상이 이렇게 생겼다 — 제목은 맞지만 책 내용이 없다. */
+	const SHOP_PAGES = Array.from({ length: 5 }, (_, i) => ({
+		url: `https://shop.example.com/p/${i}`,
+		title: "움푹산의 비밀 - 인터넷 서점",
+		content: "움푹산의 비밀 정가 13,000원 판매가 11,700원 10% 적립 배송 무료 장바구니 담기 바로구매",
+		raw_content: "재고 있음 오늘 출발 판매지수 1,240 회원리뷰 12건 쿠폰 받기",
+		score: 0.95 - i * 0.01,
+	}));
+
+	it("줄거리 없는 페이지는 목록에 올리지 않는다", async () => {
+		const { bookId, userId } = await aBook();
+		const e = withKeys("tvly-test");
+
+		mockTavily([...SHOP_PAGES, ...PAGES], 1);
+		const out = await refreshWeb(e, userId, bookId);
+
+		// 13건을 받았지만 목록에 남는 것은 줄거리를 다룬 8건이다.
+		expect(out.sourceCount).toBe(PAGES.length);
+
+		const rows = await booksRepo.listSources(e, bookId);
+		expect(rows).toHaveLength(PAGES.length);
+		expect(rows.every((row) => row.url!.startsWith("https://blog.example.com/"))).toBe(true);
+
+		// 프롬프트에 실을 자료는 줄이지 않는다. 거르는 것은 부모가 눈으로 읽는 목록뿐이다.
+		expect(cachedWeb(await requireOwned(e, userId, bookId))).toHaveLength(
+			SHOP_PAGES.length + PAGES.length,
+		);
+	});
+
+	it("판매 페이지만 걸리면 무엇이 없는지 알려준다", async () => {
+		const { bookId, userId } = await aBook();
+		const e = withKeys("tvly-test");
+
+		// 제목은 다 맞으므로 한 번으로 끝난다 — 넓혀 다시 찾는 것은 "이 책" 을 못 찾았을 때다.
+		mockTavily(SHOP_PAGES, 1);
+		const out = await refreshWeb(e, userId, bookId);
+
+		expect(out.sourceCount).toBe(0);
+		expect(out.notice).toContain("판매");
+		expect(await booksRepo.listSources(e, bookId)).toHaveLength(0);
+	});
+
+	/**
+	 * 부모가 근거를 훑는 순서 — 카카오 책 → 알라딘 → 웹 검색.
+	 *
+	 * `created_at` 으로는 지킬 수 없다. 한 배치로 넣으면 밀리초까지 같은 값이 박혀 정렬이
+	 * 사실상 무순서가 된다. `position` 이 그 자리를 맡는다.
+	 */
+	it("카카오 책 → 알라딘 → 웹 검색 순으로 늘어놓는다", async () => {
+		const { bookId, userId } = await aBook();
+		const e = withKeys("tvly-test");
+
+		// 일부러 뒤섞어 넣는다. 순서를 정하는 것은 넣는 순서가 아니라 소스 종류다.
+		await booksRepo.replaceSources(e, bookId, [
+			{ id: "s-aladin", bookId, source: "aladin", url: "https://aladin.example/1", title: "알라딘", content: "책소개" },
+			{ id: "s-kakao", bookId, source: "kakao-book", url: "https://kakao.example/1", title: "카카오", content: "책소개" },
+		]);
+
+		mockTavily(PAGES, 1);
+		await refreshWeb(e, userId, bookId);
+
+		const kinds = (await booksRepo.listSources(e, bookId)).map((row) => row.source);
+		expect(kinds[0]).toBe("kakao-book");
+		expect(kinds[1]).toBe("aladin");
+		expect(kinds.slice(2).every((kind) => kind === "web")).toBe(true);
 	});
 });
 

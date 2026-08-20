@@ -20,6 +20,30 @@ export const BOOK_IDENTITY_SCHEMA = {
 	additionalProperties: false,
 } as const;
 
+/**
+ * 표지 사진이 얼마나 누워 있는지(§표지 방향).
+ *
+ * 스키마를 한 항목으로 좁게 둔다. 서지정보를 읽는 호출에 얹지 않고 따로 두는 이유는,
+ * **이미 등록된 책의 사진도 바로잡아야** 하기 때문이다. 그때 서지 식별을 다시 돌리면
+ * 부모가 손으로 고쳐 둔 지은이·출판사가 AI 값으로 덮인다.
+ */
+export const COVER_ORIENTATION_SCHEMA = {
+	type: "object",
+	properties: {
+		// 숫자가 아니라 문자열로 받는다. `enum` 을 문자열에만 쓰는 것이 두 제공자 모두에서
+		// 확실하고(문제 유형도 그렇게 받는다), 서버가 어차피 네 값 중 하나로 다시 좁힌다.
+		rotation: {
+			type: "string",
+			enum: ["0", "90", "180", "270"],
+			description:
+				"이 사진을 시계 방향으로 몇 도 돌리면 책 제목이 똑바로(가로로, 위아래가 바르게) 읽히는지. 이미 똑바르면 \"0\".",
+		},
+		confidence: { type: "number", description: "0~1. 방향을 얼마나 확실히 판단했는지." },
+	},
+	required: ["rotation", "confidence"],
+	additionalProperties: false,
+} as const;
+
 export const BOOK_RESEARCH_SCHEMA = {
 	type: "object",
 	properties: {

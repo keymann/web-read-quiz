@@ -43,11 +43,16 @@ export async function api(path, { method = "GET", body } = {}) {
 	);
 }
 
-/** 파일 업로드. FormData 를 쓸 때는 Content-Type 을 직접 정하지 않는다(경계 문자열이 필요하다). */
-export async function upload(path, formData) {
+/**
+ * 파일 업로드. FormData 를 쓸 때는 Content-Type 을 직접 정하지 않는다(경계 문자열이 필요하다).
+ *
+ * 표지를 갈아 끼울 때는 `PUT` 으로 부른다 — 새 책을 만드는 것이 아니라 같은 책의 사진을
+ * 바꾸는 일이라 메서드가 다르다.
+ */
+export async function upload(path, formData, method = "POST") {
 	let res;
 	try {
-		res = await fetch(path, { method: "POST", credentials: "same-origin", body: formData });
+		res = await fetch(path, { method, credentials: "same-origin", body: formData });
 	} catch {
 		throw new ApiError("network", "네트워크에 연결할 수 없습니다.", 0);
 	}

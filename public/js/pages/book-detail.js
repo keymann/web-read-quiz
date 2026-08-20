@@ -1,5 +1,6 @@
-import { get, patch, post, put } from "../api.js";
-import { identifyBook, researchBook, usesBrowserRelay } from "../ai-relay.js";
+import { get, patch, post, put, upload } from "../api.js";
+import { identifyBook, orientCover, researchBook, usesBrowserRelay } from "../ai-relay.js";
+import { rotateImage } from "../image.js";
 import { navigate } from "../router.js";
 import { requireSession } from "../session.js";
 import { banner, el, field, header, mount, selectField, setKidMode, textareaField } from "../ui.js";
@@ -22,6 +23,15 @@ const SOURCE_LABEL = {
 	parent: "부모가 직접 입력",
 };
 
+/** 주소에서 사이트 이름만. 주소가 없거나 깨졌으면 "웹 검색" 으로 되돌린다. */
+function hostOf(url) {
+	try {
+		return new URL(url).hostname.replace(/^www\./, "");
+	} catch {
+		return SOURCE_LABEL.web;
+	}
+}
+
 export async function bookDetailPage({ id }) {
 	setKidMode(false);
 	const s = await requireSession("PARENT");
@@ -36,6 +46,18 @@ export async function bookDetailPage({ id }) {
 	let quizzes = [];
 	/** 이 책에 아이들이 도전한 기록. 몇 번 만에 통과했는지가 여기 보인다. */
 	let attempts = [];
+	/**
+	 * 표지 방향 보정의 진행 상태. `null` · `"check"`(판정 중) · `"turn"`(돌려 올리는 중).
+	 * 부모가 누르지 않은 일이 도는 중이므로 무슨 일이 벌어지는지는 화면에 적어야 한다.
+	 */
+	let coverFixing = null;
+	/**
+	 * 이 화면에서 방향 보정을 이미 시도했는지.
+	 *
+	 * 실패해도 다시 걸지 않는다 — 키가 없거나 모델이 막힌 상황이면 `refresh()` 마다 같은
+	 * 실패를 되풀이하게 되고, 그 사이 화면은 계속 "확인 중" 으로 보인다.
+	 */
+	let coverFixTried = false;
 
 	await refresh();
 
@@ -51,6 +73,72 @@ export async function bookDetailPage({ id }) {
 			messageKind = "error";
 		}
 		render(data);
+		// 화면을 먼저 그리고 나서 표지를 손본다. 부모가 사진이 뜨기를 기다릴 이유가 없다.
+		await fixCoverOrientation(data);
+	}
+
+	/**
+	 * 표지가 누워 있으면 똑바로 세운다(§표지 방향).
+	 *
+	 * 두 쪽이 나눠 한다 — **판정은 서버만, 회전은 브라우저만** 할 수 있다. 프롬프트와 API Key 는
+	 * 서버에 있고, Workers 런타임에는 이미지 디코더가 없다.
+	 *
+	 *   1. `coverRotation` 이 null 이면(= 아직 확인 안 한 책) 서버에 판정을 맡긴다
+	 *   2. 각도가 0 이 아니면 사진을 받아 돌려서 다시 올린다
+	 *   3. 서버가 남은 회전량을 0 으로 되돌린다 — 다음에 열 때는 아무 일도 일어나지 않는다
+	 *
+	 * 이미 등록해 둔 책도 이 길을 한 번 지나간다. 그래서 예전에 눕혀 올린 사진도 부모가 그 책을
+	 * 열어 보는 순간 바로 선다.
+	 */
+	async function fixCoverOrientation(data) {
+		if (!data || coverFixTried) return;
+		coverFixTried = true;
+
+		let rotation = data.book.coverRotation;
+
+		if (rotation === null) {
+			coverFixing = "check";
+			render(data);
+			try {
+				const relay = await usesBrowserRelay();
+				({ rotation } = relay ? await orientCover(id) : await post(`/api/books/${id}/orient`));
+			} catch {
+				// 키가 없거나 모델이 응답하지 않는 경우. 표지는 그대로 두고 조용히 넘어간다 —
+				// 부모가 하려던 일(분석·조사)을 이 실패로 막을 이유가 없다.
+				coverFixing = null;
+				render(data);
+				return;
+			}
+		}
+
+		if (!rotation) {
+			coverFixing = null;
+			render(data);
+			return;
+		}
+
+		coverFixing = "turn";
+		render(data);
+
+		const turned = await rotateCover(data.book, rotation).catch(() => false);
+		coverFixing = null;
+		if (turned) await refresh();
+		else render(data);
+	}
+
+	/** 저장된 표지를 받아 돌려서 같은 자리에 다시 올린다. 돌릴 수 없으면 false. */
+	async function rotateCover(book, rotation) {
+		const response = await fetch(book.coverUrl, { credentials: "same-origin" });
+		if (!response.ok) return false;
+
+		const rotated = await rotateImage(await response.blob(), rotation);
+		// 브라우저가 디코딩하지 못한 경우다. 각도는 서버에 남아 있으니 다음에 다시 시도된다.
+		if (!rotated) return false;
+
+		const form = new FormData();
+		form.append("cover", rotated, "cover.jpg");
+		await upload(`/api/books/${id}/cover`, form, "PUT");
+		return true;
 	}
 
 	function render(data) {
@@ -93,10 +181,22 @@ export async function bookDetailPage({ id }) {
 								: `표지 인식 정확도 ${Math.round(book.aiConfidence * 100)}%`,
 					});
 
+		// 부모가 누르지 않은 일이 도는 중이다. 무엇을 하고 있는지 적어 준다.
+		const fixing = coverFixing
+			? el("p", {
+					class: "hint",
+					text:
+						coverFixing === "check"
+							? "표지 사진이 똑바로 서 있는지 확인하는 중입니다…"
+							: "표지 사진을 똑바로 세우는 중입니다…",
+				})
+			: null;
+
 		return el("section", { class: "card book-head" }, [
 			el("img", { class: "book-cover", src: book.coverUrl, alt: `${book.title} 표지` }),
 			el("div", { class: "book-head__body" }, [
 				confidence,
+				fixing,
 				el("p", { class: "hint", text: book.analyzedAt ? "AI 분석 완료" : "아직 분석하지 않았습니다." }),
 				el("button", {
 					class: "btn btn--block",
@@ -314,6 +414,34 @@ export async function bookDetailPage({ id }) {
 		]);
 	}
 
+	/**
+	 * 참고 자료 한 건. 웹 검색은 묶어서 번호를 붙이므로 이름표 대신 도메인을 보여 준다.
+	 *
+	 * 스무 건이 한 줄씩 "웹 검색" 이라고 적혀 있으면 그 이름표는 아무것도 알려주지 않는다.
+	 * 부모가 알고 싶은 것은 그게 어느 사이트인지다 — 서점인지 블로그인지 도서관인지.
+	 */
+	function sourceItem(source, { grouped = false } = {}) {
+		return el("li", { class: "list__item list__item--stacked" }, [
+			el("div", { class: "list__main" }, [
+				el("span", { class: "list__title", text: source.title ?? source.url ?? "(제목 없음)" }),
+				el("span", {
+					class: source.source === "ai" ? "list__meta list__meta--weak" : "list__meta",
+					text: grouped ? hostOf(source.url) : (SOURCE_LABEL[source.source] ?? source.source),
+				}),
+			]),
+			source.url
+				? el("a", {
+						class: "btn btn--ghost",
+						href: source.url,
+						target: "_blank",
+						rel: "noopener noreferrer",
+						text: "열기",
+					})
+				: null,
+			source.content ? el("p", { class: "source-excerpt", text: source.content }) : null,
+		]);
+	}
+
 	function sourcesCard(sources, evidenceWeak, readyForQuiz, web) {
 		const status = !readyForQuiz
 			? { kind: "warn", text: "자료는 찾았지만 줄거리를 얻지 못했습니다. 이 자료만으로는 문제를 만들 수 없습니다." }
@@ -321,37 +449,35 @@ export async function bookDetailPage({ id }) {
 				? { kind: "warn", text: "웹에서 찾은 근거가 2건 미만입니다. 문제는 만들 수 있지만 내용이 맞는지 더 꼼꼼히 확인해 주세요." }
 				: { kind: "ok", text: "근거 자료가 충분합니다." };
 
+		/*
+		 * 웹 검색은 **한 영역으로 묶어 번호를 붙인다.**
+		 *
+		 * 서지 데이터베이스 자료는 한 곳에 한 건씩이라 어디서 왔는지가 곧 그 자료의 신원이다.
+		 * 웹 검색은 여러 건이 한 덩어리로 오므로 하나하나에 "웹 검색" 이라고 적는 것은 같은 말을
+		 * 되풀이하는 것이다. 번호를 붙이면 부모가 "세 번째 자료" 라고 짚어 말할 수 있다.
+		 *
+		 * 순서는 서버가 정한다(카카오 책 → 알라딘 → 웹 검색). 여기서 다시 정렬하지 않는다 —
+		 * 순서를 정하는 곳이 둘이면 언젠가 서로 어긋난다.
+		 */
+		const verified = sources.filter((source) => source.source !== "web");
+		const searched = sources.filter((source) => source.source === "web");
+
 		return el("section", { class: "card" }, [
 			el("h2", { class: "section-title", text: `참고 자료 ${sources.length}건` }),
 			el("p", { class: `status status--${status.kind}`, text: status.text }),
 			webSearchRow(web),
-			sources.length === 0
-				? el("p", { class: "hint", text: "아직 찾은 자료가 없습니다." })
-				: el(
-						"ul",
-						{ class: "list" },
-						sources.map((source) =>
-							el("li", { class: "list__item list__item--stacked" }, [
-								el("div", { class: "list__main" }, [
-									el("span", { class: "list__title", text: source.title ?? source.url ?? "(제목 없음)" }),
-									el("span", {
-										class: source.source === "ai" ? "list__meta list__meta--weak" : "list__meta",
-										text: SOURCE_LABEL[source.source] ?? source.source,
-									}),
-								]),
-								source.url
-									? el("a", {
-											class: "btn btn--ghost",
-											href: source.url,
-											target: "_blank",
-											rel: "noopener noreferrer",
-											text: "열기",
-										})
-									: null,
-								source.content ? el("p", { class: "source-excerpt", text: source.content }) : null,
-							]),
+			sources.length === 0 ? el("p", { class: "hint", text: "아직 찾은 자료가 없습니다." }) : null,
+			verified.length > 0 ? el("ul", { class: "list" }, verified.map((source) => sourceItem(source))) : null,
+			searched.length > 0
+				? el("div", { class: "source-group" }, [
+						el("h3", { class: "section-subtitle", text: `웹 검색 ${searched.length}건` }),
+						el(
+							"ol",
+							{ class: "list list--numbered" },
+							searched.map((source) => sourceItem(source, { grouped: true })),
 						),
-					),
+					])
+				: null,
 		]);
 	}
 

@@ -266,6 +266,15 @@ export async function fetchGeminiModels(apiKey) {
 		.filter(Boolean);
 }
 
+/* ── 표지 방향 ────────────────────────────────────────── */
+
+export async function orientCover(bookId) {
+	return withCredential(async ({ apiKey }) => {
+		const { responses } = await runStep(apiKey, { kind: "orient", bookId });
+		return post("/api/ai/apply", { kind: "orient", bookId, response: responses[0] });
+	});
+}
+
 /* ── 책 표지 식별 ─────────────────────────────────────── */
 
 export async function identifyBook(bookId) {

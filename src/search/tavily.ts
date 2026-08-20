@@ -116,9 +116,77 @@ function buildQuery(hint: WebHint, broad: boolean): { query: string; country?: s
 	};
 }
 
+/** 이 자료가 찾던 그 책을 다루고 있는가. */
+export const aboutBook = (source: WebSource, title: string): boolean =>
+	groundedRatio(title, `${source.title} ${source.content}`) >= MIN_TITLE_MATCH;
+
 /** 이 책을 실제로 다룬 결과의 수. */
 export const relevantCount = (sources: WebSource[], title: string): number =>
-	sources.filter((s) => groundedRatio(title, `${s.title} ${s.content}`) >= MIN_TITLE_MATCH).length;
+	sources.filter((source) => aboutBook(source, title)).length;
+
+/**
+ * 이야기를 다루는 글에 나타나는 말.
+ *
+ * 검색 결과의 절반 이상은 **판매 페이지·도서관 목록**이다(Phase 0 실측: 한국 아동서는 상위
+ * 5건이 서점으로 채워진다). 그런 페이지도 제목은 정확히 담고 있어 제목 대조만으로는 걸러지지
+ * 않는다. 정가·배송·장바구니만 적힌 발췌를 참고 자료로 올려 두면 부모가 근거를 훑을 때
+ * 실제로 읽을 것이 무엇인지 알 수 없다.
+ *
+ * 낱말을 막는 쪽(정가·배송·적립)이 아니라 **있어야 할 낱말을 요구하는 쪽**으로 짰다. 상거래
+ * 문구는 사이트마다 달라 끝이 없지만, 줄거리를 다루는 글은 어느 쪽이든 이 말들을 쓴다.
+ */
+const PLOT_WORDS = [
+	"줄거리",
+	"등장인물",
+	"주인공",
+	"독후감",
+	"서평",
+	"감상문",
+	"이야기",
+	"사건",
+	"결말",
+	"책소개",
+	"인물",
+	"작품",
+	"plot",
+	"summary",
+	"synopsis",
+	"story",
+	"character",
+	"review",
+	"chapter",
+	"ending",
+] as const;
+
+/**
+ * 이 말들 중 **둘 이상**이 나와야 이야기를 다룬 글로 본다.
+ *
+ * 하나로는 모자란다 — 서점 상세 페이지의 좌우 메뉴에 "책소개" 나 "review" 한 낱말이 걸려
+ * 오는 일이 흔하다. 반대로 줄거리를 실제로 적은 글은 주인공·사건·결말을 함께 쓴다.
+ */
+const MIN_PLOT_WORDS = 2;
+
+/**
+ * 이 자료가 책의 내용(줄거리·인물·사건)을 다루고 있는가.
+ *
+ * 발췌 길이는 보지 않는다. 판매 페이지는 오히려 길고(정가·배송·리뷰 수·판매지수), 짧지만
+ * 알찬 도서관 요약도 있다. 길이는 이 판정과 상관이 없다.
+ */
+export function mentionsPlot(source: WebSource): boolean {
+	const haystack = `${source.title} ${source.content}`.toLowerCase();
+	const hits = PLOT_WORDS.filter((word) => haystack.includes(word)).length;
+	return hits >= MIN_PLOT_WORDS;
+}
+
+/**
+ * 참고 자료로 올릴 만한 것만 남긴다 — **찾던 책이고, 그 내용을 다루는** 자료.
+ *
+ * 프롬프트에 싣는 자료는 이걸로 줄이지 않는다. 거기서는 모델이 발췌를 대조해 걸러내고,
+ * 판매 페이지의 책소개에서도 줄거리 한 조각은 건질 수 있다. 여기서 거르는 것은 **부모가
+ * 눈으로 읽는 목록**이다.
+ */
+export const plotRelated = (sources: WebSource[], title: string): WebSource[] =>
+	sources.filter((source) => aboutBook(source, title) && mentionsPlot(source));
 
 /**
  * 이 키의 월 크레딧이 정말 바닥났다는 신호.

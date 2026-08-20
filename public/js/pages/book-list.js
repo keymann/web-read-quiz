@@ -31,7 +31,8 @@ export async function bookListPage() {
 						])
 					: el(
 							"ul",
-							{ class: "list" },
+							// 썸네일이 붙는 목록이라 라벨 정렬을 따로 잡는다(styles.css 의 `.list--books`).
+							{ class: "list list--books" },
 							books.map((book) =>
 								el("li", { class: "list__item" }, [
 									el("img", { class: "book-thumb", src: book.coverUrl, alt: "" }),

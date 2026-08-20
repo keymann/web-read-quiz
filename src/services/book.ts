@@ -1,4 +1,5 @@
 import { withModelFallback } from "../ai/fallback";
+import { detectOrientation, type CoverOrientation } from "../ai/orient";
 import { identifyBook, type BookIdentity } from "../ai/vision";
 import * as booksRepo from "../repositories/books";
 import type { BookRow } from "../repositories/books";
@@ -35,6 +36,13 @@ export interface BookView {
 	description: string | null;
 	publishedAt: string | null;
 	coverUrl: string;
+	/**
+	 * 표지를 똑바로 세우기까지 아직 남은 회전량(시계 방향, 도).
+	 *
+	 * `null` 이면 아직 확인하지 않았다는 뜻이다 — 화면이 그때 한 번 확인을 걸어 준다.
+	 * 0 이 아니면 브라우저가 그만큼 돌려 다시 올려야 한다(회전은 브라우저만 할 수 있다).
+	 */
+	coverRotation: number | null;
 	aiConfidence: number | null;
 	analyzedAt: string | null;
 	searchedAt: string | null;
@@ -93,7 +101,13 @@ export const toView = (row: BookRow): BookView => ({
 	isbn13: row.isbn13,
 	description: row.description,
 	publishedAt: row.published_at,
-	coverUrl: `/api/books/${row.id}/cover`,
+	/*
+	 * 주소에 갱신 시각을 붙인다. 표지 바이트가 **같은 키 위에서 바뀌기** 때문이다(회전 보정).
+	 * 응답에 `private, max-age=3600` 이 붙어 있어, 주소가 그대로면 브라우저가 한 시간 동안
+	 * 돌리기 전 사진을 계속 보여 준다.
+	 */
+	coverUrl: `/api/books/${row.id}/cover?v=${encodeURIComponent(row.updated_at)}`,
+	coverRotation: row.cover_rotation,
 	aiConfidence: row.ai_confidence,
 	analyzedAt: row.analyzed_at,
 	searchedAt: row.searched_at,
@@ -170,6 +184,90 @@ async function readCoverBytes(env: AppEnv, key: string): Promise<Uint8Array | nu
 		if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
 	}
 	return null;
+}
+
+/* ── 표지 방향 보정 ─────────────────────────────────── */
+
+export interface OrientResult {
+	book: BookView;
+	/** 시계 방향으로 더 돌려야 하는 각도. 0 이면 브라우저가 할 일이 없다. */
+	rotation: number;
+	/** 고른 모델이 응답하지 않아 다른 모델로 처리했을 때의 안내. */
+	modelNotice: string | null;
+}
+
+/**
+ * 표지가 누워 있는지 모델에게 묻는다(§5 등록).
+ *
+ * **책 한 권에 한 번만 부른다.** `cover_rotation` 이 `null` 인 동안만 확인 대상이고, 한 번
+ * 확인하면 결과가 0 이든 90 이든 그 컬럼이 채워져 다시 묻지 않는다. 이미 등록된 책도 같은
+ * 길로 한 번씩 지나가게 하려고 컬럼의 기본값을 `null` 로 두었다.
+ *
+ * 돌리는 일 자체는 여기서 못 한다 — Workers 런타임에는 이미지 디코더가 없다. 그래서 각도만
+ * 적어 두고, 브라우저가 그 값을 보고 돌려 다시 올린다(`replaceCover`).
+ */
+export async function orient(env: AppEnv, userId: string, bookId: string): Promise<OrientResult> {
+	const row = await requireOwned(env, userId, bookId);
+	if (!row.cover_key) throw invalid("표지 이미지가 없습니다.");
+
+	const bytes = await readCoverBytes(env, row.cover_key);
+	if (!bytes) throw invalid("표지 이미지를 찾을 수 없습니다.");
+
+	const ai = await settings.getRuntime(env, userId);
+	const image = { bytes, mime: row.cover_mime ?? "image/jpeg" };
+
+	const { value: orientation, fellBackFrom } = await withModelFallback(
+		ai.provider,
+		ai.apiKey,
+		ai.visionModel,
+		(model) => detectOrientation(ai.provider, ai.apiKey, model, image),
+	);
+
+	return applyOrientation(env, userId, bookId, orientation, noticeFor(fellBackFrom));
+}
+
+/**
+ * 판정 결과를 책에 적는다. 서버가 모델을 부르든 브라우저가 부르든 **반영 규칙은 여기 하나**다.
+ */
+export async function applyOrientation(
+	env: AppEnv,
+	userId: string,
+	bookId: string,
+	orientation: CoverOrientation,
+	modelNotice: string | null = null,
+): Promise<OrientResult> {
+	await booksRepo.update(env, userId, bookId, { cover_rotation: orientation.rotation });
+
+	return {
+		book: toView(await requireOwned(env, userId, bookId)),
+		rotation: orientation.rotation,
+		modelNotice,
+	};
+}
+
+/**
+ * 브라우저가 돌려 보낸 표지로 갈아 끼운다.
+ *
+ * 클라이언트가 보낸 바이트를 그대로 믿지 않는다 — 등록할 때와 **같은 검증**을 거친다(§26).
+ * 저장이 끝나면 남은 회전량을 0 으로 되돌린다. 그래야 다음에 이 책을 열 때 또 돌리지 않는다.
+ *
+ * 키는 그대로 쓴다. 새 키를 만들면 예전 바이트가 KV 에 남고, 그것을 지우는 일까지 여기서
+ * 챙겨야 한다. 같은 키에 덮어쓰면 그런 뒤처리가 없다.
+ */
+export async function replaceCover(
+	env: AppEnv,
+	userId: string,
+	bookId: string,
+	bytes: Uint8Array,
+): Promise<BookView> {
+	const row = await requireOwned(env, userId, bookId);
+	if (!row.cover_key) throw invalid("표지 이미지가 없습니다.");
+
+	const mime = assertUploadedImage(bytes);
+	await env.IMAGES.put(row.cover_key, bytes, { metadata: { contentType: mime } });
+	await booksRepo.update(env, userId, bookId, { cover_mime: mime, cover_rotation: 0 });
+
+	return toView(await requireOwned(env, userId, bookId));
 }
 
 /* ── 2. AI 식별 ──────────────────────────────────────── */
@@ -393,8 +491,31 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 const isStorableUrl = (url: string | null): url is string =>
 	typeof url === "string" && /^https?:\/\//i.test(url.trim());
 
+/**
+ * 참고 자료를 늘어놓는 순서 — **카카오 책 → 알라딘 → 웹 검색**.
+ *
+ * 부모가 근거를 훑는 순서다. 앞의 둘은 서지 데이터베이스로 검증된 정보이고(카카오의 책소개가
+ * 알라딘보다 길다 — 실측 250자 대 121자), 웹 검색은 그다음에 참고할 것들이다. 모델의 기억에서
+ * 나왔다는 기록은 근거가 아니므로 맨 뒤에 둔다.
+ *
+ * 목록에 없는 소스는 웹 검색 앞자리에 넣는다 — 서지 API 가 늘어날 때 순서를 다시 정하지
+ * 않아도 검증된 정보가 웹보다 앞에 온다.
+ */
+const SOURCE_ORDER = ["kakao-book", "aladin", "google-books", "open-library", "web", "ai"];
+const UNKNOWN_RANK = SOURCE_ORDER.indexOf("web") - 0.5;
+
+const rankOf = (source: string): number => {
+	const rank = SOURCE_ORDER.indexOf(source);
+	return rank === -1 ? UNKNOWN_RANK : rank;
+};
+
+/** 같은 소스끼리는 넣은 순서를 지킨다(`Array.prototype.sort` 는 안정 정렬이다). */
+const orderSources = <T extends { source: string }>(sources: T[]): T[] =>
+	[...sources].sort((a, b) => rankOf(a.source) - rankOf(b.source));
+
 function collectSources(
 	bookId: string,
+	title: string,
 	bib: bibliographic.BibRecord[],
 	found: BookResearch,
 	notices: {
@@ -414,10 +535,19 @@ function collectSources(
 		content: record.description,
 	}));
 
+	/*
+	 * Tavily 결과는 **줄거리를 다루는 것만** 올린다.
+	 *
+	 * 검색은 20건을 물어다 주는데 절반 이상이 판매 페이지·도서관 목록이다. 그것까지 쌓으면
+	 * 부모는 정가·배송·장바구니만 적힌 발췌를 스무 개 훑어야 하고, 정작 읽을 것이 어디 있는지
+	 * 알 수 없다. 프롬프트에 싣는 자료는 줄이지 않는다 — 거기서는 모델이 대조해 걸러낸다.
+	 */
+	const web = tavily.plotRelated(notices.webSources ?? [], title);
+
 	// Tavily 로 찾은 페이지, 모델이 적어 준 출처, 제공자가 알려준 출처를 합친다.
 	// 같은 URL 은 한 번만. Tavily 를 앞에 두어 발췌가 있는 쪽이 남게 한다.
 	const seen = new Set<string>();
-	for (const source of [...(notices.webSources ?? []), ...found.sources, ...(notices.groundingSources ?? [])]) {
+	for (const source of [...web, ...found.sources, ...(notices.groundingSources ?? [])]) {
 		if (!isStorableUrl(source.url) || seen.has(source.url)) continue;
 		seen.add(source.url);
 		sources.push({
@@ -445,7 +575,7 @@ function collectSources(
 		});
 	}
 
-	return sources;
+	return orderSources(sources);
 }
 
 /**
@@ -570,6 +700,8 @@ export async function refreshWeb(
 
 	// 새 결과가 없으면 이전 캐시를 지우지 않는다(`runWebSearch` 가 덮지 않는다).
 	const kept = found.length > 0 ? found : before;
+	// 참고 자료로 올릴 것과 프롬프트에 실을 것은 다르다 — 목록에는 줄거리를 다룬 자료만 올린다.
+	const relevant = tavily.plotRelated(kept, row.title);
 
 	/*
 	 * 찾은 자료를 **참고 자료에도 바로 넣는다.**
@@ -581,31 +713,52 @@ export async function refreshWeb(
 	 */
 	if (found.length > 0) {
 		const existing = await booksRepo.listSources(env, bookId);
-		await booksRepo.replaceSources(env, bookId, [
-			...existing
-				.filter((s) => s.source !== "web")
-				.map((s) => ({
-					id: s.id,
-					bookId,
-					source: s.source,
-					url: s.url,
-					title: s.title,
-					content: s.content,
-				})),
-			...webRows(bookId, found),
-		]);
+		// 순서는 조사 반영과 같은 규칙을 쓴다 — 카카오 책 → 알라딘 → 웹 검색.
+		await booksRepo.replaceSources(
+			env,
+			bookId,
+			orderSources([
+				...existing
+					.filter((s) => s.source !== "web")
+					.map((s) => ({
+						id: s.id,
+						bookId,
+						source: s.source,
+						url: s.url,
+						title: s.title,
+						content: s.content,
+					})),
+				...webRows(bookId, relevant),
+			]),
+		);
 	}
 
+	const creditsLeft = await budget.remaining(env);
+
 	return {
-		sourceCount: kept.length,
+		// 목록에 실제로 남는 수를 알린다. "20건 찾았습니다" 를 보고 6건인 목록을 보면
+		// 저장이 고장 난 것처럼 읽힌다.
+		sourceCount: relevant.length,
 		searchesLeft: Math.max(0, budget.MAX_SEARCHES_PER_BOOK - updated.web_searches),
-		creditsLeft: await budget.remaining(env),
+		creditsLeft,
+		/*
+		 * 무엇이 없는지를 정확히 말한다. 셋은 부모가 할 일이 다르다.
+		 *
+		 *   크레딧이 없음         → 이달에는 다시 눌러도 소용없다
+		 *   자료를 아예 못 찾음    → 줄거리를 직접 적어야 한다
+		 *   줄거리가 없는 자료뿐   → 판매·목록 페이지만 걸렸다. 역시 직접 적어야 한다
+		 *
+		 * 판정은 **이번 검색이 건진 것**으로 한다. 이전에 찾아 둔 자료가 남아 있어도 이번
+		 * 검색이 빈손이면 그 사실을 알려야 한다 — 부모는 방금 누른 버튼의 결과를 묻고 있다.
+		 */
 		notice:
-			found.length > 0
+			found.length > 0 && relevant.length > 0
 				? null
-				: (await budget.remaining(env)) === 0
+				: creditsLeft === 0
 					? "이달 웹 검색 한도를 다 썼습니다. 다음 달에 다시 시도하거나 줄거리를 직접 적어 주세요."
-					: "웹에서 이 책을 다룬 자료를 찾지 못했습니다. 줄거리를 직접 적어 주시면 문제를 만들 수 있습니다.",
+					: found.length === 0
+						? "웹에서 이 책을 다룬 자료를 찾지 못했습니다. 줄거리를 직접 적어 주시면 문제를 만들 수 있습니다."
+						: "찾은 페이지가 판매·목록 정보뿐이어서 참고 자료로 올리지 않았습니다. 줄거리를 직접 적어 주시면 문제를 만들 수 있습니다.",
 	};
 }
 
@@ -657,7 +810,7 @@ export async function applyResearch(
 
 	// 준비 단계가 적어 둔 웹 자료. 여기서 새로 검색하지 않는다 — 크레딧을 두 번 쓰게 된다.
 	const webSources = cachedWeb(row);
-	const sources = collectSources(bookId, bib, found, { ...notices, webSources });
+	const sources = collectSources(bookId, row.title, bib, found, { ...notices, webSources });
 	await booksRepo.replaceSources(env, bookId, sources);
 
 	// 책을 특정하지 못했으면 그 결과의 서지정보를 받아들이지 않는다. 엉뚱한 책의 정보가 섞이면

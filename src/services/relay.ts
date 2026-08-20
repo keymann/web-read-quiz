@@ -1,4 +1,5 @@
 import { buildGenerateRequest, type GeneratedQuestion } from "../ai/generate";
+import { buildOrientRequest, normalizeOrientation } from "../ai/orient";
 import { buildGeminiCall } from "../ai/gemini";
 import { extractGroundingSources, parseGenerateContentResponse } from "../ai/google-shared";
 import { buildValidateRequest, type Verdict } from "../ai/validate";
@@ -120,6 +121,56 @@ async function assertRelayProvider(env: AppEnv, userId: string): Promise<void> {
 	if (row?.ai_provider !== RELAY_PROVIDER) {
 		throw forbidden("이 제공자는 브라우저에서 직접 호출하지 않습니다.");
 	}
+}
+
+/* ── 0. 표지 방향 ────────────────────────────────────── */
+
+/**
+ * 표지가 누워 있는지 묻는 요청. 서지 식별과 같은 이미지, 다른 스키마다.
+ *
+ * 서지 식별에 얹지 않는 이유는 `ai/orient.ts` 머리말에 적어 두었다 — 이미 등록된 책의 사진도
+ * 바로잡아야 하는데, 그때 서지 식별을 다시 돌리면 부모가 고쳐 둔 값이 AI 값으로 덮인다.
+ */
+export async function planOrient(
+	env: AppEnv,
+	userId: string,
+	bookId: string,
+	avoid: string[] = [],
+): Promise<PlannedCall> {
+	await assertRelayProvider(env, userId);
+
+	const row = await book.requireOwned(env, userId, bookId);
+	if (!row.cover_key) throw invalid("표지 이미지가 없습니다.");
+
+	const stored = await env.IMAGES.get(row.cover_key, "arrayBuffer");
+	if (!stored) throw invalid("표지 이미지를 찾을 수 없습니다.");
+
+	const { model, modelNotice } = await chooseModel(env, userId, "vision", avoid);
+	return {
+		...buildGeminiCall(
+			buildOrientRequest(model, {
+				bytes: new Uint8Array(stored),
+				mime: row.cover_mime ?? "image/jpeg",
+			}),
+		),
+		model,
+		modelNotice,
+	};
+}
+
+export async function applyOrient(
+	env: AppEnv,
+	userId: string,
+	bookId: string,
+	response: unknown,
+): Promise<unknown> {
+	await assertRelayProvider(env, userId);
+	// 각도를 네 값 중 하나로 좁히는 일도 서버가 한다. 브라우저가 보낸 것은 원본 응답뿐이다.
+	const raw = parseGenerateContentResponse<{ rotation: unknown; confidence: unknown }>(
+		"gemini",
+		response as never,
+	);
+	return book.applyOrientation(env, userId, bookId, normalizeOrientation(raw));
 }
 
 /* ── 1. 표지 식별 ────────────────────────────────────── */

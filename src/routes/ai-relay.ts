@@ -48,6 +48,9 @@ async function plan({ request, env, ctx, principal }: RouteCtx): Promise<Respons
 	const avoid = v.strArray(body, "avoid", { max: 8, maxLength: 120 });
 
 	switch (kind) {
+		case "orient":
+			return ok(await relay.planOrient(env, parent.userId, v.str(body, "bookId", "책"), avoid));
+
 		case "identify":
 			return ok(await relay.planIdentify(env, parent.userId, v.str(body, "bookId", "책"), avoid));
 
@@ -101,6 +104,11 @@ async function apply({ request, env, principal }: RouteCtx): Promise<Response> {
 	const kind = v.str(body, "kind", "단계");
 
 	switch (kind) {
+		case "orient":
+			return ok(
+				await relay.applyOrient(env, parent.userId, v.str(body, "bookId", "책"), body.response),
+			);
+
 		case "identify":
 			return ok(
 				await relay.applyIdentify(env, parent.userId, v.str(body, "bookId", "책"), body.response),

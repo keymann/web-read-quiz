@@ -52,6 +52,29 @@ async function detail({ env, principal, params }: RouteCtx): Promise<Response> {
 	});
 }
 
+/**
+ * 브라우저가 돌려 준 표지로 갈아 끼운다(§표지 방향).
+ *
+ * 회전은 브라우저만 할 수 있다 — Workers 런타임에는 이미지 디코더가 없다. 그래서 서버는
+ * 각도를 판정해 적어 두고(`POST :id/orient`), 실제 회전과 재업로드는 브라우저가 한다.
+ *
+ * 등록과 같은 검증을 거친다. 클라이언트가 보낸 바이트를 그대로 믿지 않는다(§26).
+ */
+async function replaceCover({ request, env, principal, params }: RouteCtx): Promise<Response> {
+	const parent = requireParent(principal);
+	await rateLimit(env, "book-upload", parent.userId, 20, 60 * 60);
+
+	const declared = Number(request.headers.get("Content-Length") ?? "0");
+	if (declared > MAX_BYTES * 1.1) throw invalid("이미지가 너무 큽니다.");
+
+	const form = await request.formData();
+	const file = form.get("cover");
+	if (!(file instanceof File)) throw invalid("표지 이미지를 선택해 주세요.");
+
+	const bytes = new Uint8Array(await file.arrayBuffer());
+	return ok({ book: await book.replaceCover(env, parent.userId, params.id!, bytes) });
+}
+
 /** 표지 이미지는 비공개 KV 에 있다. 소유권을 확인하고 Worker 가 대신 내보낸다. */
 async function cover({ env, principal, params }: RouteCtx): Promise<Response> {
 	const parent = requireParent(principal);
@@ -65,6 +88,19 @@ async function cover({ env, principal, params }: RouteCtx): Promise<Response> {
 			"X-Content-Type-Options": "nosniff",
 		},
 	});
+}
+
+/**
+ * 표지가 누워 있는지 확인한다.
+ *
+ * 책 한 권에 한 번만 부르는 호출이라 `ai` 레이트리밋과 따로 둔다. 부모가 책 화면을 열 때
+ * 화면이 알아서 부르므로, 분석·조사와 같은 통에 넣으면 책을 몇 권 열어 보다가 정작 분석을
+ * 못 하게 된다.
+ */
+async function orient({ env, principal, params }: RouteCtx): Promise<Response> {
+	const parent = requireParent(principal);
+	await rateLimit(env, "cover-orient", parent.userId, 60, 60 * 60);
+	return ok(await book.orient(env, parent.userId, params.id!));
 }
 
 async function analyze({ env, principal, params }: RouteCtx): Promise<Response> {
@@ -130,6 +166,8 @@ export const bookRoutes: Route[] = [
 	route("GET", "/api/books/:id", detail),
 	route("PATCH", "/api/books/:id", patch),
 	route("GET", "/api/books/:id/cover", cover),
+	route("PUT", "/api/books/:id/cover", replaceCover),
+	route("POST", "/api/books/:id/orient", orient),
 	route("POST", "/api/books/:id/analyze", analyze),
 	route("POST", "/api/books/:id/search", search),
 	route("POST", "/api/books/:id/web-search", webSearch),

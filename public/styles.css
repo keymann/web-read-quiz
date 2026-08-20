@@ -353,6 +353,12 @@ body {
 	font-size: 17px;
 }
 
+.section-subtitle {
+	margin: 18px 0 4px;
+	font-size: 15px;
+	color: var(--text-muted);
+}
+
 .hint {
 	margin: 0 0 12px;
 	color: var(--text-muted);
@@ -403,6 +409,34 @@ body {
 
 .list__item:first-child {
 	border-top: 0;
+}
+
+/*
+ * 웹 검색 자료를 **하나의 영역**으로 묶는다. 위쪽 선이 서지 자료와의 경계다.
+ */
+.source-group {
+	margin-top: 4px;
+	border-top: 1px solid var(--border);
+}
+
+/*
+ * 웹 검색 자료 묶음. 여러 건이 한 덩어리로 오므로 번호로 짚어 말할 수 있게 한다.
+ *
+ * `.list` 가 `list-style: none` 이라 `<ol>` 로 바꿔도 번호가 나오지 않는다. 카운터로 직접
+ * 붙인다 — 항목이 `flex` 라 기본 마커는 어차피 자리를 잡지 못한다.
+ */
+.list--numbered {
+	counter-reset: source;
+}
+
+.list--numbered > .list__item {
+	counter-increment: source;
+}
+
+.list--numbered > .list__item .list__title::before {
+	content: counter(source) ". ";
+	color: var(--text-muted);
+	font-weight: 600;
 }
 
 .list__main {

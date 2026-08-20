@@ -79,10 +79,43 @@
 | GET | `/api/books` | PARENT | ✅ 내가 등록한 책 목록 |
 | GET | `/api/books/:id` | PARENT | ✅ 책 + 출처 + 문제 생성 준비 여부 |
 | GET | `/api/books/:id/cover` | PARENT | ✅ KV 이미지 프록시 서빙 (소유권 확인) |
+| PUT | `/api/books/:id/cover` | PARENT | ✅ 브라우저가 돌린 표지로 갈아 끼우기(multipart) |
+| POST | `/api/books/:id/orient` | PARENT | ✅ 표지가 누워 있는지 판정 → `coverRotation` |
 | POST | `/api/books/:id/analyze` | PARENT | ✅ Vision 으로 제목/저자/출판사/ISBN 추출 |
 | POST | `/api/books/:id/search` | PARENT | ✅ 웹 검색으로 책 정보 보강 + `book_sources` 적재 |
 | PATCH | `/api/books/:id` | PARENT | ✅ 부모가 책 정보 직접 수정 (AI 오인식 보정) |
 | GET | `/api/books/:id/history` | PARENT | 이 책의 퀴즈·풀이 이력 |
+
+### 표지 방향 — 판정은 서버, 회전은 브라우저
+
+부모는 책을 손에 들고 찍는다. 폰을 가로로 들거나 책을 눕혀 두고 찍으면 **제목이 옆으로 누운
+사진**이 등록된다. EXIF 방향은 브라우저가 이미 바로잡지만 그건 "폰이 어떻게 들렸는가" 일 뿐,
+책이 어느 쪽으로 누웠는가는 아니다. 가로세로 비율로도 알 수 없고, 90°인지 270°인지는 글자를
+봐야만 안다. 그래서 **모델이 사진을 본다**(`POST :id/orient`, 스키마는 각도와 확신 둘뿐이다).
+
+돌리는 일은 서버가 못 한다 — Workers 런타임에는 이미지 디코더가 없다. 그래서 두 쪽이 나눈다.
+
+```
+POST /api/books/:id/orient   →  { rotation: 90 }        서버: 각도를 판정해 적어 둔다
+                                (브라우저가 canvas 로 돌린다)
+PUT  /api/books/:id/cover    →  { book: { … } }         서버: 검증 후 갈아 끼우고 rotation = 0
+```
+
+`book.coverRotation` 의 값:
+
+| 값 | 뜻 |
+| --- | --- |
+| `null` | 아직 확인하지 않았다 — 화면이 열릴 때 한 번 판정을 건다 |
+| `0` | 똑바로 서 있다 |
+| `90` · `180` · `270` | 이만큼 시계 방향으로 더 돌려야 한다 (브라우저가 아직 못 돌렸다) |
+
+기본값이 `null` 이므로 **이 기능 전에 등록해 둔 책도** 부모가 그 책을 열어 보는 순간 한 번
+판정을 거쳐 바로 선다. 판정은 책 한 권에 한 번뿐이다 — 결과가 0 이든 90 이든 컬럼이 채워지면
+다시 묻지 않는다. 서지 식별(`analyze`)에 얹지 않고 따로 둔 이유가 여기 있다. 이미 등록된 책의
+방향을 확인하려고 식별을 다시 돌리면 부모가 손으로 고쳐 둔 지은이·출판사가 AI 값으로 덮인다.
+
+`coverUrl` 에는 갱신 시각이 붙어 나간다(`?v=…`). 표지 바이트가 **같은 KV 키 위에서 바뀌기**
+때문에, 주소가 그대로면 `private, max-age=3600` 캐시가 돌리기 전 사진을 계속 보여 준다.
 
 `GET /api/books/:id` 의 `book` 에는 **영문책의 읽기 난이도**가 함께 실린다.
 

@@ -17,6 +17,11 @@ export interface BookRow {
 	cover_image_url: string | null;
 	cover_key: string | null;
 	cover_mime: string | null;
+	/**
+	 * 표지를 똑바로 세우기까지 **아직 남은 회전량**(시계 방향, 도).
+	 * `null` 은 아직 확인하지 않은 것, `0` 은 똑바로 서 있는 것이다.
+	 */
+	cover_rotation: number | null;
 	description: string | null;
 	published_at: string | null;
 	ai_extracted: string | null;
@@ -54,6 +59,8 @@ export interface BookSourceRow {
 	url: string | null;
 	title: string | null;
 	content: string | null;
+	/** 화면에 늘어놓을 순서. 넣는 쪽이 정한다(카카오 책 → 알라딘 → 웹 검색). */
+	position: number;
 	created_at: string;
 }
 
@@ -97,6 +104,9 @@ export interface BookFields {
 	isbn13?: string | null;
 	description?: string | null;
 	published_at?: string | null;
+	cover_key?: string;
+	cover_mime?: string;
+	cover_rotation?: number | null;
 	ai_extracted?: string | null;
 	ai_confidence?: number | null;
 	brief?: string | null;
@@ -158,8 +168,9 @@ export async function claimReadingLevelSearch(
 }
 
 export async function listSources(env: AppEnv, bookId: string): Promise<BookSourceRow[]> {
+	// `position` 이 없던 옛 행은 모두 0 이라 그때는 `created_at` 이 순서를 정한다.
 	const { results } = await env.DB.prepare(
-		"SELECT * FROM book_sources WHERE book_id = ? ORDER BY created_at",
+		"SELECT * FROM book_sources WHERE book_id = ? ORDER BY position, created_at",
 	)
 		.bind(bookId)
 		.all<BookSourceRow>();
@@ -183,14 +194,23 @@ export async function replaceSources(
 ): Promise<void> {
 	const statements = [env.DB.prepare("DELETE FROM book_sources WHERE book_id = ?").bind(bookId)];
 
-	for (const source of sources) {
+	// 넘어온 배열의 순서가 그대로 화면 순서가 된다. 정렬은 부르는 쪽(`services/book.ts`)이 한다.
+	sources.forEach((source, position) => {
 		statements.push(
 			env.DB.prepare(
-				`INSERT INTO book_sources (id, book_id, source, url, title, content)
-				 VALUES (?, ?, ?, ?, ?, ?)`,
-			).bind(source.id, source.bookId, source.source, source.url, source.title, source.content),
+				`INSERT INTO book_sources (id, book_id, source, url, title, content, position)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			).bind(
+				source.id,
+				source.bookId,
+				source.source,
+				source.url,
+				source.title,
+				source.content,
+				position,
+			),
 		);
-	}
+	});
 
 	await env.DB.batch(statements);
 }

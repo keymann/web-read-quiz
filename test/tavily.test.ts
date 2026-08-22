@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { normalize, plotRelated, relevantCount, search, type WebSource } from "../src/search/tavily";
+import { buildQuery, normalize, plotRelated, relevantCount, search, type WebSource } from "../src/search/tavily";
 import * as budget from "../src/services/search-budget";
 import type { AppEnv } from "../src/types";
 
@@ -534,5 +534,74 @@ describe("Tavily 가 소진을 알려올 때", () => {
 		// 인터셉터가 딱 4번 소진됐다 = 그 이상 부르지 않았다(afterEach 가 확인한다).
 
 		await clearCounters();
+	});
+});
+
+/**
+ * 질의 사다리 (§docs/tavily-search-plan.md).
+ *
+ * 여기서 지키려는 것은 하나다 — **다시 찾기를 누르면 다른 질의가 나가는 것.** 예전에는
+ * 같은 질의가 그대로 다시 나가서, 책당 6회의 재검색이 같은 결과를 여섯 번 받아 오는
+ * 일이었다. 크레딧을 쓰고 근거는 늘지 않는다.
+ */
+describe("질의 사다리", () => {
+	const KO = { title: "움푹산의 비밀", author: "천희순", publisher: "크레용하우스" };
+	const EN = { title: "Dirty Bertie PONG!", author: "Alan MacDonald", publisher: "Stripes" };
+
+	it("시도가 늘면 좁은 질의도 넓은 질의도 바뀐다", () => {
+		const narrow = [0, 1, 2].map((n) => buildQuery(KO, false, n).query);
+		const broad = [0, 1, 2].map((n) => buildQuery(KO, true, n).query);
+
+		expect(new Set(narrow).size).toBe(3);
+		expect(new Set(broad).size).toBe(3);
+	});
+
+	/**
+	 * 좁은 것과 넓은 것의 길이가 서로 나누어지지 않아야(4·3) 여섯 번을 다른 조합으로 쓴다.
+	 * 상한(`MAX_SEARCHES_PER_BOOK`)만큼 눌러도 같은 짝이 다시 나오지 않아야 한다.
+	 */
+	it("책당 상한까지 짝이 겹치지 않는다", () => {
+		const pairs = Array.from({ length: budget.MAX_SEARCHES_PER_BOOK }, (_, n) =>
+			`${buildQuery(KO, false, n).query} || ${buildQuery(KO, true, n).query}`,
+		);
+		expect(new Set(pairs).size).toBe(budget.MAX_SEARCHES_PER_BOOK);
+	});
+
+	it("첫 시도의 질의는 예전과 같다", () => {
+		// 여기까지 재어 둔 실측(Phase 0)이 이 질의로 나온 것이다. 기준선을 옮기지 않는다.
+		expect(buildQuery(KO, false, 0).query).toBe('"움푹산의 비밀" 천희순 줄거리 등장인물 독후감');
+		expect(buildQuery(KO, true, 0).query).toBe("움푹산의 비밀 천희순 어린이책 내용");
+	});
+
+	// 영어책에 한국어 낱말을 붙이면 엉뚱한 한국 사이트가 20건 중 8건을 차지했다(Phase 0).
+	it("영어책에는 영어 낱말만 붙고 국가를 묶지 않는다", () => {
+		for (let n = 0; n < 6; n++) {
+			for (const broad of [false, true]) {
+				const { query, country } = buildQuery(EN, broad, n);
+				expect(query).not.toMatch(/[가-힣]/);
+				expect(country).toBeUndefined();
+			}
+		}
+	});
+
+	it("한국책에는 국가를 묶는다", () => {
+		expect(buildQuery(KO, false, 3).country).toBe("south korea");
+	});
+
+	// 출판사를 못 읽은 책이 있다. 빈 값이 질의에 두 칸 공백으로 남으면 안 된다.
+	it("출판사가 없어도 질의에 빈 칸이 겹치지 않는다", () => {
+		for (let n = 0; n < 6; n++) {
+			for (const broad of [false, true]) {
+				const { query } = buildQuery({ title: "제목", author: "" }, broad, n);
+				expect(query).not.toMatch(/\s{2}/);
+				expect(query.trim()).toBe(query);
+			}
+		}
+	});
+
+	// 상한을 넘겨 들어와도 터지지 않아야 한다. 옛 행의 카운터가 어긋날 수 있다.
+	it("시도가 사다리보다 커도 감아서 고른다", () => {
+		expect(buildQuery(KO, false, 99).query).toBeTruthy();
+		expect(buildQuery(KO, false, -1).query).toBe(buildQuery(KO, false, 0).query);
 	});
 });

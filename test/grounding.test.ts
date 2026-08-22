@@ -6,7 +6,9 @@ import {
 	MIN_EVIDENCE_GROUNDING,
 	MIN_QUESTION_GROUNDING,
 	checkGrounding,
+	dominantScript,
 	groundedRatio,
+	hasVerbatimQuote,
 } from "../src/services/grounding";
 
 /**
@@ -288,5 +290,152 @@ describe("소개를 근거로 쓰지 못하게 하는 지시", () => {
 		const text = `${request.instructions ?? ""}\n${request.prompt}`;
 		expect(text).toContain("[출판사 소개]");
 		expect(text).toContain("탈락");
+	});
+});
+
+/**
+ * 통째로 옮겨 적은 근거는 살린다 (§문제 만들기 실패 줄이기).
+ *
+ * 어간 비율은 근거를 낱말 단위로 흩어 본다. 모델이 원문 한 문장을 정확히 옮기고 뒤에 자기
+ * 말로 한 마디를 붙이면 비율이 기준 아래로 내려간다 — 옮긴 부분은 완벽한데 떨어진다.
+ * **이만큼 긴 글자열이 책 정보에 그대로 있다는 것은 지어낸 근거일 수 없다.**
+ */
+describe("이어진 대목을 그대로 옮겼는가", () => {
+	it("원문 한 대목을 옮기면 찾아낸다", () => {
+		expect(hasVerbatimQuote("잎싹은 자신의 알을 품어 보고 마당을 거니는 꿈을 꿉니다", BRIEF)).toBe(true);
+	});
+
+	it("지어낸 글은 찾아내지 못한다", () => {
+		expect(hasVerbatimQuote("잎싹이 우주선을 몰고 화성으로 날아갔습니다", BRIEF)).toBe(false);
+	});
+
+	// 짧은 조각은 어느 글에나 있다. 그것까지 인용으로 인정하면 검사가 무력해진다.
+	it("짧은 조각은 인용으로 보지 않는다", () => {
+		expect(hasVerbatimQuote("잎싹은", BRIEF)).toBe(false);
+	});
+
+	it("원문을 옮기고 한마디 덧붙인 근거가 살아난다", () => {
+		const question = {
+			questionText: "잎싹이 알을 품기로 한 까닭은 무엇인가요?",
+			choices: [
+				"자신의 알을 품어 보고 싶었기 때문",
+				"주인이 시켰기 때문",
+				"족제비를 피하려고",
+				"초록이가 부탁해서",
+			],
+			correctChoice: 1,
+			// 앞 문장은 Brief 원문 그대로, 뒤는 모델이 붙인 말이다. 예전에는 뒤 문장이 비율을
+			// 끌어내려 이 문항이 떨어졌다.
+			evidence:
+				"좁은 닭장 속에서 알만 낳던 암탉 잎싹은 자신의 알을 품어 보고 마당을 거니는 꿈을 꿉니다." +
+				" 이것이 잎싹의 가장 큰 소망이며 이야기 전체를 끌고 가는 동기가 된다고 볼 수 있습니다.",
+		};
+
+		expect(checkGrounding(question, BRIEF).ok).toBe(true);
+	});
+
+	// 살려 주는 길이 생겼다고 지어낸 문항이 새면 안 된다. 실측 표본으로 다시 확인한다.
+	it("지어낸 표본은 여전히 전부 걸린다", () => {
+		for (const question of INVENTED) {
+			expect(hasVerbatimQuote(question.evidence, BRIEF), question.questionText).toBe(false);
+			expect(checkGrounding(question, BRIEF).ok, question.questionText).toBe(false);
+		}
+	});
+});
+
+/**
+ * 근거를 번역해 적었을 때 **무엇이 틀렸는지 말해 준다.**
+ *
+ * 문제 언어를 영어로 두면 모델은 지시를 어기고 근거까지 영어로 옮기는 일이 잦다. 그러면
+ * 글자 대조가 성립하지 않아 한 배치가 통째로 떨어진다 — 근거 자료는 넉넉한데 문제가 하나도
+ * 안 만들어지는 경우의 큰 몫이 이것이다. 사유는 다음 라운드 프롬프트에 그대로 실리므로,
+ * "책 정보에 없다" 가 아니라 "번역했다" 라고 말해야 모델이 고칠 수 있다.
+ */
+describe("근거를 번역한 경우", () => {
+	const translated = {
+		questionText: "Who saved Ipssak from the weasel?",
+		choices: ["A mallard named Nageune", "The rooster", "The owner", "Greenie"],
+		correctChoice: 1,
+		evidence:
+			"Thrown into the pit as a spent hen, Ipssak escaped the weasel with the help of the mallard.",
+	};
+
+	it("번역했다고 짚어 준다", () => {
+		const result = checkGrounding(translated, BRIEF);
+		expect(result.ok).toBe(false);
+		expect(result.reason).toContain("번역");
+	});
+
+	/**
+	 * 이 사유에는 `제공된 책 정보` 라는 말이 없어야 한다. 그 말이 부모에게 보여줄 안내를
+	 * 고르는 표시라서, 번역 실패가 "줄거리를 보강해 주세요" 로 잘못 안내되면 부모가 쓸데없이
+	 * 웹 검색 크레딧을 쓴다.
+	 */
+	it("책 정보가 모자란 것으로 세지 않는다", () => {
+		const reason = checkGrounding(translated, BRIEF).reason!;
+		expect(mostlyUngrounded([{ reason }])).toBe(false);
+	});
+});
+
+/**
+ * 책 정보와 출제 언어가 다르면 근거의 언어를 **이름을 대어** 못 박는다.
+ *
+ * 시스템 지시에 이미 있는 규칙인데도 모델이 어긴다. 규칙을 되풀이하는 대신 어느 언어인지
+ * 짚고 어기면 어떻게 되는지를 적는다.
+ */
+describe("Brief 가 주로 어느 말로 쓰였는가", () => {
+	// 절 머리·이름표만 한국어인 영문책 Brief. 한 자만 보는 판정은 이것을 한국어로 본다.
+	it("절 머리가 한국어여도 본문이 영어면 영어로 본다", () => {
+		const brief = "[책] Charlotte's Web\n지은이: E. B. White\n\n[줄거리]\nFern saves a runt piglet named Wilbur and raises him at the farm.";
+		expect(dominantScript(brief)).toBe("en");
+	});
+
+	it("한국어 Brief 는 한국어로 본다", () => {
+		expect(dominantScript(BRIEF)).toBe("ko");
+	});
+
+	it("짧은 근거 한 문장에도 쓸 수 있다", () => {
+		expect(dominantScript("잎싹은 알을 품었다")).toBe("ko");
+		expect(dominantScript("Ipssak hatched the egg")).toBe("en");
+	});
+});
+
+describe("근거 언어 지시", () => {
+	const request = (language: "en" | "ko", brief: string) =>
+		buildGenerateRequest({
+			provider: null as never,
+			apiKey: "",
+			model: "m",
+			brief,
+			count: 10,
+			language,
+		}).prompt;
+
+	it("한국어 책을 영어로 출제하면 한국어로 인용하라고 적는다", () => {
+		const prompt = request("en", BRIEF);
+		expect(prompt).toContain("한국어 문장을 그대로 복사");
+	});
+
+	/**
+	 * Brief 의 절 머리와 이름표는 **영문책이어도 한국어다**(`[줄거리]`·`지은이:`). "한글이 한
+	 * 자라도 있는가" 로 판정하면 모든 책이 한국어로 보여 이 지시가 영문책에 붙지 않았다.
+	 */
+	it("영어 책을 한국어로 출제하면 영어로 인용하라고 적는다", () => {
+		const englishBrief = [
+			"[책] Charlotte's Web",
+			"지은이: E. B. White / 출판사: Harper / 출간: 1952-10-15",
+			"",
+			"[줄거리]",
+			"Fern saves a runt piglet named Wilbur and raises him at home.",
+			"Wilbur is sold to the Zuckerman farm, where a spider named Charlotte befriends him",
+			"and weaves words into her web to save him from slaughter.",
+		].join("\n");
+
+		expect(request("ko", englishBrief)).toContain("영어 문장을 그대로 복사");
+	});
+
+	// 같은 언어일 때는 군더더기다. 프롬프트가 길어지면 모델이 중간을 흘린다.
+	it("언어가 같으면 이 지시를 붙이지 않는다", () => {
+		expect(request("ko", BRIEF)).not.toContain("그대로 복사");
 	});
 });

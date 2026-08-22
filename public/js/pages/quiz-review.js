@@ -52,10 +52,14 @@ const TYPE_LABEL = {
  * 있는지가 계속 바뀌어 보여야 기다릴 수 있다.
  */
 function phaseText(p) {
+	// 시도 번호는 **1부터 센다.** 서버 경로는 라운드 번호를 보내지 않고(단계 이름만 적는다),
+	// 브라우저 경로도 첫 계획을 세우기 전에는 아직 번호가 없다. 그때 번호 자리를 비워 두면
+	// 화면에 "undefined번째" 가 뜬다 — 준비 중인 것은 언제나 첫 번째 시도다.
+	const round = p.round ?? 1;
+
 	switch (p.phase) {
 		case "planning":
-			// 서버 경로는 라운드 번호를 보내지 않는다. 단계 이름만 적고 문장은 여기서 만든다.
-			return p.round ? `${p.round}번째 시도를 준비하고 있어요` : "문제 만들 준비를 하고 있어요";
+			return `${round}번째 시도를 준비하고 있어요`;
 		case "generating":
 			return p.need
 				? `AI 가 문제 ${p.need}개를 만들고 있어요`
@@ -69,6 +73,14 @@ function phaseText(p) {
 		case "saving":
 			return "검수를 통과한 문제를 저장하고 있어요";
 		case "retrying":
+			/*
+			 * 여기에는 시도 번호를 적지 않는다.
+			 *
+			 * 두 경로가 이 단계를 **서로 다른 시점에** 알린다. 서버는 다음 라운드를 시작할 때,
+			 * 브라우저는 방금 끝난 라운드의 결과로 알린다. 같은 `round` 값이 한쪽에서는 다음
+			 * 시도, 다른 쪽에서는 지난 시도를 뜻하므로 번호를 적으면 한쪽이 틀린다.
+			 * 번호는 곧 이어지는 `planning` 이 정확하게 알려 준다.
+			 */
 			return p.dropped
 				? `${p.dropped}개가 기준에 못 미쳐 다시 만들어요`
 				: "기준에 못 미친 문제를 다시 만들어요";
@@ -563,7 +575,9 @@ export async function quizReviewPage({ id }) {
 			if (await usesBrowserRelay()) {
 				// 브라우저가 Gemini 를 직접 부른다. 서버는 각 라운드에서 무엇을 부를지 정하고
 				// 결과를 판정한다. 탭을 닫으면 중간에 멈추므로 진행 상황을 계속 보여 준다.
-				relayProgress = { phase: "planning", accepted: 0, target: 0 };
+				// 시도 번호를 처음부터 채워 둔다. 비워 두면 첫 화면이 번호 없이 뜨고,
+				// 곧 도착하는 첫 보고와 문장이 달라 보인다.
+				relayProgress = { phase: "planning", round: 1, accepted: 0, target: 0 };
 				startTicking();
 				await refresh();
 

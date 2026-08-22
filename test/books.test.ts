@@ -354,3 +354,133 @@ describe("책 정보 검색", () => {
 		expect(detail.body.data.sources[0].url).toBe("https://example.com/new");
 	});
 });
+
+/**
+ * 책 삭제 (§내 책장).
+ *
+ * 문항은 감추는 데 그치지만(`is_active = 0`) 책은 행까지 지운다. 그래서 여기서 확인할 것은
+ * 하나다 — **그 책에 딸린 것이 하나도 남지 않는가.** 남으면 부모에게는 안 보이면서 통계와
+ * 이력에만 나타나는 유령 기록이 된다.
+ */
+describe("책 삭제", () => {
+	/** 지워질 것을 다 만들어 둔다. 한 줄이라도 남으면 아래 검사가 잡는다. */
+	async function seedEverything(client: Client, bookId: string, childId: string) {
+		const owner = await env.DB.prepare("SELECT created_by FROM books WHERE id = ?")
+			.bind(bookId)
+			.first<{ created_by: string }>();
+		const userId = owner!.created_by;
+
+		await env.DB.batch([
+			env.DB.prepare(
+				"INSERT INTO book_sources (id, book_id, source, url, title, content) VALUES ('src1', ?, 'web', 'https://a.example/x', '자료', '내용')",
+			).bind(bookId),
+			env.DB.prepare(
+				"INSERT INTO quizzes (id, book_id, parent_user_id, status, round) VALUES ('qz1', ?, ?, 'REVIEW', 1)",
+			).bind(bookId, userId),
+			env.DB.prepare(
+				`INSERT INTO questions
+				   (id, quiz_id, question_number, question_text, choice1, choice2, choice3, choice4,
+				    correct_choice, question_type, difficulty)
+				 VALUES ('q1', 'qz1', 1, '무슨 일이 있었나요?', '가', '나', '다', '라', 1, 'EVENT', 2)`,
+			),
+			env.DB.prepare(
+				`INSERT INTO question_versions
+				   (id, question_id, version, question_text, choice1, choice2, choice3, choice4,
+				    correct_choice, question_type, difficulty, created_by)
+				 VALUES ('qv1', 'q1', 1, '무슨 일이 있었나요?', '가', '나', '다', '라', 1, 'EVENT', 2, 'AI')`,
+			),
+			env.DB.prepare(
+				"INSERT INTO question_histories (id, question_id, action, actor_type) VALUES ('qh1', 'q1', 'AI_GENERATED', 'AI')",
+			),
+			env.DB.prepare(
+				"INSERT INTO question_validations (id, question_id, question_version_id, valid, score) VALUES ('qval1', 'q1', 'qv1', 1, 90)",
+			),
+			env.DB.prepare(
+				"INSERT INTO quiz_assignments (id, quiz_id, parent_user_id, child_id) VALUES ('as1', 'qz1', ?, ?)",
+			).bind(userId, childId),
+			env.DB.prepare(
+				"INSERT INTO quiz_attempts (id, assignment_id, quiz_id, child_id) VALUES ('at1', 'as1', 'qz1', ?)",
+			).bind(childId),
+			env.DB.prepare(
+				"INSERT INTO attempt_questions (id, attempt_id, question_id, question_version_id, question_number) VALUES ('aq1', 'at1', 'q1', 'qv1', 1)",
+			),
+			env.DB.prepare(
+				`INSERT INTO question_answers
+				   (id, attempt_id, question_id, question_version_id, selected_choice, correct_choice, is_correct)
+				 VALUES ('an1', 'at1', 'q1', 'qv1', 1, 1, 1)`,
+			),
+		]);
+	}
+
+	const countOf = async (sql: string): Promise<number> => {
+		const row = await env.DB.prepare(sql).first<{ n: number }>();
+		return row?.n ?? 0;
+	};
+
+	it("책과 함께 문제·배정·도전·답이 모두 사라진다", async () => {
+		const client = await withKey();
+		const { childId } = await addChild(client);
+		const { body } = await uploadCover(client);
+		const bookId = body.data.book.id;
+
+		const coverKey = (
+			await env.DB.prepare("SELECT cover_key FROM books WHERE id = ?")
+				.bind(bookId)
+				.first<{ cover_key: string }>()
+		)!.cover_key;
+
+		await seedEverything(client, bookId, childId);
+
+		const res = await client.del(`/api/books/${bookId}`);
+		expect(res.status).toBe(200);
+		expect(res.body.data.deleted).toBe(true);
+
+		expect(await countOf(`SELECT COUNT(*) AS n FROM books WHERE id = '${bookId}'`)).toBe(0);
+		expect(await countOf(`SELECT COUNT(*) AS n FROM book_sources WHERE book_id = '${bookId}'`)).toBe(0);
+		expect(await countOf("SELECT COUNT(*) AS n FROM quizzes WHERE id = 'qz1'")).toBe(0);
+		expect(await countOf("SELECT COUNT(*) AS n FROM questions WHERE id = 'q1'")).toBe(0);
+		expect(await countOf("SELECT COUNT(*) AS n FROM question_versions WHERE id = 'qv1'")).toBe(0);
+		expect(await countOf("SELECT COUNT(*) AS n FROM question_histories WHERE id = 'qh1'")).toBe(0);
+		expect(await countOf("SELECT COUNT(*) AS n FROM question_validations WHERE id = 'qval1'")).toBe(0);
+		expect(await countOf("SELECT COUNT(*) AS n FROM quiz_assignments WHERE id = 'as1'")).toBe(0);
+		expect(await countOf("SELECT COUNT(*) AS n FROM quiz_attempts WHERE id = 'at1'")).toBe(0);
+		expect(await countOf("SELECT COUNT(*) AS n FROM attempt_questions WHERE id = 'aq1'")).toBe(0);
+		expect(await countOf("SELECT COUNT(*) AS n FROM question_answers WHERE id = 'an1'")).toBe(0);
+
+		// 표지는 D1 이 아니라 KV 에 있다. 함께 지워지지 않으면 아무도 못 보는 바이트가 남는다.
+		expect(await env.IMAGES.get(coverKey, "arrayBuffer")).toBeNull();
+
+		// 목록에서도 사라진다.
+		const list = await client.get("/api/books");
+		expect(list.body.data.books.some((b: { id: string }) => b.id === bookId)).toBe(false);
+	});
+
+	it("남의 책은 지울 수 없다", async () => {
+		const client = await withKey();
+		const { body } = await uploadCover(client);
+		const bookId = body.data.book.id;
+
+		const { client: other } = await signupParent();
+		expect((await other.del(`/api/books/${bookId}`)).status).toBe(404);
+
+		// 남의 요청으로 지워지지 않았다.
+		expect((await client.get(`/api/books/${bookId}`)).status).toBe(200);
+	});
+
+	it("이미 지운 책을 다시 지우면 404", async () => {
+		const client = await withKey();
+		const { body } = await uploadCover(client);
+		const bookId = body.data.book.id;
+
+		expect((await client.del(`/api/books/${bookId}`)).status).toBe(200);
+		expect((await client.del(`/api/books/${bookId}`)).status).toBe(404);
+	});
+
+	it("아이 계정은 책을 지울 수 없다", async () => {
+		const client = await withKey();
+		const { client: child } = await addChild(client);
+		const { body } = await uploadCover(client);
+
+		expect((await child.del(`/api/books/${body.data.book.id}`)).status).toBe(403);
+	});
+});

@@ -1,3 +1,4 @@
+import { dominantScript } from "../services/grounding";
 import type { QuestionLanguage } from "../types";
 import type { AiProvider, StructuredRequest } from "./types";
 import { QUESTIONS_SCHEMA } from "./schemas";
@@ -158,6 +159,30 @@ export function buildGenerateRequest(request: GenerateRequest): StructuredReques
 		"",
 		"서버가 evidence 를 위 책 정보와 대조합니다. 위에 없는 내용을 근거로 적으면 그 문제는 버려집니다.",
 	);
+
+	/*
+	 * 책 정보와 출제 언어가 다를 때 **근거의 언어를 한 번 더, 구체적으로** 못 박는다.
+	 *
+	 * 시스템 지시에 이미 있는 규칙인데도 모델은 문제를 영어로 쓰는 순간 근거까지 영어로
+	 * 옮긴다. 그러면 서버의 글자 대조가 성립하지 않아 **한 배치가 통째로 떨어진다** — 근거
+	 * 자료는 넉넉한데 문제가 하나도 안 만들어지는 경우의 큰 몫이 이것이다.
+	 *
+	 * 그래서 규칙을 되풀이하는 대신 **어느 언어인지 이름을 대고** 어기면 어떻게 되는지를
+	 * 적는다. 한 줄이라 비용도 지연도 늘지 않는다.
+	 *
+	 * 언어 판정은 `dominantScript` 가 한다. "한글이 한 자라도 있는가" 로는 안 된다 — Brief 의
+	 * 절 머리와 이름표는 영문책이어도 늘 한국어라(`[줄거리]`·`지은이:`) 모든 책이 한국어로
+	 * 보인다.
+	 */
+	const source = dominantScript(request.brief);
+	if (source !== (request.language ?? "en")) {
+		const sourceName = source === "ko" ? "한국어" : "영어";
+		parts.push(
+			"",
+			`evidence 만은 예외입니다. 위 책 정보는 ${sourceName}로 적혀 있으므로 evidence 는` +
+				` **${sourceName} 문장을 그대로 복사**하세요. 번역하면 대조에 걸려 그 문제는 버려집니다.`,
+		);
+	}
 
 	return {
 		model: request.model,

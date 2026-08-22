@@ -320,6 +320,87 @@ describe("책 정보 검색", () => {
 		expect(detail.body.data.book.author).toBe("내가 고친 저자");
 	});
 
+	/**
+	 * AI 가 표지에서 잘못 읽은 값은 **다시 찾기로 고쳐진다.**
+	 *
+	 * 예전에는 값이 들어 있으면 무조건 지켰다. 그래서 지은이를 잘못 읽으면 몇 번을 다시 찾아도
+	 * 그 값이 영영 남았다 — 서지 API 가 맞는 값을 물어다 줘도 들어갈 자리가 없었다.
+	 */
+	it("AI 가 표지에서 읽은 값은 다시 찾기로 갱신된다", async () => {
+		const client = await withKey();
+		const { body } = await uploadCover(client);
+		const bookId = body.data.book.id;
+
+		// 표지에서 지은이를 잘못 읽었다.
+		mockResponses({ ...IDENTITY, author: "황선비" });
+		await client.post(`/api/books/${bookId}/analyze`);
+		expect((await client.get(`/api/books/${bookId}`)).body.data.book.author).toBe("황선비");
+
+		// 분석이 ISBN 을 채웠으므로 조사는 ISBN 경로(구글 + 오픈라이브러리)를 탄다.
+		mockGoogleBooksMiss();
+		mockOpenLibraryMiss();
+		mockResponses(RESEARCH);
+		await client.post(`/api/books/${bookId}/search`);
+
+		expect((await client.get(`/api/books/${bookId}`)).body.data.book.author).toBe("황선미");
+	});
+
+	// 부모가 고친 값은 그 위에 있다. 이것이 이 규칙의 가장 중요한 약속이다.
+	it("부모가 고친 값은 AI 가 읽은 값과 달라 지켜진다", async () => {
+		const client = await withKey();
+		const { body } = await uploadCover(client);
+		const bookId = body.data.book.id;
+
+		mockResponses({ ...IDENTITY, author: "황선비" });
+		await client.post(`/api/books/${bookId}/analyze`);
+		await client.patch(`/api/books/${bookId}`, { author: "내가 고친 저자" });
+
+		mockGoogleBooksMiss();
+		mockOpenLibraryMiss();
+		mockResponses(RESEARCH);
+		await client.post(`/api/books/${bookId}/search`);
+
+		expect((await client.get(`/api/books/${bookId}`)).body.data.book.author).toBe("내가 고친 저자");
+	});
+
+	/**
+	 * 화면에는 ISBN 칸이 하나뿐인데(`isbn13 ?? isbn10`) 컬럼은 둘이다. 예전에는 그 값을 늘
+	 * `isbn13` 에 넣어서, 10자리만 있는 책의 값이 13자리 칸으로 옮겨 앉았다.
+	 */
+	it("ISBN 은 자릿수에 맞는 칸으로 들어간다", async () => {
+		const client = await withKey();
+		const { body } = await uploadCover(client);
+		const bookId = body.data.book.id;
+
+		await client.patch(`/api/books/${bookId}`, { isbn13: "89-5828-125-2" });
+		let row = await env.DB.prepare("SELECT isbn10, isbn13 FROM books WHERE id = ?")
+			.bind(bookId)
+			.first<{ isbn10: string | null; isbn13: string | null }>();
+		expect(row).toEqual({ isbn10: "8958281252", isbn13: null });
+
+		await client.patch(`/api/books/${bookId}`, { isbn13: "978-89-5828-125-2" });
+		row = await env.DB.prepare("SELECT isbn10, isbn13 FROM books WHERE id = ?")
+			.bind(bookId)
+			.first<{ isbn10: string | null; isbn13: string | null }>();
+		expect(row!.isbn13).toBe("9788958281252");
+
+		// 비우면 둘 다 지운다. 한쪽만 지우면 화면이 다른 쪽 값을 다시 보여 준다.
+		await client.patch(`/api/books/${bookId}`, { isbn13: "" });
+		row = await env.DB.prepare("SELECT isbn10, isbn13 FROM books WHERE id = ?")
+			.bind(bookId)
+			.first<{ isbn10: string | null; isbn13: string | null }>();
+		expect(row).toEqual({ isbn10: null, isbn13: null });
+	});
+
+	it("자릿수가 맞지 않는 ISBN 은 거절한다", async () => {
+		const client = await withKey();
+		const { body } = await uploadCover(client);
+
+		const res = await client.patch(`/api/books/${body.data.book.id}`, { isbn13: "12345" });
+		expect(res.status).toBe(400);
+		expect(res.body.error.message).toContain("ISBN");
+	});
+
 	it("분석 전에는 검색할 수 없다", async () => {
 		const client = await withKey();
 		const { body } = await uploadCover(client);

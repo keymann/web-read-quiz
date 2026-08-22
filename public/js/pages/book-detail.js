@@ -170,8 +170,8 @@ export async function bookDetailPage({ id }) {
 				header(book.title, [homeLink()]),
 				message ? banner(message, messageKind) : null,
 				coverCard(book),
-				infoCard(book),
-				sourcesCard(sources, evidenceWeak, readyForQuiz, web),
+				infoCard(book, web),
+				sourcesCard(sources, evidenceWeak, readyForQuiz),
 				// AI 가 줄거리를 못 찾았거나 부모가 이미 적어 둔 경우에만 띄운다. 잘 된 책에는 군더더기다.
 				!readyForQuiz || book.manualPlot ? plotCard(book, readyForQuiz) : null,
 				attempts.length > 0 ? attemptsCard() : null,
@@ -358,7 +358,14 @@ export async function bookDetailPage({ id }) {
 		]);
 	}
 
-	function infoCard(book) {
+	/**
+	 * 책 정보 — 부모가 고치고, 그 값으로 찾는다.
+	 *
+	 * **저장 버튼이 없다.** 고친 값을 저장하는 일과 그 값으로 찾는 일은 부모에게 한 동작이다.
+	 * 버튼이 둘이면 저장을 잊고 찾기를 눌러 **고치기 전 값으로 검색**하는 일이 생긴다.
+	 * 그래서 찾기 버튼이 저장까지 맡는다. 입력 칸에서 Enter 를 쳐도 같은 일이 일어난다.
+	 */
+	function infoCard(book, web) {
 		const title = field("제목", { value: book.title, required: true });
 		const author = field("지은이", { value: book.author ?? "" });
 		const publisher = field("출판사", { value: book.publisher ?? "" });
@@ -366,58 +373,60 @@ export async function bookDetailPage({ id }) {
 
 		const form = el("form", { class: "card" }, [
 			el("h2", { class: "section-title", text: "책 정보" }),
-			el("p", { class: "hint", text: "AI 가 잘못 읽은 부분이 있으면 직접 고쳐 주세요. 고친 값으로 정보를 찾습니다." }),
+			el("p", {
+				class: "hint",
+				text: "AI 가 잘못 읽은 부분이 있으면 직접 고쳐 주세요. 고친 값을 저장하고 그 값으로 찾습니다.",
+			}),
 			title.wrap,
 			author.wrap,
 			publisher.wrap,
 			isbn13.wrap,
 			readingLevelBlock(book),
-			el("div", { class: "row" }, [
-				el("button", { class: "btn btn--secondary", type: "submit", text: "정보 저장", disabled: busy !== null }),
+			// 크레딧은 이 버튼 오른쪽에 붙는다. 크레딧을 쓰는 버튼이 이것뿐이다.
+			el("div", { class: "row row--baseline" }, [
 				el("button", {
 					class: "btn",
-					type: "button",
+					type: "submit",
 					text: busy === "search" ? "책 정보를 찾는 중…" : book.searchedAt ? "정보 다시 찾기" : "책 정보 찾기",
 					disabled: busy !== null,
-					onClick: () =>
-						run(
-							"search",
-							(relay) => (relay ? researchBook(id) : post(`/api/books/${id}/search`)),
-							"책 정보를 찾아 정리했습니다.",
-							/*
-							 * 실패했을 때 무엇이 없는지를 정확히 말한다.
-							 *
-							 * 예전 문구는 "근거 자료가 부족합니다" 였는데, 참고 자료는 멀쩡히 2건이
-							 * 쌓여 있고 바로 위 카드가 "근거 자료가 충분합니다" 라고 말하는 상황에서도
-							 * 그렇게 떴다. 없는 것은 참고 자료가 아니라 **줄거리**다.
-							 */
-							(data) =>
-								data.readyForQuiz
-									? data.searchNotice
-									: (data.searchNotice ??
-										"AI 가 이 책의 줄거리를 알지 못합니다. 아래에 줄거리를 직접 적어 주시면 문제를 만들 수 있습니다."),
-						),
 				}),
+				creditRow(web),
 			]),
 		]);
 
-		form.addEventListener("submit", async (event) => {
+		form.addEventListener("submit", (event) => {
 			event.preventDefault();
-			try {
-				await patch(`/api/books/${id}`, {
-					title: title.input.value,
-					author: author.input.value,
-					publisher: publisher.input.value,
-					isbn13: isbn13.input.value,
-				});
-				message = "책 정보를 저장했습니다.";
-				messageKind = "info";
-			} catch (err) {
-				message = err.message;
-				messageKind = "error";
-			}
-			await refresh();
+			search();
 		});
+
+		/** 화면에 적힌 값을 저장하고 나서 찾는다. 저장이 실패하면 찾지 않는다. */
+		function search() {
+			return run(
+				"search",
+				async (relay) => {
+					await patch(`/api/books/${id}`, {
+						title: title.input.value,
+						author: author.input.value,
+						publisher: publisher.input.value,
+						isbn13: isbn13.input.value,
+					});
+					return relay ? researchBook(id) : post(`/api/books/${id}/search`);
+				},
+				"책 정보를 찾아 정리했습니다.",
+				/*
+				 * 실패했을 때 무엇이 없는지를 정확히 말한다.
+				 *
+				 * 예전 문구는 "근거 자료가 부족합니다" 였는데, 참고 자료는 멀쩡히 2건이
+				 * 쌓여 있고 바로 위 카드가 "근거 자료가 충분합니다" 라고 말하는 상황에서도
+				 * 그렇게 떴다. 없는 것은 참고 자료가 아니라 **줄거리**다.
+				 */
+				(data) =>
+					data.readyForQuiz
+						? data.searchNotice
+						: (data.searchNotice ??
+							"AI 가 이 책의 줄거리를 알지 못합니다. 아래에 줄거리를 직접 적어 주시면 문제를 만들 수 있습니다."),
+			);
+		}
 
 		return form;
 	}
@@ -467,42 +476,13 @@ export async function bookDetailPage({ id }) {
 	 * 동시에 말했다. 같은 화면이 서로 반대되는 말을 하면 저장이 고장 난 것처럼 보인다.
 	 */
 	/**
-	 * 웹 자료 재검색. **크레딧을 쓰는 유일한 사용자 조작**이므로 누르기 전에 몇 번 남았는지 보인다.
+	 * 이달 남은 웹 검색 크레딧. 찾기 버튼 오른쪽에 붙는다.
 	 *
-	 * 책당 횟수와 이달 서비스 전체 크레딧, 둘 중 하나라도 바닥나면 잠긴다.
-	 */
-	function webSearchRow(web) {
-		if (!web?.enabled) return null;
-
-		const left = web.searchesLeft ?? 0;
-		const credits = web.creditsLeft ?? 0;
-		const blocked = left === 0 || credits < 3;
-
-		return el("div", { class: "row" }, [
-			el("button", {
-				class: "btn btn--secondary",
-				type: "button",
-				text: busy === "web" ? "웹에서 찾는 중…" : "웹 자료 다시 찾기",
-				disabled: busy !== null || blocked,
-				onClick: () =>
-					run("web", () => post(`/api/books/${id}/web-search`), "웹 자료를 다시 찾았습니다.", (d) => d.notice),
-			}),
-			// 왜 못 누르는지만 여기 적는다. 남은 크레딧은 `creditRow` 가 늘 보여 준다.
-			blocked
-				? el("span", {
-						class: "hint",
-						text: left === 0 ? "이 책의 재검색 횟수를 다 썼습니다." : "이달 웹 검색 한도를 다 썼습니다.",
-					})
-				: null,
-		].filter(Boolean));
-	}
-
-	/**
-	 * 남은 웹 검색 크레딧. **버튼을 누를 수 있든 없든 늘 보인다.**
+	 * **책당 검색 횟수는 적지 않는다.** 그것은 크레딧이 새지 않게 서버가 잡아 두는
+	 * 안전장치일 뿐이고, 화면에 "이 책 0 / 6회 남음" 이라고 적어 두면 부모는 그 숫자를
+	 * 아껴야 하는 것으로 읽고 다시 찾기를 망설인다 — 정작 다시 찾을수록 근거가 쌓인다.
 	 *
-	 * 예전에는 이 숫자가 버튼 옆 안내 문구에 섞여 있어서, 정작 한도가 걸려 잠긴 순간에
-	 * 사라졌다 — 부모가 "얼마나 남았나" 를 가장 알고 싶은 때가 그때다. 크레딧은 서비스
-	 * 전체가 나눠 쓰는 이달 예산이고 재검색 횟수는 이 책의 몫이라, 둘을 함께 적는다.
+	 * 크레딧은 다르다. 서비스 전체가 나눠 쓰는 이달 예산이라 보여 준다.
 	 */
 	function creditRow(web) {
 		if (!web?.enabled) {
@@ -511,15 +491,14 @@ export async function bookDetailPage({ id }) {
 
 		const credits = web.creditsLeft ?? 0;
 		const total = web.creditsTotal ?? 0;
-		const left = web.searchesLeft ?? 0;
-		const searches = web.searchesTotal ?? 0;
 
 		return el("p", {
 			// 바닥나면 눈에 걸려야 한다. 넉넉할 때는 곁가지 정보로 조용히 둔다.
-			class: credits < 3 || left === 0 ? "status status--warn" : "hint",
+			class: credits < 3 ? "status status--warn" : "hint",
 			text:
-				`이달 웹 검색 크레딧 ${credits}${total > 0 ? ` / ${total}` : ""} 남음` +
-				` · 이 책 재검색 ${left}${searches > 0 ? ` / ${searches}` : ""}회 남음`,
+				`웹 검색 크레딧 ${credits}${total > 0 ? ` / ${total}` : ""} 남음` +
+				// 잔량을 Tavily 에게 물어보지 못한 경우다. 우리 카운터로 짐작한 값이라고 밝힌다.
+				(web.creditsMeasured === false ? " (짐작)" : ""),
 		});
 	}
 
@@ -551,7 +530,7 @@ export async function bookDetailPage({ id }) {
 		]);
 	}
 
-	function sourcesCard(sources, evidenceWeak, readyForQuiz, web) {
+	function sourcesCard(sources, evidenceWeak, readyForQuiz) {
 		const status = !readyForQuiz
 			? { kind: "warn", text: "자료는 찾았지만 줄거리를 얻지 못했습니다. 이 자료만으로는 문제를 만들 수 없습니다." }
 			: evidenceWeak
@@ -574,8 +553,6 @@ export async function bookDetailPage({ id }) {
 		return el("section", { class: "card" }, [
 			el("h2", { class: "section-title", text: `참고 자료 ${sources.length}건` }),
 			el("p", { class: `status status--${status.kind}`, text: status.text }),
-			creditRow(web),
-			webSearchRow(web),
 			sources.length === 0 ? el("p", { class: "hint", text: "아직 찾은 자료가 없습니다." }) : null,
 			verified.length > 0 ? el("ul", { class: "list" }, verified.map((source) => sourceItem(source))) : null,
 			searched.length > 0
@@ -740,11 +717,7 @@ export async function bookDetailPage({ id }) {
 		busy = kind;
 		// 줄거리 저장은 AI 를 부르지 않는다. 부르지도 않은 것을 기다리라고 하지 않는다.
 		message =
-			kind === "plot"
-				? "저장하는 중입니다."
-				: kind === "web"
-					? "웹에서 자료를 찾는 중입니다."
-					: "잠시만 기다려 주세요. AI 가 작업 중입니다.";
+			kind === "plot" ? "저장하는 중입니다." : "잠시만 기다려 주세요. AI 가 작업 중입니다.";
 		messageKind = "info";
 		await refresh();
 

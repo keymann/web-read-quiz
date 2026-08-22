@@ -7,7 +7,7 @@ import * as bibliographic from "../search/bibliographic";
 import * as tavily from "../search/tavily";
 import * as readingLevel from "../search/reading-level";
 import { research, type BookResearch } from "../search/web";
-import { WEB_SECTION } from "./grounding";
+import { sectionBody, WEB_SECTION } from "./grounding";
 import * as budget from "./search-budget";
 import * as settings from "./settings";
 import type { AppEnv } from "../types";
@@ -446,6 +446,8 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 		isbn: row.isbn13 ?? row.isbn10 ?? "",
 		bib,
 		web,
+		// 다시 찾기면 지난 줄거리를 지우지 말고 보강하게 한다.
+		knownPlot: knownPlot(row),
 	};
 
 	// 웹 검색을 쓸 수 없는 키가 있다(Gemini 무료 등급). 그 경우 조사 자체를 포기하지 말고
@@ -645,23 +647,57 @@ export function cachedWeb(row: BookRow): tavily.WebSource[] {
 }
 
 /**
- * 조사에 쓸 웹 자료. **캐시가 있으면 그것을 쓴다.**
+ * 이번 조사에서 웹 자료를 **새로 찾을 차례인가.**
  *
- * 여기가 크레딧을 지키는 장치다. "정보 다시 찾기" 와 재도전 회차 생성은 조사를 다시 돌리지만
- * 책은 그대로다 — 아이가 5번 재도전한다고 웹을 5번 검색할 이유가 없다.
- * 새로 검색하려면 부모가 재검색을 명시적으로 눌러야 한다(`refreshWeb`).
+ * 웹 검색은 **부모가 "정보 다시 찾기" 를 누를 때만** 일어난다. 이 함수를 지나는 길이 조사
+ * 하나뿐이고(`search` · `relay.planResearch`), 그 조사를 시작하는 것은 그 버튼뿐이다.
+ * 아이의 재도전은 이미 만들어 둔 Brief 로 문항만 채우므로 여기까지 오지 않는다.
+ *
+ * 누른 것이 **다시 찾기인지는 두 시각을 견주어** 안다. 마지막 조사(`searched_at`)보다 웹
+ * 검색(`web_searched_at`)이 새것이면 이번 조사에서 이미 찾은 것이다.
+ *
+ * 이 비교가 필요한 이유는 버튼 한 번이 조사 계획을 여러 번 세울 수 있기 때문이다.
+ *
+ *   * 릴레이는 모델이 응답하지 않으면 다른 모델로 계획을 다시 받는다
+ *   * 무료 등급 Gemini 키는 내장 검색에 429 를 내서, 검색을 끄고 계획을 다시 받는다
+ *
+ * 그때마다 검색하면 부모가 버튼을 한 번 눌렀는데 크레딧이 두세 번 나간다.
+ */
+const shouldSearchWeb = (row: BookRow): boolean => {
+	// 아직 한 번도 조사하지 않은 책. 첫 조사는 늘 한 번 찾는다.
+	if (row.searched_at === null) return row.web_searches === 0;
+	// 이번 조사에서 이미 찾았다.
+	if (row.web_searched_at !== null && row.web_searched_at > row.searched_at) return false;
+	// 책당 상한을 다 썼으면 캐시로 간다.
+	return row.web_searches < budget.MAX_SEARCHES_PER_BOOK;
+};
+
+/**
+ * 조사에 쓸 웹 자료.
+ *
+ * 새로 찾을 차례가 아니면 적어 둔 것을 쓴다. 찾을 차례면 찾아서 **모아 둔 것에 더해**
+ * 돌려준다(`runWebSearch`) — 이번 질의가 못 건졌다고 지난번에 건진 근거를 버릴 이유가 없다.
  */
 export async function prepareWeb(
 	env: AppEnv,
 	userId: string,
 	row: BookRow,
 ): Promise<tavily.WebSource[]> {
-	const cached = cachedWeb(row);
-	if (cached.length > 0) return cached;
-	// 아직 한 번도 안 했을 때만 자동으로 한 번 쓴다.
-	if (row.web_searches > 0) return [];
+	if (!shouldSearchWeb(row)) return cachedWeb(row);
 	return runWebSearch(env, userId, row);
 }
+
+/**
+ * 지금까지 정리해 둔 줄거리. 조사를 다시 돌릴 때 모델에게 되돌려 준다.
+ *
+ * 이걸 안 넘기면 다시 찾기가 지난 줄거리를 통째로 새 결과로 갈아 끼운다. 이번 자료가 지난
+ * 자료보다 얇으면 줄거리가 오히려 짧아진다 — 부모가 다시 찾기를 누른 뜻과 반대다.
+ *
+ * 자료를 모아 두므로(위) 지난 줄거리의 근거가 된 페이지도 프롬프트에 그대로 남아 있다.
+ * 그래서 "자료에 있는 것만" 이라는 요구를 지키면서 보강할 수 있다.
+ */
+export const knownPlot = (row: BookRow): string =>
+	row.brief ? sectionBody(row.brief, "[줄거리]") : "";
 
 async function runWebSearch(
 	env: AppEnv,
@@ -680,124 +716,24 @@ async function runWebSearch(
 		row.web_searches,
 	);
 
-	// 빈손이어도 횟수는 센다. 안 세면 자료 없는 책에서 매 조사마다 크레딧을 쓴다.
+	/*
+	 * 찾아 둔 자료에 **더한다.** 갈아 끼우지 않는다.
+	 *
+	 * 질의 사다리가 시도마다 다른 말로 물으므로 검색마다 걸리는 페이지가 다르다. 새것으로
+	 * 덮으면 지난번에 건진 독후감을 잃고, 그만큼 줄거리를 정리할 밑감이 줄어든다. 부모가
+	 * 다시 찾기를 누르는 뜻은 "더 모아 달라" 이다.
+	 */
+	const pooled = tavily.merge(cachedWeb(row), found);
+
+	// 빈손이어도 횟수와 시각은 남긴다. 안 남기면 자료 없는 책에서 같은 조사가 크레딧을
+	// 두 번 쓴다(모델 교체·내장 검색 429 로 조사 계획을 다시 세울 때).
 	await booksRepo.update(env, userId, row.id, {
 		web_searches: row.web_searches + 1,
-		...(found.length > 0 ? { web_cache: JSON.stringify(found) } : {}),
+		web_searched_at: new Date().toISOString(),
+		...(pooled.length > 0 ? { web_cache: JSON.stringify(pooled) } : {}),
 	});
 
-	return found;
-}
-
-/** 웹 자료를 참고 자료 행으로. 재검색과 조사 반영이 같은 모양을 쓰게 한다. */
-const webRows = (bookId: string, sources: tavily.WebSource[]): booksRepo.NewSource[] =>
-	sources.map((source) => ({
-		id: newId(),
-		bookId,
-		source: "web",
-		url: source.url,
-		title: source.title,
-		content: source.content,
-	}));
-
-export interface WebSearchResult {
-	sourceCount: number;
-	/** 이 책이 웹 검색을 더 쓸 수 있는 횟수. 화면에 그대로 보여준다. */
-	searchesLeft: number;
-	/** 이달 서비스 전체가 더 쓸 수 있는 크레딧. */
-	creditsLeft: number;
-	notice: string | null;
-}
-
-/**
- * 부모가 누르는 재검색. **크레딧을 쓰는 유일한 사용자 조작**이다.
- *
- * 두 겹으로 막는다 — 책당 횟수(`MAX_SEARCHES_PER_BOOK`)와 월 예산(`MONTHLY_CAP`).
- * 월 예산만으로는 한 부모가 한 책에 수십 번 눌러 전체를 말릴 수 있다.
- */
-export async function refreshWeb(
-	env: AppEnv,
-	userId: string,
-	bookId: string,
-): Promise<WebSearchResult> {
-	const row = await requireOwned(env, userId, bookId);
-	if (!row.title || row.title === "(분석 전)") {
-		throw invalid("먼저 책 정보를 분석하거나 제목을 입력해 주세요.");
-	}
-	if (budget.slots(env).length === 0) throw invalid("웹 검색을 쓸 수 없습니다.");
-
-	if (row.web_searches >= budget.MAX_SEARCHES_PER_BOOK) {
-		throw invalid(
-			`이 책의 웹 검색 횟수를 다 썼습니다 (${budget.MAX_SEARCHES_PER_BOOK}회). 줄거리를 직접 적어 주시면 문제를 만들 수 있습니다.`,
-		);
-	}
-
-	const before = cachedWeb(row);
-	const found = await runWebSearch(env, userId, row);
-	const updated = await requireOwned(env, userId, bookId);
-
-	// 새 결과가 없으면 이전 캐시를 지우지 않는다(`runWebSearch` 가 덮지 않는다).
-	const kept = found.length > 0 ? found : before;
-	// 참고 자료로 올릴 것과 프롬프트에 실을 것은 다르다 — 목록에는 줄거리를 다룬 자료만 올린다.
-	const relevant = tavily.plotRelated(kept, row.title);
-
-	/*
-	 * 찾은 자료를 **참고 자료에도 바로 넣는다.**
-	 *
-	 * 이걸 빼먹으면 부모는 "20건 찾았습니다" 를 보고 목록은 0건인 화면을 본다(실제로 겪었다).
-	 * 참고 자료가 채워지는 곳이 조사 반영(`applyResearch`) 하나뿐이었기 때문이다.
-	 *
-	 * 웹 행만 갈아 끼운다. 서지 API 로 얻은 행은 이 검색과 무관하므로 건드리지 않는다.
-	 */
-	if (found.length > 0) {
-		const existing = await booksRepo.listSources(env, bookId);
-		// 순서는 조사 반영과 같은 규칙을 쓴다 — 카카오 책 → 알라딘 → 웹 검색.
-		await booksRepo.replaceSources(
-			env,
-			bookId,
-			orderSources([
-				...existing
-					.filter((s) => s.source !== "web")
-					.map((s) => ({
-						id: s.id,
-						bookId,
-						source: s.source,
-						url: s.url,
-						title: s.title,
-						content: s.content,
-					})),
-				...webRows(bookId, relevant),
-			]),
-		);
-	}
-
-	const creditsLeft = await budget.remaining(env);
-
-	return {
-		// 목록에 실제로 남는 수를 알린다. "20건 찾았습니다" 를 보고 6건인 목록을 보면
-		// 저장이 고장 난 것처럼 읽힌다.
-		sourceCount: relevant.length,
-		searchesLeft: Math.max(0, budget.MAX_SEARCHES_PER_BOOK - updated.web_searches),
-		creditsLeft,
-		/*
-		 * 무엇이 없는지를 정확히 말한다. 셋은 부모가 할 일이 다르다.
-		 *
-		 *   크레딧이 없음         → 이달에는 다시 눌러도 소용없다
-		 *   자료를 아예 못 찾음    → 줄거리를 직접 적어야 한다
-		 *   줄거리가 없는 자료뿐   → 판매·목록 페이지만 걸렸다. 역시 직접 적어야 한다
-		 *
-		 * 판정은 **이번 검색이 건진 것**으로 한다. 이전에 찾아 둔 자료가 남아 있어도 이번
-		 * 검색이 빈손이면 그 사실을 알려야 한다 — 부모는 방금 누른 버튼의 결과를 묻고 있다.
-		 */
-		notice:
-			found.length > 0 && relevant.length > 0
-				? null
-				: creditsLeft === 0
-					? "이달 웹 검색 한도를 다 썼습니다. 다음 달에 다시 시도하거나 줄거리를 직접 적어 주세요."
-					: found.length === 0
-						? "웹에서 이 책을 다룬 자료를 찾지 못했습니다. 줄거리를 직접 적어 주시면 문제를 만들 수 있습니다."
-						: "찾은 페이지가 판매·목록 정보뿐이어서 참고 자료로 올리지 않았습니다. 줄거리를 직접 적어 주시면 문제를 만들 수 있습니다.",
-	};
+	return pooled;
 }
 
 /** 적어 둔 서지 결과만 읽는다. 없으면 빈 배열 — 외부를 부르지 않는다. */
@@ -1031,26 +967,82 @@ async function guessReadingLevel(
 	await booksRepo.update(env, userId, row.id, { ...fields, reading_level_source: "ai" });
 }
 
+/**
+ * AI 가 표지에서 읽어 넣은 값. **부모가 고친 값과 가려내는 데 쓴다.**
+ *
+ * `applyIdentity` 가 원본을 그대로 남겨 두기 때문에 지금 칸에 든 값이 그것과 같은지 견줄 수
+ * 있다. 같으면 부모가 손대지 않은 것이고, 다르면 부모가 고쳤거나 이미 서지로 확인한 값이다.
+ */
+function aiRead(row: BookRow): { author: string; publisher: string; isbn: string } {
+	const empty = { author: "", publisher: "", isbn: "" };
+	if (!row.ai_extracted) return empty;
+
+	try {
+		const parsed = JSON.parse(row.ai_extracted) as {
+			author?: unknown;
+			publisher?: unknown;
+			isbn?: unknown;
+		};
+		const text = (value: unknown): string => (typeof value === "string" ? value : "");
+		return {
+			author: text(parsed.author),
+			publisher: text(parsed.publisher),
+			// 저장할 때 자릿수만 남겼으므로 견줄 때도 같은 모양으로 만든다.
+			isbn: bibliographic.normalizeIsbn(text(parsed.isbn)),
+		};
+	} catch {
+		return empty;
+	}
+}
+
+/**
+ * 빈 칸을 채우고, **AI 가 짐작한 값은 갱신한다.**
+ *
+ * 예전에는 값이 들어 있으면 무조건 지켰다. 그래서 AI 가 표지에서 지은이를 잘못 읽으면
+ * "정보 다시 찾기" 를 몇 번 눌러도 그 값이 영영 남았다 — 서지 API 가 맞는 값을 물어다 줘도
+ * 들어갈 자리가 없었다. 부모가 그것을 알아채고 손으로 고치는 수밖에 없었다.
+ *
+ * 그래서 셋으로 가른다.
+ *
+ *   빈 칸                  → 찾은 값으로 채운다
+ *   AI 가 표지에서 읽은 값  → 찾은 값으로 **갈아 끼운다** (서지 쪽이 검증된 값이다)
+ *   그 밖의 값             → 지킨다. 부모가 고친 값이거나 이미 확인한 값이다
+ *
+ * 부모가 고친 값을 지키는 것이 이 함수의 가장 중요한 약속이다. 화면의 찾기 버튼이 누르는
+ * 순간 입력값을 먼저 저장하므로, 부모가 방금 적어 넣은 값도 여기서 지켜진다.
+ */
 function mergeMetadata(
 	row: BookRow,
 	bib: bibliographic.BibRecord | null,
 	found: BookResearch | null,
 ): booksRepo.BookFields {
-	const pick = (current: string | null, ...candidates: string[]): string | null =>
-		current || candidates.find((value) => value.trim() !== "") || null;
+	const ai = aiRead(row);
+
+	const pick = (
+		current: string | null,
+		/** 이 칸에 AI 가 넣어 둔 값. 빈 문자열이면 AI 가 넣은 것이 아니다. */
+		aiValue: string,
+		...candidates: string[]
+	): string | null => {
+		const candidate = candidates.find((value) => value.trim() !== "") ?? "";
+		if (!current) return candidate || null;
+		if (aiValue !== "" && current === aiValue) return candidate || current;
+		return current;
+	};
 
 	/*
 	 * 읽기 난이도(ar_*·lexile)는 여기서 다루지 않는다. 조사 모델에게 묻지 않고
-	 * `fillReadingLevel` 이 전용 검색으로 따로 채운다 — 추측한 값이 근거 있는 값을
+	 * `ensureReadingLevel` 이 전용 검색으로 따로 채운다 — 추측한 값이 근거 있는 값을
 	 * 밀어내지 않도록 출처를 하나로 둔다.
 	 */
 	return {
-		author: pick(row.author, bib?.author ?? "", found?.author ?? ""),
-		publisher: pick(row.publisher, bib?.publisher ?? "", found?.publisher ?? ""),
-		isbn13: pick(row.isbn13, bib?.isbn13 ?? "", found?.isbn13 ?? ""),
-		published_at: pick(row.published_at, bib?.publishedAt ?? "", found?.publishedAt ?? ""),
-		description: pick(row.description, found?.description ?? "", bib?.description ?? ""),
-		book_language: pick(row.book_language, found?.bookLanguage ?? ""),
+		author: pick(row.author, ai.author, bib?.author ?? "", found?.author ?? ""),
+		publisher: pick(row.publisher, ai.publisher, bib?.publisher ?? "", found?.publisher ?? ""),
+		isbn13: pick(row.isbn13, ai.isbn, bib?.isbn13 ?? "", found?.isbn13 ?? ""),
+		// 아래 셋은 AI 가 표지에서 읽는 값이 아니다. 빈 칸만 채운다.
+		published_at: pick(row.published_at, "", bib?.publishedAt ?? "", found?.publishedAt ?? ""),
+		description: pick(row.description, "", found?.description ?? "", bib?.description ?? ""),
+		book_language: pick(row.book_language, "", found?.bookLanguage ?? ""),
 	};
 }
 

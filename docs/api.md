@@ -82,10 +82,9 @@
 | PUT | `/api/books/:id/cover` | PARENT | ✅ 브라우저가 돌린 표지로 갈아 끼우기(multipart) |
 | POST | `/api/books/:id/orient` | PARENT | ✅ 표지가 누워 있는지 판정 → `coverRotation` |
 | POST | `/api/books/:id/analyze` | PARENT | ✅ Vision 으로 제목/저자/출판사/ISBN 추출 |
-| POST | `/api/books/:id/search` | PARENT | ✅ 웹 검색으로 책 정보 보강 + `book_sources` 적재 |
+| POST | `/api/books/:id/search` | PARENT | ✅ 웹 검색으로 책 정보 보강 + `book_sources` 적재 (크레딧을 쓴다) |
 | PATCH | `/api/books/:id` | PARENT | ✅ 부모가 책 정보 직접 수정 (AI 오인식 보정) |
 | PUT | `/api/books/:id/plot` | PARENT | ✅ 부모가 직접 적은 줄거리 저장 → Brief 재조립 |
-| POST | `/api/books/:id/web-search` | PARENT | ✅ 부모가 누르는 웹 자료 재검색 (크레딧을 쓴다) |
 | DELETE | `/api/books/:id` | PARENT | ✅ 책과 그 책에서 나온 기록 전부 삭제 |
 | GET | `/api/books/:id/history` | PARENT | 이 책의 퀴즈·풀이 이력 |
 
@@ -113,21 +112,59 @@ question_answers · KV 의 표지 이미지
 화면은 지우기 전에 무엇이 사라지는지 알리고 취소할 기회를 준다(`confirmDialog`). 책 화면에서
 지우면 책장으로 돌아간다.
 
-### 웹 검색 예산은 화면이 늘 보여 준다
+### 정보 찾기가 웹 검색까지 맡는다
 
-`GET /api/books/:id` 의 `web` 이 재검색 버튼에 필요한 것을 모두 싣는다.
+버튼이 하나다. `POST /api/books/:id/search` 가 서지 조회 · 웹 검색 · AI 조사를 함께 한다.
+예전에는 `POST :id/web-search` 가 따로 있었는데, 부모에게는 한 가지 일이라 버튼이 둘이면
+어느 것을 눌러야 근거가 늘어나는지 알 수 없었다.
+
+**웹 검색을 다시 돌리는 조건**은 시각 두 개를 견주어 정한다(`shouldSearchWeb`).
+
+웹 검색은 **부모가 이 버튼을 누를 때만** 일어난다. 조사를 시작하는 길이 이 버튼뿐이고,
+아이의 재도전은 이미 만들어 둔 Brief 로 문항만 채워 여기까지 오지 않는다.
+
+| 상황 | 웹 검색 |
+| --- | --- |
+| 첫 조사 (`searched_at` 이 null) | 한 번 한다 |
+| 정보 다시 찾기 | 한다. 질의 사다리가 한 칸 올라가고, 찾은 것을 **모아 둔 것에 더한다** |
+| 같은 조사 안에서 계획을 다시 세울 때 | **하지 않는다** (`web_searched_at` > `searched_at`) |
+| 책당 상한(6회)을 다 썼을 때 | 하지 않는다. 모아 둔 자료를 쓴다 |
+
+세 번째 줄이 `web_searched_at`(0017)이 있는 이유다. 한 번의 조사가 조사 계획을 여러 번
+세울 수 있다 — 릴레이는 모델이 응답하지 않으면 다시 받고, 무료 등급 Gemini 키는 내장 검색에
+429 를 내서 검색을 끄고 다시 받는다. 그때마다 검색하면 부모가 버튼을 한 번 눌렀는데 크레딧이
+두세 번 나간다.
+
+### 남은 크레딧은 Tavily 에게 묻는다
+
+`GET /api/books/:id` 의 `web` 이 그 버튼 옆에 적을 것을 모두 싣는다.
 
 ```jsonc
 {
   "web": {
-    "enabled": true,        // Tavily 키가 하나라도 설정돼 있는가
-    "searchesLeft": 4,      // 이 책이 더 쓸 수 있는 재검색 횟수
-    "searchesTotal": 6,     // MAX_SEARCHES_PER_BOOK
-    "creditsLeft": 812,     // 이달 서비스 전체가 더 쓸 수 있는 크레딧
-    "creditsTotal": 950     // 설정된 키 수 × MONTHLY_CAP
+    "enabled": true,          // Tavily 키가 하나라도 설정돼 있는가
+    "creditsLeft": 3899,      // 이달 서비스 전체가 더 쓸 수 있는 크레딧
+    "creditsTotal": 4000,     // 계정마다 물어 합친 한도
+    "creditsMeasured": true   // false 면 우리 카운터로 짐작한 값이다
   }
 }
 ```
+
+**책당 검색 횟수(`web_searches`)는 내려보내지 않는다.** 그것은 크레딧이 새지 않게 서버가
+잡아 두는 안전장치이고 부모가 조작할 것이 없다. 화면에 "이 책 0 / 6회 남음" 이라고 적어 두면
+부모는 그 숫자를 아껴야 하는 것으로 읽고 다시 찾기를 망설인다 — 정작 다시 찾을수록 근거가
+쌓인다.
+
+**우리 카운터를 보여 주지 않는다.** 그 값은 막는 데 쓰는 값이라 실제와 어긋난다 — KV 경쟁으로
+새고, 이 앱 바깥에서 같은 키를 쓰면 아예 세지 못하고, 실패한 호출에 잡아 둔 크레딧도 돌려주지
+않는다. 2026-08-22 실측에서 우리 표시는 한도가 3,800 이라고 했지만 실제 한도는 네 계정 ×
+1,000 = **4,000** 이었고 그때까지 쓴 것은 101 크레딧이었다.
+
+그래서 `GET https://api.tavily.com/usage` 로 계정마다 묻는다. 이 호출은 **크레딧을 쓰지
+않는다**(같은 키로 세 번 불러 `usage` 가 움직이지 않는 것을 확인했다). 다만 실측 1.0~1.6초가
+걸려서 **응답을 붙잡지 않는다** — 들고 있던 값을 바로 내주고, 5분보다 묵었으면 `waitUntil` 로
+뒤에서 다시 묻는다. 한 번도 못 물어본 상태에서만 카운터로 짐작한 값이 나가고, 그때는
+`creditsMeasured` 가 false 다.
 
 남은 크레딧은 **버튼을 누를 수 있든 없든 늘 보인다.** 예전에는 버튼 옆 안내 문구에 섞여
 있어서 정작 한도가 걸려 잠긴 순간에 사라졌다 — 부모가 "얼마나 남았나"를 가장 알고 싶은

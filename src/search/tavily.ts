@@ -224,6 +224,47 @@ export function mentionsPlot(source: WebSource): boolean {
 }
 
 /**
+ * 모아 둘 자료의 상한.
+ *
+ * 검색 한 번이 20건을 물어다 주고 책당 여섯 번까지 쓸 수 있으므로, 그냥 쌓으면 120건이
+ * 된다. 발췌가 소스당 2,000자라 그것만 240KB 다 — 조사와 문제 생성이 그 행을 매번 읽는다.
+ *
+ * 스물넷이면 프롬프트에 싣는 수(10)의 두 배가 넘어 고를 여유가 충분하고, 크기는 50KB 아래에
+ * 머문다.
+ */
+const MAX_POOL = 24;
+
+/**
+ * 찾아 둔 자료에 새로 찾은 것을 **더한다.** 갈아 끼우지 않는다.
+ *
+ * 질의 사다리가 시도마다 다른 말로 묻기 때문에 검색마다 걸리는 페이지가 다르다. 새것으로
+ * 덮으면 지난번에 건진 독후감을 잃고, 그만큼 줄거리를 정리할 밑감이 줄어든다. 부모가 다시
+ * 찾기를 누르는 뜻은 "더 모아 달라" 이지 "다시 골라 달라" 가 아니다.
+ *
+ * 순서가 곧 프롬프트에 실릴 순서다. **줄거리를 다루는 글을 앞에 세우고** 그 안에서 관련도로
+ * 줄 세운다. 판매 페이지가 관련도만 높아 앞자리를 차지하는 일을 막는다.
+ *
+ * 같은 주소는 한 번만. 새로 받은 발췌를 남긴다 — 페이지가 그동안 늘어났을 수 있다.
+ */
+export function merge(kept: WebSource[], incoming: WebSource[]): WebSource[] {
+	const seen = new Set<string>();
+	const pooled: WebSource[] = [];
+
+	for (const source of [...incoming, ...kept]) {
+		if (seen.has(source.url)) continue;
+		seen.add(source.url);
+		pooled.push(source);
+	}
+
+	return pooled
+		.sort((a, b) => {
+			const byPlot = Number(mentionsPlot(b)) - Number(mentionsPlot(a));
+			return byPlot !== 0 ? byPlot : b.score - a.score;
+		})
+		.slice(0, MAX_POOL);
+}
+
+/**
  * 참고 자료로 올릴 만한 것만 남긴다 — **찾던 책이고, 그 내용을 다루는** 자료.
  *
  * 프롬프트에 싣는 자료는 이걸로 줄이지 않는다. 거기서는 모델이 발췌를 대조해 걸러내고,

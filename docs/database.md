@@ -77,6 +77,12 @@ question_validations → question_histories → question_versions → questions
 정할 수 있다. 열한 문장을 한 `batch` 로 보내므로 왕복은 한 번이고, 중간에 실패하면 전부
 되돌아간다. 표지 이미지는 D1 이 아니라 KV 에 있어 **행이 지워진 뒤에** 지운다.
 
+### `web_searched_at` (0017)
+
+웹 자료를 마지막으로 찾은 시각. `searched_at` 과 견주어 **이번 조사에서 이미 찾았는지**를
+가린다. 한 번의 조사가 조사 계획을 여러 번 세울 수 있어(릴레이의 모델 교체, 무료 등급 Gemini
+키의 내장 검색 429) 그때마다 검색하면 부모가 버튼을 한 번 눌렀는데 크레딧이 두세 번 나간다.
+
 ## 시간 표기
 
 모든 시각 컬럼은 ISO8601 UTC 문자열이다. 기본값은 `strftime('%Y-%m-%dT%H:%M:%fZ','now')`.

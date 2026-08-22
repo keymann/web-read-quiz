@@ -13,7 +13,12 @@ import type { AppEnv } from "../types";
  * 개발·확인용 호출이 부모의 조사를 굶기지 않게 하는 것이다.
  */
 
-/** 무료 등급 한도(계정당). 참고용 — 실제로 막는 값은 아래 `MONTHLY_CAP` 이다. */
+/**
+ * 무료 등급 한도(계정당). 참고용 — 실제로 **막는** 값은 아래 `MONTHLY_CAP` 이다.
+ *
+ * 2026-08-22 에 Tavily `GET /usage` 로 네 계정을 모두 확인했다. 넷 다 `current_plan:
+ * "Researcher"` · `plan_limit: 1000` 이었다.
+ */
 export const FREE_TIER_CREDITS = 1_000;
 
 /** 키 하나가 한 달에 쓸 수 있는 크레딧. 여유 50 을 남긴다. */
@@ -79,6 +84,152 @@ export async function remaining(env: AppEnv): Promise<number> {
 		slots(env).map(async (slot) => Math.max(0, MONTHLY_CAP - (await spentOn(env, slot.index, month)))),
 	);
 	return left.reduce((total, value) => total + value, 0);
+}
+
+/* ── 실제 잔량은 Tavily 에게 묻는다 ──────────────────── */
+
+/**
+ * 부모에게 보여줄 잔량은 **우리 카운터가 아니라 Tavily 가 아는 값**이다.
+ *
+ * 카운터는 막는 데 쓰는 값이라 실제와 어긋날 수밖에 없다. KV 는 read-modify-write 가
+ * 원자적이지 않아 새고, 이 앱 바깥에서 같은 키를 쓰면 아예 세지 못한다. 실패한 호출에
+ * 잡아 둔 크레딧도 돌려주지 않는다 — 많이 세는 쪽이 안전하기 때문이다.
+ *
+ * 그 값을 화면에 "남은 크레딧" 이라고 적으면 부모가 대시보드에서 보는 숫자와 다르다.
+ * 2026-08-22 실측: 우리 표시는 한도가 3,800 이라고 했지만 실제 한도는 네 계정 × 1,000 =
+ * **4,000** 이었고, 그때까지 실제로 쓴 것은 101 크레딧이었다.
+ *
+ * `GET /usage` 는 **크레딧을 쓰지 않는다.** 같은 키로 세 번 불러 `usage` 가 1 에서
+ * 움직이지 않는 것을 확인했다.
+ */
+const USAGE_ENDPOINT = "https://api.tavily.com/usage";
+
+/** 한 계정에 묻는 시간. 실측 1.0~1.6초라 여유를 두고 끊는다. */
+const USAGE_TIMEOUT_MS = 4_000;
+
+/**
+ * 조회 결과를 들고 있는 시간과, **다시 물어볼 때가 됐다고 보는 시간.**
+ *
+ * 책 화면을 열 때마다 물으면 키 수만큼 왕복이 붙는다 — 실측 1.5초다. 그래서 화면은
+ * **들고 있던 값을 바로 내주고**, 그것이 5분보다 묵었으면 응답과 무관하게 뒤에서 다시 묻는다.
+ * 크레딧은 초 단위로 변하는 값이 아니라 몇 분 묵은 숫자로도 충분하다.
+ *
+ * 들고 있는 시간을 훨씬 길게 두는 이유: 그 사이에는 부모가 기다리는 일이 없다. 짧게 두면
+ * 만료된 순간에 걸린 부모가 카운터로 짐작한 숫자를 보게 된다.
+ */
+const USAGE_CACHE_KEY = "tavily:usage";
+const USAGE_TTL = 6 * 60 * 60;
+const USAGE_STALE_MS = 5 * 60 * 1000;
+
+export interface Usage {
+	/** 이달 쓴 크레딧. */
+	used: number;
+	/** 이달 쓸 수 있는 크레딧. */
+	limit: number;
+	/** Tavily 에게 물어 얻은 값인지. false 면 우리 카운터로 짐작한 값이다. */
+	measured: boolean;
+}
+
+/** 캐시에 적어 두는 모양. 언제 물어본 값인지 함께 남긴다. */
+interface CachedUsage extends Usage {
+	/** 물어본 시각(ms). 이것으로 다시 물을 때를 정한다. */
+	at: number;
+}
+
+interface UsageResponse {
+	account?: { plan_usage?: unknown; plan_limit?: unknown };
+}
+
+const num = (value: unknown): number | null =>
+	typeof value === "number" && Number.isFinite(value) ? value : null;
+
+/** 키 하나가 딸린 계정의 사용량. 못 물어보면 null. */
+async function askUsage(key: string): Promise<{ used: number; limit: number } | null> {
+	try {
+		const response = await fetch(USAGE_ENDPOINT, {
+			headers: { authorization: `Bearer ${key}` },
+			signal: AbortSignal.timeout(USAGE_TIMEOUT_MS),
+		});
+		if (!response.ok) return null;
+
+		const payload = (await response.json()) as UsageResponse;
+		const used = num(payload.account?.plan_usage);
+		const limit = num(payload.account?.plan_limit);
+		return used === null || limit === null ? null : { used, limit };
+	} catch {
+		return null;
+	}
+}
+
+/** 우리 카운터로 짐작한 값. Tavily 에게 못 물어봤을 때 쓴다. */
+async function guessed(env: AppEnv): Promise<Usage> {
+	return { used: await spent(env), limit: slots(env).length * MONTHLY_CAP, measured: false };
+}
+
+const readCache = async (env: AppEnv): Promise<CachedUsage | null> => {
+	const raw = await env.SESSIONS.get(USAGE_CACHE_KEY);
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw) as CachedUsage;
+		return num(parsed.used) === null || num(parsed.limit) === null ? null : parsed;
+	} catch {
+		return null;
+	}
+};
+
+/**
+ * 실제로 물어 캐시에 적는다. **부모를 기다리게 하지 않는 자리에서 부른다**(`waitUntil`).
+ *
+ * 키마다 딸린 계정에 나란히 묻고 합친다. 못 물어본 키는 우리 카운터로 메운다 — 한 키가
+ * 응답하지 않는다고 전체 숫자를 감추면 부모는 얼마 남았는지 알 수 없다.
+ *
+ * 키를 **같은 계정에서 두 개 발급하면 그 계정이 두 번 세어진다.** 응답에 계정을 가릴 값이
+ * 없어 여기서는 걸러낼 수 없다. 키마다 다른 계정을 쓰는 것이 이 설계의 전제다(§8-1).
+ */
+export async function refreshUsage(env: AppEnv, now = Date.now()): Promise<Usage> {
+	const configured = slots(env);
+	if (configured.length === 0) return { used: 0, limit: 0, measured: false };
+
+	const month = currentMonth();
+	const perKey = await Promise.all(
+		configured.map(async (slot) => {
+			const asked = await askUsage(slot.key);
+			if (asked) return { ...asked, measured: true };
+			return { used: await spentOn(env, slot.index, month), limit: MONTHLY_CAP, measured: false };
+		}),
+	);
+
+	const total: Usage = {
+		used: perKey.reduce((sum, one) => sum + one.used, 0),
+		limit: perKey.reduce((sum, one) => sum + one.limit, 0),
+		// 하나라도 짐작이 섞였으면 measured 가 아니다. 화면이 그 사실을 적을 수 있어야 한다.
+		measured: perKey.every((one) => one.measured),
+	};
+
+	await env.SESSIONS.put(USAGE_CACHE_KEY, JSON.stringify({ ...total, at: now }), {
+		expirationTtl: USAGE_TTL,
+	});
+	return total;
+}
+
+/**
+ * 화면에 보여줄 잔량. **외부를 부르지 않는다.**
+ *
+ * 들고 있던 값을 그대로 내주고, 다시 물을 때가 됐는지를 `stale` 로 알린다. 부르는 쪽이
+ * 그것을 보고 `waitUntil` 로 갱신을 맡기면 부모는 기다리지 않는다.
+ */
+export async function usage(
+	env: AppEnv,
+	now = Date.now(),
+): Promise<Usage & { stale: boolean }> {
+	if (slots(env).length === 0) return { used: 0, limit: 0, measured: false, stale: false };
+
+	const cached = await readCache(env);
+	if (cached) {
+		return { ...cached, stale: now - cached.at > USAGE_STALE_MS };
+	}
+	// 아직 한 번도 못 물어봤다. 짐작한 값을 내주고 갱신을 맡긴다.
+	return { ...(await guessed(env)), stale: true };
 }
 
 // 다음 달로 넘어가면 자연히 사라지도록 넉넉한 TTL. 최장 32일.

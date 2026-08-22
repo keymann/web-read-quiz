@@ -309,6 +309,27 @@ export async function quizReviewPage({ id }) {
 		return minutes > 0 ? `${minutes}분 ${seconds % 60}초째` : `${seconds}초째`;
 	}
 
+	/**
+	 * 진행 상황을 **한 줄로** 적는다.
+	 *
+	 * 예전에는 단계·멈추는 중·곁가지 소식이 각자 한 줄씩 차지했다. 그래서 단계 줄과 저장된
+	 * 문항 수 줄 사이가 상태에 따라 벌어졌다 좁아졌다 했고, 그 사이에 빈 자리가 남았다.
+	 * 지금은 **상태가 바뀔 때마다 이 한 줄의 문구를 갈아 끼운다.**
+	 *
+	 * 앞자리를 차지하는 순서가 곧 급한 순서다.
+	 *
+	 *   1. 멈추는 중       — 부모가 방금 누른 것이라 가장 먼저 알아야 한다
+	 *   2. 곁가지 소식     — 재시도·모델 교체. 지금 무엇에 걸려 있는지를 말한다
+	 *   3. 단계            — 그 밖에는 지금 하고 있는 일
+	 */
+	function progressLine(state, cancelling) {
+		const text = cancelling
+			? "멈추는 중이에요. 하던 요청이 끝나면 멈춥니다."
+			: (state.note ?? phaseText(state));
+
+		return el("p", { class: "status status--warn", text: `${text} · ${elapsedText()}` });
+	}
+
 	function statusCard(quiz, progress, assignments) {
 		if (relayProgress !== null) {
 			const done = relayProgress.accepted ?? 0;
@@ -316,37 +337,34 @@ export async function quizReviewPage({ id }) {
 
 			return el("section", { class: "card" }, [
 				el("h2", { class: "section-title", text: "문제를 만드는 중이에요" }),
-				el("p", { class: "status status--warn", text: `${phaseText(relayProgress)} · ${elapsedText()}` }),
-				stopRequested ? el("p", { class: "hint", text: "멈추는 중이에요." }) : null,
-				relayProgress.note ? el("p", { class: "hint", text: relayProgress.note }) : null,
-				el("progress", { class: "progress", value: done, max: total || 1 }),
-				el("p", { class: "hint", text: `${done} / ${total} 문제 저장됨` }),
+				// 한 줄 · 막대 · 저장된 수를 한 덩어리로 묶는다. 사이에 빈 자리를 두지 않는다.
+				el("div", { class: "progress-block" }, [
+					progressLine(relayProgress, stopRequested),
+					el("progress", { class: "progress", value: done, max: total || 1 }),
+					el("p", { class: "hint", text: `${done} / ${total} 문제 저장됨` }),
+				]),
 				el("p", {
 					class: "hint",
 					text: "이 화면을 닫으면 중간에 멈춥니다. 1~2분 걸릴 수 있어요.",
 				}),
-			].filter(Boolean));
+			]);
 		}
 
 		if (quiz.status === "GENERATING") {
 			const percent = Math.round((progress.generated / progress.total) * 100);
 			return el("section", { class: "card" }, [
 				el("h2", { class: "section-title", text: "문제를 만드는 중이에요" }),
-				el("p", {
-					class: "status status--warn",
+				el("div", { class: "progress-block" }, [
 					// 서버가 적어 둔 단계를 그대로 문장으로 옮긴다. 예전에는 한 줄이 고정이라
 					// 30초 내내 같은 글자만 떠 있었고, 그러면 멈춘 것처럼 보인다.
-					text: `${phaseText({ phase: quiz.phase })} · ${elapsedText()}`,
-				}),
-				stopRequested || quiz.cancelRequested
-					? el("p", { class: "hint", text: "멈추는 중이에요. 하던 요청이 끝나면 멈춥니다." })
-					: null,
-				// CSP 가 인라인 style 을 막으므로 폭을 직접 계산해 넣을 수 없다.
-				// 네이티브 <progress> 는 값만 주면 되고 접근성도 따라온다.
-				el("progress", { class: "progress", value: progress.generated, max: progress.total }),
-				el("p", { class: "hint", text: `${progress.generated} / ${progress.total} 문제 (${percent}%)` }),
+					progressLine({ phase: quiz.phase }, stopRequested || quiz.cancelRequested),
+					// CSP 가 인라인 style 을 막으므로 폭을 직접 계산해 넣을 수 없다.
+					// 네이티브 <progress> 는 값만 주면 되고 접근성도 따라온다.
+					el("progress", { class: "progress", value: progress.generated, max: progress.total }),
+					el("p", { class: "hint", text: `${progress.generated} / ${progress.total} 문제 (${percent}%)` }),
+				]),
 				el("p", { class: "hint", text: "1~2분 걸릴 수 있어요. 이 화면을 열어 두세요." }),
-			].filter(Boolean));
+			]);
 		}
 
 		const complete = progress.generated >= progress.total;

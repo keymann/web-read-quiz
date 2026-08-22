@@ -34,6 +34,7 @@ async function detail({ env, principal, params }: RouteCtx): Promise<Response> {
 	const parent = requireParent(principal);
 	const row = await book.requireOwned(env, parent.userId, params.id!);
 	const sources = await booksRepo.listSources(env, row.id);
+	const keys = budget.slots(env).length;
 
 	return ok({
 		book: book.toView(row),
@@ -45,9 +46,14 @@ async function detail({ env, principal, params }: RouteCtx): Promise<Response> {
 		// 재검색 버튼이 남은 횟수를 보여줄 수 있게 함께 내린다. 크레딧을 쓰는 조작이므로
 		// 누르기 전에 몇 번 남았는지 알아야 한다.
 		web: {
-			enabled: budget.slots(env).length > 0,
+			enabled: keys > 0,
 			searchesLeft: Math.max(0, budget.MAX_SEARCHES_PER_BOOK - row.web_searches),
 			creditsLeft: await budget.remaining(env),
+			// 남은 크레딧만 보여 주면 그것이 많은 수인지 적은 수인지 알 수 없다. 이달 한도를
+			// 함께 내려 화면이 "320 / 950 남음" 으로 적을 수 있게 한다.
+			creditsTotal: keys * budget.MONTHLY_CAP,
+			/** 이 책이 웹 검색을 쓸 수 있는 총 횟수. 화면이 "2 / 6회" 로 적는다. */
+			searchesTotal: budget.MAX_SEARCHES_PER_BOOK,
 		},
 	});
 }
@@ -115,6 +121,18 @@ async function search({ env, principal, params }: RouteCtx): Promise<Response> {
 	return ok(await book.search(env, parent.userId, params.id!));
 }
 
+/**
+ * 책을 지운다. **그 책에서 나온 기록까지 함께 사라진다.**
+ *
+ * 무엇이 사라지는지는 서비스·리포지토리가 정하고, 여기서는 소유 확인만 거쳐 넘긴다.
+ * 되돌릴 수 없는 조작이므로 화면이 먼저 부모에게 알리고 확인을 받는다.
+ */
+async function remove({ env, principal, params }: RouteCtx): Promise<Response> {
+	const parent = requireParent(principal);
+	await book.remove(env, parent.userId, params.id!);
+	return ok({ deleted: true });
+}
+
 /** AI 오인식 보정. 부모가 고친 값은 이후 검색·문제 생성의 입력이 된다. */
 async function patch({ request, env, principal, params }: RouteCtx): Promise<Response> {
 	const parent = requireParent(principal);
@@ -165,6 +183,7 @@ export const bookRoutes: Route[] = [
 	route("GET", "/api/books", list),
 	route("GET", "/api/books/:id", detail),
 	route("PATCH", "/api/books/:id", patch),
+	route("DELETE", "/api/books/:id", remove),
 	route("GET", "/api/books/:id/cover", cover),
 	route("PUT", "/api/books/:id/cover", replaceCover),
 	route("POST", "/api/books/:id/orient", orient),

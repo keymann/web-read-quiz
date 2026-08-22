@@ -270,6 +270,34 @@ export async function replaceCover(
 	return toView(await requireOwned(env, userId, bookId));
 }
 
+/* ── 책 지우기 ───────────────────────────────────────── */
+
+/**
+ * 부모가 지우는 책. **되돌릴 수 없다.**
+ *
+ * 문항은 `is_active = 0` 으로 감춰 두는 반면(§21.7·§21.8) 책은 행까지 지운다. 감춤은
+ * "이 문제 말고 다른 문제를 내 달라" 는 뜻이지만, 부모가 책장에서 책을 지우는 것은
+ * **그 책을 등록한 일 자체를 없애는 것**이다. 잘못 찍은 표지, 남의 책, 아이가 흥미를 잃은
+ * 책이 목록에 계속 남으면 책장이 못 쓰게 된다.
+ *
+ * 그래서 화면은 지우기 전에 무엇이 함께 사라지는지 알려 주고 취소할 기회를 준다.
+ * 무엇이 사라지는지는 `booksRepo.remove` 한 곳에 적혀 있다.
+ */
+export async function remove(env: AppEnv, userId: string, bookId: string): Promise<void> {
+	const row = await requireOwned(env, userId, bookId);
+	if (!(await booksRepo.remove(env, userId, bookId))) {
+		throw notFound("책을 찾을 수 없습니다.");
+	}
+
+	/*
+	 * 표지는 D1 이 아니라 KV 에 있다. **행을 지운 뒤에** 지운다.
+	 *
+	 * 순서를 바꾸면 D1 삭제가 실패했을 때 표지 없는 책이 책장에 남는다. 반대로 이 삭제가
+	 * 실패하면 아무도 가리키지 않는 바이트가 KV 에 남을 뿐이라, 부모에게 보이는 문제가 없다.
+	 */
+	if (row.cover_key) await env.IMAGES.delete(row.cover_key);
+}
+
 /* ── 2. AI 식별 ──────────────────────────────────────── */
 
 export interface AnalyzeResult {
@@ -640,7 +668,17 @@ async function runWebSearch(
 	userId: string,
 	row: BookRow,
 ): Promise<tavily.WebSource[]> {
-	const found = await tavily.search(env, { title: row.title, author: row.author ?? "" });
+	/*
+	 * 지금까지 쓴 횟수를 그대로 넘긴다. `tavily.search` 가 그것으로 **다른 질의를 고른다.**
+	 *
+	 * 이걸 넘기지 않으면 부모가 "웹 자료 다시 찾기" 를 여섯 번 눌러도 똑같은 질의가 여섯 번
+	 * 나가 같은 결과를 받아 온다 — 크레딧만 쓰고 근거는 늘지 않는다.
+	 */
+	const found = await tavily.search(
+		env,
+		{ title: row.title, author: row.author ?? "", publisher: row.publisher ?? "" },
+		row.web_searches,
+	);
 
 	// 빈손이어도 횟수는 센다. 안 세면 자료 없는 책에서 매 조사마다 크레딧을 쓴다.
 	await booksRepo.update(env, userId, row.id, {

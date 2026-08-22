@@ -100,6 +100,36 @@ const hasHangul = (text: string): boolean => /[가-힣]/.test(text);
 
 const sharesScript = (a: string, b: string): boolean => hasHangul(a) === hasHangul(b);
 
+/**
+ * 이 글이 **주로** 어느 말로 쓰였는가.
+ *
+ * "한글이 한 자라도 있는가"(`hasHangul`)로는 Brief 의 언어를 알 수 없다. Brief 의 절 머리와
+ * 이름표는 영문책이어도 늘 한국어다 — `[줄거리]`·`지은이:`·`출판사:`. 그래서 영문책의 Brief 도
+ * 한글을 담고 있고, 한 자만 보는 판정은 **모든 책을 한국어로 본다.**
+ *
+ * 그래서 글자 수를 센다. 줄거리와 웹 자료가 본문의 대부분이므로 그쪽 말이 이긴다.
+ * 한글은 한 글자가 곧 형태소라 알파벳보다 밀도가 높은데, 이 판정은 압도적인 차이만 가리므로
+ * 그 차이를 보정할 필요가 없다.
+ *
+ * 짧은 글(근거 한 문장)에도 그대로 쓸 수 있다.
+ */
+export const dominantScript = (text: string): "ko" | "en" =>
+	(text.match(/[가-힣]/g)?.length ?? 0) >= (text.match(/[A-Za-z]/g)?.length ?? 0) ? "ko" : "en";
+
+/**
+ * 근거를 **번역해 적었는가.**
+ *
+ * 책 정보와 근거가 서로 다른 말로 쓰였으면 모델이 원문을 옮긴 것이 아니라 자기 말로 옮긴
+ * 것이다. 글자 대조가 아예 성립하지 않으므로 비율은 0 에 가깝게 나오고, 그 사실을 사유에
+ * 적어 주어야 다음 라운드가 고칠 수 있다.
+ *
+ * 탈락으로 이미 갈린 문항의 **사유를 고르는 데만** 쓴다. 이 판정으로 통과·탈락을 가르지 않는다.
+ * 그래서 여기만 `dominantScript` 를 쓰고, 통과·탈락을 가르는 `comparable` 은 예전 판정을
+ * 그대로 둔다 — 판정 기준을 함께 바꾸면 지금 잘 되는 책의 결과가 달라진다.
+ */
+const translatedEvidence = (evidence: string, base: string): boolean =>
+	evidence.trim() !== "" && dominantScript(evidence) !== dominantScript(base);
+
 /* ── 무엇과 대조하는가 (§Phase 3) ─────────────────────── */
 
 /**
@@ -172,6 +202,54 @@ export function evidenceBase(brief: string): string {
 	return kept.map((section) => `${section.header}\n${section.body}`).join("\n");
 }
 
+/* ── 통째로 옮겨 적었는가 ─────────────────────────────── */
+
+/**
+ * 원문에서 **그대로 옮겨 온 것**으로 볼 만한 최소 길이.
+ *
+ * 어간 비율(`groundedRatio`)은 근거를 낱말 단위로 흩어 본다. 그래서 모델이 원문 한 문장을
+ * 정확히 옮기고 뒤에 자기 말로 한 마디를 덧붙이면, 옮긴 부분이 아무리 정확해도 비율이
+ * 기준 아래로 내려가 문항이 떨어진다. 실제로 겪은 탈락의 상당수가 이런 경우다.
+ *
+ * 반대로 **이만큼 긴 글자열이 책 정보에 그대로 있다는 것은 지어낸 근거일 수 없다.** 그래서
+ * 이 검사는 비율 검사를 느슨하게 하는 것이 아니라, 다른 각도에서 더 확실한 증거를 보는 것이다.
+ *
+ * 한국어는 글자 하나가 곧 형태소라 짧아도 충분하고, 영어는 낱말이 길어 그만큼 늘린다.
+ */
+const VERBATIM_KO = 14;
+const VERBATIM_EN = 28;
+
+/** 이어진 글자열을 비교하려면 공백만 접는다. 문장부호까지 털면 자리가 어긋난다. */
+const collapse = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
+
+/**
+ * 근거에서 훑어볼 앞머리 길이.
+ *
+ * 근거는 한 문장이면 충분하고 실제로도 그렇게 온다. 그런데 이 값은 **모델이 정한다** — 스키마에
+ * 길이 상한이 없어 수천 자를 보내는 것을 막을 방법이 없다. 창을 미는 횟수가 근거 길이에
+ * 비례하므로 앞머리만 본다. 인용은 어차피 앞에 있다.
+ */
+const MAX_SCAN = 1_000;
+
+/**
+ * 근거 안에 책 정보의 글을 **이어진 채로 옮긴 대목**이 있는가.
+ *
+ * 창을 밀며 포함 여부만 본다. 훑는 길이에 상한이 있고 네이티브 `includes` 를 쓰므로,
+ * AI 호출 하나에 비하면 잴 수 없는 시간이다.
+ */
+export function hasVerbatimQuote(evidence: string, base: string): boolean {
+	const needleText = collapse(evidence).slice(0, MAX_SCAN);
+	const haystack = collapse(base);
+	const window = hasHangul(evidence) ? VERBATIM_KO : VERBATIM_EN;
+
+	if (needleText.length < window || haystack.length < window) return false;
+
+	for (let i = 0; i + window <= needleText.length; i++) {
+		if (haystack.includes(needleText.slice(i, i + window))) return true;
+	}
+	return false;
+}
+
 export interface GroundingResult {
 	ok: boolean;
 	/** 왜 떨어졌는지. 재생성 프롬프트에 그대로 실어 같은 실수를 반복하지 않게 한다. */
@@ -198,7 +276,8 @@ export function checkGrounding(
 	 * 문항이 근거 검사를 통과하면 §7 이 무력해진다.
 	 */
 	const base = evidenceBase(brief);
-	const evidenceRatio = groundedRatio(question.evidence ?? "", base);
+	const evidence = question.evidence ?? "";
+	const evidenceRatio = groundedRatio(evidence, base);
 
 	const answer = question.choices?.[question.correctChoice - 1] ?? "";
 	const asked = `${question.questionText} ${answer}`;
@@ -210,12 +289,32 @@ export function checkGrounding(
 	 */
 	const questionRatio = comparable ? groundedRatio(asked, brief) : 1;
 
-	if (evidenceRatio < MIN_EVIDENCE_GROUNDING) {
+	/*
+	 * 비율이 낮아도 **이어진 대목을 그대로 옮겼으면** 인정한다. 지어낸 근거는 이 검사를
+	 * 통과할 수 없고, 원문을 옮긴 뒤 한마디 덧붙인 근거는 여기서 살아난다.
+	 */
+	if (evidenceRatio < MIN_EVIDENCE_GROUNDING && !hasVerbatimQuote(evidence, base)) {
 		return {
 			ok: false,
-			reason:
-				"근거가 제공된 책 정보에 없는 내용입니다. 주어진 줄거리·등장인물·사건에 적힌 문장을" +
-				" 원문 그대로 인용하세요.",
+			/*
+			 * **무엇이 틀렸는지를 정확히 말한다.** 이 사유가 다음 라운드 프롬프트에 그대로
+			 * 실리기 때문이다(`ai/generate.ts` 의 "탈락한 문제" 목록).
+			 *
+			 * 근거를 번역해 적은 경우가 특히 그렇다. 문제 언어를 영어로 두면 모델은 지시를
+			 * 어기고 근거까지 영어로 옮기는 일이 잦고, 그러면 한 배치가 통째로 떨어진다.
+			 * 예전 사유("책 정보에 없는 내용입니다")로는 모델이 무엇을 고쳐야 할지 알 수
+			 * 없어 세 라운드를 같은 실수로 태웠다.
+			 *
+			 * 번역 사유에는 `제공된 책 정보` 라는 말을 **쓰지 않는다.** 그 말이 부모에게
+			 * 보여줄 안내를 고르는 표시이기 때문이다(`generation.mostlyUngrounded`) —
+			 * 번역은 책 정보가 모자란 것이 아니라 모델이 지시를 어긴 것이므로, 부모에게
+			 * "줄거리를 보강해 주세요" 라고 할 일이 아니다.
+			 */
+			reason: translatedEvidence(evidence, base)
+				? "근거를 다른 언어로 바꿔 적었습니다. evidence 는 책 정보에 적힌 문장을" +
+					" **그 언어 그대로** 옮겨야 합니다. 번역하지 마세요."
+				: "근거가 제공된 책 정보에 없는 내용입니다. 주어진 줄거리·등장인물·사건에 적힌 문장을" +
+					" 원문 그대로 인용하세요.",
 			evidenceRatio,
 			questionRatio,
 		};

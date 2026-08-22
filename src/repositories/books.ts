@@ -214,3 +214,42 @@ export async function replaceSources(
 
 	await env.DB.batch(statements);
 }
+
+/**
+ * 책과 그 책에서 나온 **모든 기록**을 지운다.
+ *
+ * 스키마에 `ON DELETE CASCADE` 가 걸려 있지만 여기서 순서대로 직접 지운다. 외래키 강제가
+ * 켜져 있느냐에 기대지 않아도 되고, **무엇이 함께 사라지는지가 코드에 적혀 있어야** 부모에게
+ * 무엇을 지운다고 알릴지도 한 곳에서 정할 수 있다.
+ *
+ * 한 `batch` 로 보내므로 왕복은 한 번이고, 중간에 실패하면 전부 되돌아간다.
+ * 소유 확인은 부르는 쪽(`services/book.ts`)이 먼저 하지만 마지막 문장에도 `created_by` 를
+ * 넣는다 — 남의 책이 지워지는 일은 어느 층에서도 막아야 한다(§21.5).
+ */
+export async function remove(env: AppEnv, userId: string, bookId: string): Promise<boolean> {
+	const quizIds = "SELECT id FROM quizzes WHERE book_id = ?";
+	const questionIds = `SELECT id FROM questions WHERE quiz_id IN (${quizIds})`;
+	const attemptIds = `SELECT id FROM quiz_attempts WHERE quiz_id IN (${quizIds})`;
+
+	// 자식 → 부모 순서. 각 문장의 `?` 는 하나뿐이라 모두 같은 값을 바인딩한다.
+	const cascade = [
+		`DELETE FROM question_answers WHERE attempt_id IN (${attemptIds})`,
+		`DELETE FROM attempt_questions WHERE attempt_id IN (${attemptIds})`,
+		`DELETE FROM quiz_attempts WHERE quiz_id IN (${quizIds})`,
+		`DELETE FROM quiz_assignments WHERE quiz_id IN (${quizIds})`,
+		`DELETE FROM question_validations WHERE question_id IN (${questionIds})`,
+		`DELETE FROM question_histories WHERE question_id IN (${questionIds})`,
+		`DELETE FROM question_versions WHERE question_id IN (${questionIds})`,
+		`DELETE FROM questions WHERE quiz_id IN (${quizIds})`,
+		`DELETE FROM quizzes WHERE book_id = ?`,
+		`DELETE FROM book_sources WHERE book_id = ?`,
+	];
+
+	const results = await env.DB.batch([
+		...cascade.map((sql) => env.DB.prepare(sql).bind(bookId)),
+		env.DB.prepare("DELETE FROM books WHERE id = ? AND created_by = ?").bind(bookId, userId),
+	]);
+
+	// 마지막 문장이 책 행이다. 그것이 지워졌을 때만 삭제로 본다.
+	return (results[results.length - 1]?.meta.changes ?? 0) > 0;
+}

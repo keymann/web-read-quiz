@@ -73,46 +73,91 @@ const MIN_RELEVANT = 5;
 export interface WebHint {
 	title: string;
 	author: string;
+	/**
+	 * 출판사. 질의에 실어 같은 제목의 다른 책과 갈라 준다.
+	 *
+	 * 없어도 된다 — 아직 분석 전이거나 표지에서 못 읽은 책이 있다.
+	 */
+	publisher?: string;
 }
 
 /** 한글이 섞였으면 한국책으로 본다. 질의어와 국가를 여기서 가른다. */
 const isKorean = (text: string): boolean => /[가-힣]/.test(text);
 
 /**
- * 질의를 책 언어에 맞춘다.
+ * 질의 사다리 — **누를 때마다 다른 말로 묻는다.**
  *
- * Phase 0 에서 영어책(『Dirty Bertie PONG!』)에 한국어 낱말(줄거리·등장인물·독후감)을 붙여
- * 물었더니 **`health.kr` 이 20건 중 8건**을 차지했다. 한국어 낱말이 엉뚱한 한국 사이트를
- * 끌어온 것이다. 영어 질의로 바꾸니 그 오염이 사라졌다.
+ * 예전에는 질의가 언어별로 딱 두 개였다(좁게 · 넓게). 그래서 부모가 "웹 자료 다시 찾기" 를
+ * 눌러도 **글자 하나 다르지 않은 같은 질의**가 다시 나갔다 — 크레딧을 쓰고 같은 스무 건을
+ * 받아 오는 것이다. 책당 6회를 준 뜻이 없어진다.
  *
- * (다만 영어 아동 시리즈물은 질의를 고쳐도 줄거리를 담은 결과가 2/20 에 그쳤다.
- *  이 연동의 이득은 한국책에 있다 — Phase 0 에 기록.)
+ * 그래서 시도 횟수(`row.web_searches`)로 사다리를 한 칸 올린다. 좁은 질의와 넓은 질의를
+ * 따로 돌리므로 두 번째 시도부터는 **두 질의가 모두 바뀐다.**
+ *
+ * 낱말은 실측에서 얻은 것을 따른다.
+ *  - 한국책: 독후감·서평·감상문이 줄거리를 실제로 적는 글이다. 서점 페이지는 이 낱말을 안 쓴다.
+ *  - 영어책: `plot summary`·`chapter summary`·`study guide` 가 그 글을 끌어온다. 한국어
+ *    낱말을 붙이면 엉뚱한 한국 사이트가 20건 중 8건을 차지했다(Phase 0 『Dirty Bertie PONG!』).
+ *
+ * 좁은 것과 넓은 것의 길이를 **서로 나누어지지 않게** 둔다(4 · 3). 그래야 시도마다 짝이
+ * 겹치지 않고 여섯 번을 다른 조합으로 쓴다.
  */
-function buildQuery(hint: WebHint, broad: boolean): { query: string; country?: string } {
+type QueryBuilder = (hint: WebHint) => string;
+
+/** 좁은 질의 — 제목을 따옴표로 묶고 줄거리를 겨냥한 낱말을 붙인다. */
+const KO_NARROW: QueryBuilder[] = [
+	(h) => `"${h.title}" ${h.author} 줄거리 등장인물 독후감`,
+	(h) => `"${h.title}" 줄거리 요약 결말 주요 사건`,
+	(h) => `"${h.title}" 서평 감상문 인물 사건 순서`,
+	(h) => `"${h.title}" ${h.author} 독서록 느낀점 내용 정리`,
+];
+
+/**
+ * 넓힌 질의 — 따옴표를 떼고 낱말도 줄인다.
+ *
+ * 좁은 질의는 독후감이 많은 책에는 잘 맞지만, 그런 글이 없는 책에서는 오히려 아무것도 못
+ * 찾는다. 실측: 움푹산의 비밀 좁게 9건 → 넓게 12건 / 바나나가 뿔났다 좁게 0건 → 넓게 1건.
+ */
+const KO_BROAD: QueryBuilder[] = [
+	(h) => `${h.title} ${h.author} 어린이책 내용`,
+	(h) => `${h.title} ${h.publisher ?? ""} 책 줄거리 소개`,
+	(h) => `${h.title} ${h.author} 어린이 도서 독후활동 질문`,
+];
+
+const EN_NARROW: QueryBuilder[] = [
+	(h) => `"${h.title}" ${h.author} plot summary characters book review`,
+	(h) => `"${h.title}" full plot summary ending what happens`,
+	(h) => `"${h.title}" chapter summary study guide questions`,
+	(h) => `"${h.title}" ${h.author} book report characters list review`,
+];
+
+const EN_BROAD: QueryBuilder[] = [
+	(h) => `${h.title} ${h.author} children's book`,
+	(h) => `${h.title} ${h.author} children's book story summary`,
+	(h) => `${h.title} ${h.publisher ?? ""} children's book reading guide`,
+];
+
+/** 여러 칸을 띄어 놓은 질의는 검색에 그대로 나가면 안 된다. 빈 값은 접는다. */
+const tidyQuery = (query: string): string => query.replace(/\s+/g, " ").trim();
+
+/**
+ * 질의를 책 언어와 **시도 횟수**에 맞춘다.
+ *
+ * @param attempt 이 책이 지금까지 웹 검색을 쓴 횟수. 0 이 첫 조사다.
+ */
+export function buildQuery(
+	hint: WebHint,
+	broad: boolean,
+	attempt = 0,
+): { query: string; country?: string } {
 	const korean = isKorean(hint.title) || isKorean(hint.author);
+	const ladder = korean ? (broad ? KO_BROAD : KO_NARROW) : broad ? EN_BROAD : EN_NARROW;
+	// 시도가 상한을 넘어도 터지지 않게 감는다. 음수는 들어올 수 없지만 막아 둔다.
+	const build = ladder[Math.max(0, attempt) % ladder.length]!;
 
-	if (!korean) {
-		return {
-			query: broad
-				? `${hint.title} ${hint.author} children's book`
-				: `"${hint.title}" ${hint.author} plot summary characters book review`,
-		};
-	}
-
-	/*
-	 * 넓힌 질의는 따옴표를 떼고 낱말도 줄인다.
-	 *
-	 * 좁은 질의(`"제목" 저자 줄거리 등장인물 독후감`)는 독후감이 많은 책에는 잘 맞지만,
-	 * 그런 글이 없는 책에서는 오히려 아무것도 못 찾는다. 실측:
-	 *
-	 *   움푹산의 비밀   좁게 9건 → 넓게 12건
-	 *   바나나가 뿔났다  좁게 0건 → 넓게  1건
-	 */
 	return {
-		query: broad
-			? `${hint.title} ${hint.author} 어린이책 내용`
-			: `"${hint.title}" ${hint.author} 줄거리 등장인물 독후감`,
-		country: "south korea",
+		query: tidyQuery(build(hint)),
+		...(korean ? { country: "south korea" } : {}),
 	};
 }
 
@@ -204,8 +249,9 @@ async function callOnce(
 	hint: WebHint,
 	depth: Depth,
 	broad: boolean,
+	attempt: number,
 ): Promise<WebSource[]> {
-	const { query, country } = buildQuery(hint, broad);
+	const { query, country } = buildQuery(hint, broad, attempt);
 	return runQuery(env, { query, country, depth });
 }
 
@@ -285,13 +331,18 @@ export async function runQuery(env: AppEnv, spec: QuerySpec): Promise<WebSource[
  *
  * 실패는 빈 배열로 돌려준다 — 웹 검색이 안 됐다고 조사 전체를 무산시키지 않는다.
  */
-export async function search(env: AppEnv, hint: WebHint): Promise<WebSource[]> {
+export async function search(
+	env: AppEnv,
+	hint: WebHint,
+	/** 이 책이 지금까지 웹 검색을 쓴 횟수. 질의 사다리를 한 칸 올리는 데 쓴다. */
+	attempt = 0,
+): Promise<WebSource[]> {
 	if (budget.slots(env).length === 0 || hint.title.trim() === "") return [];
 
-	const first = await callOnce(env, hint, "basic", false);
+	const first = await callOnce(env, hint, "basic", false, attempt);
 	if (relevantCount(first, hint.title) >= MIN_RELEVANT) return first;
 
-	const second = await callOnce(env, hint, "advanced", true);
+	const second = await callOnce(env, hint, "advanced", true, attempt);
 	// 더 많이 건진 쪽을 쓴다. 두 번째가 늘 나은 것은 아니다.
 	return relevantCount(second, hint.title) > relevantCount(first, hint.title) ? second : first;
 }

@@ -53,9 +53,29 @@ users(PARENT)
 | 6. COMPLETED 이후 문제 변경 불가 | service 의 상태 전이 가드 (`assertEditable()`) |
 | 7·8. 과거 Attempt 불변 | 위 스냅샷 모델 |
 | 문제 삭제 | 행 삭제가 아니라 `is_active = 0` |
+| **책 삭제** | 행까지 지운다. 딸린 열 개 테이블을 순서대로 함께 지운다(아래) |
 | 한 Attempt 에 같은 문제 중복 답변 불가 | `idx_question_answers_unique(attempt_id, question_id)` |
 
 SQL 은 전부 D1 prepared statement 의 `.bind()` 파라미터를 쓴다. 문자열 결합으로 쿼리를 만들지 않는다(§26 SQL Injection).
+
+### 책만 행까지 지운다
+
+문항을 감추고 행을 남기는 이유는 과거 풀이 기록이 그 문항을 가리키기 때문이다(§22). 책은
+다르다 — 부모가 책장에서 책을 지우는 것은 "이 책을 등록한 일 자체를 없애 달라"는 뜻이고,
+그 책의 풀이 기록도 함께 사라져야 한다.
+
+`repositories/books.remove` 가 자식부터 순서대로 지운다.
+
+```
+question_answers → attempt_questions → quiz_attempts → quiz_assignments
+question_validations → question_histories → question_versions → questions
+→ quizzes → book_sources → books
+```
+
+스키마에 `ON DELETE CASCADE` 가 있지만 직접 지운다. 외래키 강제 여부에 기대지 않아도 되고,
+무엇이 함께 사라지는지가 코드에 적혀 있어야 부모에게 무엇을 지운다고 알릴지도 한 곳에서
+정할 수 있다. 열한 문장을 한 `batch` 로 보내므로 왕복은 한 번이고, 중간에 실패하면 전부
+되돌아간다. 표지 이미지는 D1 이 아니라 KV 에 있어 **행이 지워진 뒤에** 지운다.
 
 ## 시간 표기
 

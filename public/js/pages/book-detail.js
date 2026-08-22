@@ -1,9 +1,19 @@
-import { get, patch, post, put, upload } from "../api.js";
+import { del, get, patch, post, put, upload } from "../api.js";
 import { identifyBook, orientCover, researchBook, usesBrowserRelay } from "../ai-relay.js";
 import { rotateImage } from "../image.js";
 import { navigate } from "../router.js";
 import { requireSession } from "../session.js";
-import { banner, el, field, header, mount, selectField, setKidMode, textareaField } from "../ui.js";
+import {
+	banner,
+	confirmDialog,
+	el,
+	field,
+	header,
+	mount,
+	selectField,
+	setKidMode,
+	textareaField,
+} from "../ui.js";
 
 /**
  * 책 분석 화면 — AI 식별 → 부모 확인/보정 → 정보 검색(§5·§6).
@@ -58,6 +68,12 @@ export async function bookDetailPage({ id }) {
 	 * 실패를 되풀이하게 되고, 그 사이 화면은 계속 "확인 중" 으로 보인다.
 	 */
 	let coverFixTried = false;
+	/**
+	 * 마지막으로 그린 데이터. 조회 없이 화면만 다시 그릴 때 쓴다.
+	 *
+	 * 선언은 반드시 첫 `refresh()` 보다 위에 둔다 — 아래에 두면 초기화 전에 읽혀 TDZ 로 터진다.
+	 */
+	let lastData = null;
 
 	await refresh();
 
@@ -142,6 +158,7 @@ export async function bookDetailPage({ id }) {
 	}
 
 	function render(data) {
+		if (data) lastData = data;
 		if (!data) {
 			mount(header("책", [homeLink()]), message ? banner(message, messageKind) : null);
 			return;
@@ -160,6 +177,7 @@ export async function bookDetailPage({ id }) {
 				attempts.length > 0 ? attemptsCard() : null,
 				quizzes.length > 0 ? roundsCard() : null,
 				quizCard(book, readyForQuiz, evidenceWeak),
+				removeCard(book),
 			].filter(Boolean),
 		);
 	}
@@ -167,6 +185,73 @@ export async function bookDetailPage({ id }) {
 	// 화살표 함수를 const 로 두면 render() 가 먼저 실행될 때 TDZ 에 걸린다. 선언식으로 둔다.
 	function homeLink() {
 		return el("a", { class: "btn btn--ghost", href: "/parent/books", "data-link": true, text: "← 책 목록" });
+	}
+
+	/**
+	 * 이 책을 지우는 자리.
+	 *
+	 * **맨 아래에 따로 둔다.** 위쪽 버튼들 사이에 끼우면 "다시 분석하기" 를 누르려다 잘못
+	 * 누를 수 있고, 이 조작은 되돌릴 수 없다. 무엇이 함께 사라지는지도 여기 적어 둔다 —
+	 * 확인 창을 띄우기 전에 읽을 수 있어야 한다.
+	 */
+	function removeCard(book) {
+		return el("section", { class: "card" }, [
+			el("h2", { class: "section-title", text: "이 책 삭제" }),
+			// 자세한 내용은 확인 창이 다시 적는다. 여기서는 되돌릴 수 없다는 것만 알린다.
+			el("p", { class: "hint", text: "이 책에 딸린 기록까지 함께 삭제합니다. 되돌릴 수 없습니다." }),
+			el("button", {
+				class: "btn btn--danger",
+				type: "button",
+				text: busy === "remove" ? "삭제 중…" : "책 삭제",
+				disabled: busy !== null,
+				onClick: () => removeBook(book),
+			}),
+		]);
+	}
+
+	/**
+	 * 지운 뒤에는 **책장으로 돌아간다.** 없어진 책의 화면에 남아 있을 이유가 없다.
+	 *
+	 * 목록은 그 화면이 열릴 때 다시 조회하므로(`bookListPage`) 따로 갱신을 시키지 않는다.
+	 */
+	async function removeBook(book) {
+		/*
+		 * 확인 창을 띄우기 **전에** 표시를 세운다. 화면은 창이 뜨기 전 상태로 그려져 있어
+		 * 버튼이 그대로 눌리고, 두 번 누르면 두 번째 요청이 404 를 받아 지우지도 못한 것처럼
+		 * 보인다. 화면은 아직 다시 그리지 않는다 — 물어보는 중에 "삭제 중" 이라고 적으면 안 된다.
+		 */
+		if (busy !== null) return;
+		busy = "remove";
+
+		// 목록 화면과 같은 문구를 쓴다. 같은 일을 두 곳에서 다르게 설명하면 안 된다.
+		const yes = await confirmDialog({
+			title: `‘${book.title}’ 삭제`,
+			message:
+				"이 책의 정보와 참고 자료, 만들어 둔 문제와 아이의 도전 기록을 모두 삭제합니다. 되돌릴 수 없습니다.",
+			confirmText: "삭제",
+			cancelText: "취소",
+		});
+		if (!yes) {
+			busy = null;
+			return;
+		}
+
+		/*
+		 * 화면만 다시 그린다. `refresh()` 를 부르면 곧 지울 책을 세 번 다시 조회하게 되고
+		 * 그만큼 삭제가 늦어진다. 들고 있던 데이터로 그리면 버튼이 잠기고 표시가 바뀐다.
+		 */
+		render(lastData);
+
+		try {
+			await del(`/api/books/${id}`);
+			await navigate("/parent/books");
+			return;
+		} catch (err) {
+			message = err.message;
+			messageKind = "error";
+		}
+		busy = null;
+		await refresh();
 	}
 
 	function coverCard(book) {
@@ -402,16 +487,40 @@ export async function bookDetailPage({ id }) {
 				onClick: () =>
 					run("web", () => post(`/api/books/${id}/web-search`), "웹 자료를 다시 찾았습니다.", (d) => d.notice),
 			}),
-			el("span", {
-				class: "hint",
-				text:
-					left === 0
-						? "이 책의 재검색 횟수를 다 썼습니다."
-						: credits < 3
-							? "이달 웹 검색 한도를 다 썼습니다."
-							: `이 책 ${left}회 남음 · 이달 전체 ${credits} 크레딧 남음`,
-			}),
-		]);
+			// 왜 못 누르는지만 여기 적는다. 남은 크레딧은 `creditRow` 가 늘 보여 준다.
+			blocked
+				? el("span", {
+						class: "hint",
+						text: left === 0 ? "이 책의 재검색 횟수를 다 썼습니다." : "이달 웹 검색 한도를 다 썼습니다.",
+					})
+				: null,
+		].filter(Boolean));
+	}
+
+	/**
+	 * 남은 웹 검색 크레딧. **버튼을 누를 수 있든 없든 늘 보인다.**
+	 *
+	 * 예전에는 이 숫자가 버튼 옆 안내 문구에 섞여 있어서, 정작 한도가 걸려 잠긴 순간에
+	 * 사라졌다 — 부모가 "얼마나 남았나" 를 가장 알고 싶은 때가 그때다. 크레딧은 서비스
+	 * 전체가 나눠 쓰는 이달 예산이고 재검색 횟수는 이 책의 몫이라, 둘을 함께 적는다.
+	 */
+	function creditRow(web) {
+		if (!web?.enabled) {
+			return el("p", { class: "hint", text: "웹 검색 키가 없어 자료를 찾을 수 없습니다." });
+		}
+
+		const credits = web.creditsLeft ?? 0;
+		const total = web.creditsTotal ?? 0;
+		const left = web.searchesLeft ?? 0;
+		const searches = web.searchesTotal ?? 0;
+
+		return el("p", {
+			// 바닥나면 눈에 걸려야 한다. 넉넉할 때는 곁가지 정보로 조용히 둔다.
+			class: credits < 3 || left === 0 ? "status status--warn" : "hint",
+			text:
+				`이달 웹 검색 크레딧 ${credits}${total > 0 ? ` / ${total}` : ""} 남음` +
+				` · 이 책 재검색 ${left}${searches > 0 ? ` / ${searches}` : ""}회 남음`,
+		});
 	}
 
 	/**
@@ -465,6 +574,7 @@ export async function bookDetailPage({ id }) {
 		return el("section", { class: "card" }, [
 			el("h2", { class: "section-title", text: `참고 자료 ${sources.length}건` }),
 			el("p", { class: `status status--${status.kind}`, text: status.text }),
+			creditRow(web),
 			webSearchRow(web),
 			sources.length === 0 ? el("p", { class: "hint", text: "아직 찾은 자료가 없습니다." }) : null,
 			verified.length > 0 ? el("ul", { class: "list" }, verified.map((source) => sourceItem(source))) : null,

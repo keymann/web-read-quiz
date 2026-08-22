@@ -84,7 +84,54 @@
 | POST | `/api/books/:id/analyze` | PARENT | ✅ Vision 으로 제목/저자/출판사/ISBN 추출 |
 | POST | `/api/books/:id/search` | PARENT | ✅ 웹 검색으로 책 정보 보강 + `book_sources` 적재 |
 | PATCH | `/api/books/:id` | PARENT | ✅ 부모가 책 정보 직접 수정 (AI 오인식 보정) |
+| PUT | `/api/books/:id/plot` | PARENT | ✅ 부모가 직접 적은 줄거리 저장 → Brief 재조립 |
+| POST | `/api/books/:id/web-search` | PARENT | ✅ 부모가 누르는 웹 자료 재검색 (크레딧을 쓴다) |
+| DELETE | `/api/books/:id` | PARENT | ✅ 책과 그 책에서 나온 기록 전부 삭제 |
 | GET | `/api/books/:id/history` | PARENT | 이 책의 퀴즈·풀이 이력 |
+
+### 삭제는 되돌릴 수 없다
+
+문항은 지워도 행이 남는다(`is_active = 0`) — 과거 풀이 기록이 그 문항을 가리키기 때문이다
+(§22). 반면 **책은 행까지 지운다.** 부모가 책장에서 책을 지우는 것은 "다른 문제를 내 달라"가
+아니라 "이 책을 등록한 일 자체를 없애 달라"는 뜻이다. 잘못 찍은 표지와 남의 책이 목록에 계속
+남으면 책장이 못 쓰게 된다.
+
+함께 사라지는 것(`repositories/books.remove` 한 곳에 순서까지 적혀 있다):
+
+```
+book_sources · quizzes · questions · question_versions · question_histories
+question_validations · quiz_assignments · quiz_attempts · attempt_questions
+question_answers · KV 의 표지 이미지
+```
+
+스키마에 `ON DELETE CASCADE` 가 걸려 있지만 **직접 순서대로 지운다.** 외래키 강제 여부에
+기대지 않아도 되고, 무엇이 함께 사라지는지가 코드에 적혀 있어야 부모에게 무엇을 지운다고
+알릴지도 한 곳에서 정할 수 있다. 한 `batch` 라 왕복은 한 번이고, 중간에 실패하면 전부
+되돌아간다. 표지(KV)는 **행이 지워진 뒤에** 지운다 — 순서를 바꾸면 D1 삭제가 실패했을 때
+표지 없는 책이 책장에 남는다.
+
+화면은 지우기 전에 무엇이 사라지는지 알리고 취소할 기회를 준다(`confirmDialog`). 책 화면에서
+지우면 책장으로 돌아간다.
+
+### 웹 검색 예산은 화면이 늘 보여 준다
+
+`GET /api/books/:id` 의 `web` 이 재검색 버튼에 필요한 것을 모두 싣는다.
+
+```jsonc
+{
+  "web": {
+    "enabled": true,        // Tavily 키가 하나라도 설정돼 있는가
+    "searchesLeft": 4,      // 이 책이 더 쓸 수 있는 재검색 횟수
+    "searchesTotal": 6,     // MAX_SEARCHES_PER_BOOK
+    "creditsLeft": 812,     // 이달 서비스 전체가 더 쓸 수 있는 크레딧
+    "creditsTotal": 950     // 설정된 키 수 × MONTHLY_CAP
+  }
+}
+```
+
+남은 크레딧은 **버튼을 누를 수 있든 없든 늘 보인다.** 예전에는 버튼 옆 안내 문구에 섞여
+있어서 정작 한도가 걸려 잠긴 순간에 사라졌다 — 부모가 "얼마나 남았나"를 가장 알고 싶은
+때가 그때다.
 
 ### 표지 방향 — 판정은 서버, 회전은 브라우저
 

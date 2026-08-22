@@ -1,5 +1,6 @@
 import { requireParent } from "../auth/guards";
 import * as booksRepo from "../repositories/books";
+import * as bibliographic from "../search/bibliographic";
 import * as book from "../services/book";
 import * as budget from "../services/search-budget";
 import { MAX_BYTES } from "../utils/image";
@@ -30,11 +31,23 @@ async function list({ env, principal }: RouteCtx): Promise<Response> {
 	return ok({ books: rows.map(book.toView) });
 }
 
-async function detail({ env, principal, params }: RouteCtx): Promise<Response> {
+async function detail({ env, ctx, principal, params }: RouteCtx): Promise<Response> {
 	const parent = requireParent(principal);
 	const row = await book.requireOwned(env, parent.userId, params.id!);
 	const sources = await booksRepo.listSources(env, row.id);
-	const keys = budget.slots(env).length;
+
+	/*
+	 * 잔량은 우리 카운터가 아니라 **Tavily 가 아는 값**이다. 다만 물어보는 데 실측 1.5초가
+	 * 걸려서, 들고 있던 값을 바로 내주고 갱신은 응답 뒤로 맡긴다. 이 화면이 느려질 이유가 없다.
+	 */
+	const credits = await budget.usage(env);
+	if (credits.stale) {
+		ctx.waitUntil(
+			budget.refreshUsage(env).catch((err: unknown) => {
+				console.warn("tavily usage lookup failed", err);
+			}),
+		);
+	}
 
 	return ok({
 		book: book.toView(row),
@@ -45,15 +58,23 @@ async function detail({ env, principal, params }: RouteCtx): Promise<Response> {
 		evidenceWeak: book.hasWeakEvidence(book.evidenceCount(sources)),
 		// 재검색 버튼이 남은 횟수를 보여줄 수 있게 함께 내린다. 크레딧을 쓰는 조작이므로
 		// 누르기 전에 몇 번 남았는지 알아야 한다.
+		/*
+		 * 책당 웹 검색 횟수(`web_searches`)는 **내려보내지 않는다.**
+		 *
+		 * 그것은 크레딧이 새지 않게 서버가 잡아 두는 안전장치이고, 부모가 조작할 것이 없다.
+		 * 화면에 "이 책 0 / 6회 남음" 이라고 적어 두면 부모는 그 숫자를 아껴야 하는 것으로
+		 * 읽고 다시 찾기를 망설인다 — 정작 다시 찾을수록 근거가 쌓이는데 그 반대로 이끈다.
+		 *
+		 * 크레딧은 다르다. 서비스 전체가 나눠 쓰는 이달 예산이라 보여 준다.
+		 */
 		web: {
-			enabled: keys > 0,
-			searchesLeft: Math.max(0, budget.MAX_SEARCHES_PER_BOOK - row.web_searches),
-			creditsLeft: await budget.remaining(env),
-			// 남은 크레딧만 보여 주면 그것이 많은 수인지 적은 수인지 알 수 없다. 이달 한도를
-			// 함께 내려 화면이 "320 / 950 남음" 으로 적을 수 있게 한다.
-			creditsTotal: keys * budget.MONTHLY_CAP,
-			/** 이 책이 웹 검색을 쓸 수 있는 총 횟수. 화면이 "2 / 6회" 로 적는다. */
-			searchesTotal: budget.MAX_SEARCHES_PER_BOOK,
+			enabled: budget.slots(env).length > 0,
+			// 남은 크레딧만 보여 주면 그것이 많은 수인지 적은 수인지 알 수 없다. 한도를
+			// 함께 내려 화면이 "3899 / 4000 남음" 으로 적을 수 있게 한다.
+			creditsLeft: Math.max(0, credits.limit - credits.used),
+			creditsTotal: credits.limit,
+			// Tavily 에게 물어 얻은 값인지. 짐작이면 화면이 그렇게 적는다.
+			creditsMeasured: credits.measured,
 		},
 	});
 }
@@ -115,6 +136,15 @@ async function analyze({ env, principal, params }: RouteCtx): Promise<Response> 
 	return ok(await book.analyze(env, parent.userId, params.id!));
 }
 
+/**
+ * 책 정보 찾기. **크레딧을 쓰는 유일한 사용자 조작**이다.
+ *
+ * 예전에는 웹 자료 재검색이 따로 있었다. 버튼을 하나로 합치면서 이 호출이 웹 검색까지
+ * 맡는다 — 부모가 "정보 다시 찾기" 를 누르면 질의 사다리가 한 칸 올라간다.
+ *
+ * 크레딧은 책당 횟수(`MAX_SEARCHES_PER_BOOK`)와 월 예산(`MONTHLY_CAP`)이 두 겹으로 막고,
+ * 이 레이트리밋은 AI 호출을 막는 몫이다.
+ */
 async function search({ env, principal, params }: RouteCtx): Promise<Response> {
 	const parent = requireParent(principal);
 	await rateLimit(env, "ai", parent.userId, 20, 60 * 60);
@@ -133,6 +163,23 @@ async function remove({ env, principal, params }: RouteCtx): Promise<Response> {
 	return ok({ deleted: true });
 }
 
+/**
+ * 화면의 ISBN 칸 하나를 **자릿수에 맞는 컬럼**으로 보낸다.
+ *
+ * 화면에는 ISBN 칸이 하나뿐인데(`isbn13 ?? isbn10`) 컬럼은 둘이다. 예전에는 그 값을 늘
+ * `isbn13` 에 넣었다. 그러면 10자리만 있는 책에서 그 값이 `isbn13` 칸으로 옮겨 앉는다 —
+ * 찾기 버튼이 저장까지 맡게 되면서 이 일이 누를 때마다 일어나게 되어 자릿수로 가른다.
+ *
+ * `applyIdentity` 가 AI 응답을 넣을 때와 같은 규칙이다.
+ */
+function isbnFields(raw: string): booksRepo.BookFields {
+	const isbn = bibliographic.normalizeIsbn(raw);
+	// 비우면 둘 다 지운다. 한쪽만 지우면 화면이 다른 쪽 값을 다시 보여 준다.
+	if (isbn === "") return { isbn13: null, isbn10: null };
+	if (!bibliographic.isValidIsbn(isbn)) throw invalid("ISBN 은 10자리 또는 13자리입니다.");
+	return isbn.length === 13 ? { isbn13: isbn } : { isbn13: null, isbn10: isbn };
+}
+
 /** AI 오인식 보정. 부모가 고친 값은 이후 검색·문제 생성의 입력이 된다. */
 async function patch({ request, env, principal, params }: RouteCtx): Promise<Response> {
 	const parent = requireParent(principal);
@@ -144,7 +191,7 @@ async function patch({ request, env, principal, params }: RouteCtx): Promise<Res
 	if ("title" in body) fields.title = v.str(body, "title", "제목");
 	if ("author" in body) fields.author = v.optionalStr(body, "author") || null;
 	if ("publisher" in body) fields.publisher = v.optionalStr(body, "publisher") || null;
-	if ("isbn13" in body) fields.isbn13 = v.optionalStr(body, "isbn13") || null;
+	if ("isbn13" in body) Object.assign(fields, isbnFields(v.optionalStr(body, "isbn13") ?? ""));
 	if ("description" in body) fields.description = v.optionalStr(body, "description") || null;
 
 	if (Object.keys(fields).length === 0) throw invalid("변경할 내용이 없습니다.");
@@ -166,17 +213,6 @@ async function manualPlot({ request, env, principal, params }: RouteCtx): Promis
 	return ok(await book.saveManualPlot(env, parent.userId, params.id!, v.optionalStr(body, "plot") ?? ""));
 }
 
-/**
- * 부모가 누르는 웹 자료 재검색. **크레딧을 쓰는 유일한 사용자 조작**이다.
- *
- * `ai` 레이트리밋과 별도로 둔다 — 성격이 다르고, 책당 횟수와 월 예산이 이미 두 겹으로 막는다.
- */
-async function webSearch({ env, principal, params }: RouteCtx): Promise<Response> {
-	const parent = requireParent(principal);
-	await rateLimit(env, "web-search", parent.userId, 30, 60 * 60);
-	return ok(await book.refreshWeb(env, parent.userId, params.id!));
-}
-
 export const bookRoutes: Route[] = [
 	route("POST", "/api/books", upload),
 	route("PUT", "/api/books/:id/plot", manualPlot),
@@ -189,5 +225,4 @@ export const bookRoutes: Route[] = [
 	route("POST", "/api/books/:id/orient", orient),
 	route("POST", "/api/books/:id/analyze", analyze),
 	route("POST", "/api/books/:id/search", search),
-	route("POST", "/api/books/:id/web-search", webSearch),
 ];

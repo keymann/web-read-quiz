@@ -250,6 +250,17 @@ export function hasVerbatimQuote(evidence: string, base: string): boolean {
 	return false;
 }
 
+/**
+ * Brief 에서 절 하나의 본문만 꺼낸다. 없으면 빈 문자열.
+ *
+ * 조사를 다시 돌릴 때 **지금까지 정리한 줄거리**를 모델에게 되돌려 주려고 쓴다. 절을 자르는
+ * 규칙이 이미 여기 있으므로 같은 것을 두 번 구현하지 않는다.
+ */
+export function sectionBody(brief: string, header: string): string {
+	const found = sectionsOf(brief).find((section) => section.header === header);
+	return found ? found.body.trim() : "";
+}
+
 export interface GroundingResult {
 	ok: boolean;
 	/** 왜 떨어졌는지. 재생성 프롬프트에 그대로 실어 같은 실수를 반복하지 않게 한다. */

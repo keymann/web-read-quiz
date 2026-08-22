@@ -44,8 +44,14 @@ export interface BookResearch {
 	sources: { url: string; title: string; content: string }[];
 }
 
-/** 프롬프트에 실을 웹 자료 수. 6건 × 1,500자 ≈ 9,000자. */
-const MAX_WEB_SOURCES = 6;
+/**
+ * 프롬프트에 실을 웹 자료 수. 10건 × 1,500자 ≈ 15,000자.
+ *
+ * 6건이었다. 자료를 모아 두게 되면서(§tavily.merge) 고를 것이 늘었고, **줄거리를 정리하는
+ * 이 호출은 조사할 때 한 번뿐**이라 늘려도 문제 생성 비용에는 영향이 없다. Brief 에 싣는
+ * 수(`MAX_BRIEF_WEB`)와 다른 이유가 그것이다 — 그쪽은 생성 라운드마다 매번 실린다.
+ */
+const MAX_WEB_SOURCES = 10;
 
 /** 출처별 발췌 상한. 원문을 그대로 쌓아 두지 않기 위한 장치다(§6). */
 export const MAX_SOURCE_CONTENT = 2_000;
@@ -140,6 +146,13 @@ export interface ResearchHint {
 	bib: BibRecord[];
 	/** Tavily 로 실제로 읽은 페이지. 있으면 지시가 "기억" 에서 "발췌" 로 바뀐다. */
 	web?: WebSource[];
+	/**
+	 * 지금까지 정리해 둔 줄거리. 다시 조사할 때 **지우지 말고 보강하도록** 넘긴다.
+	 *
+	 * 이것을 안 넘기면 다시 찾기가 지난 줄거리를 통째로 새 결과로 갈아 끼운다. 이번 자료가
+	 * 지난 자료보다 얇으면 줄거리가 오히려 짧아진다 — 부모가 "다시 찾기" 를 누른 뜻과 반대다.
+	 */
+	knownPlot?: string;
 }
 
 /** 조사 요청 조립. 브라우저 릴레이 경로도 이걸 그대로 쓴다. */
@@ -197,12 +210,26 @@ export function buildResearchRequest(
 		.map((source, index) => `[자료 ${index + 1}] ${source.title}\n${source.content.slice(0, MAX_EXCERPT)}`)
 		.join("\n\n");
 
+	/*
+	 * 지금까지 정리해 둔 줄거리를 **되돌려 준다.**
+	 *
+	 * 자료를 모아 두므로 지난 줄거리의 근거가 된 페이지도 아래 [웹 자료] 에 그대로 있다.
+	 * 그래서 "자료에 있는 것만" 이라는 요구를 지키면서도 지난 내용을 지키고 더할 수 있다.
+	 */
+	const priorPlot = (hint.knownPlot ?? "").trim();
+
 	const prompt = [
 		`다음 책을 조사해 주세요: ${query}`,
 		known ? `\n서지 데이터베이스에서 확인된 정보:\n${known}` : "",
+		priorPlot ? `\n[지금까지 정리한 줄거리]\n${priorPlot}` : "",
 		excerpts ? `\n[웹 자료]\n${excerpts}` : "",
 		"\n이 책은 초등학교 고학년 아이의 독서 확인 문제를 만드는 데 쓰입니다.",
 		"줄거리·등장인물·사건 순서를 최대한 구체적으로 정리해 주세요.",
+		priorPlot
+			? "\n[지금까지 정리한 줄거리] 는 앞선 조사에서 정리한 것입니다. **지우지 말고 보강하세요.**" +
+				" 거기 있는 내용을 plotSummary 에 담고, [웹 자료] 에서 새로 확인되는 사건·인물을 더합니다." +
+				" 자료와 어긋나는 대목만 고치고, 어느 자료로도 확인되지 않는 대목은 덜어냅니다."
+			: "",
 	].join("");
 
 	/*

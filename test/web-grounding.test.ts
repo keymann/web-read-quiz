@@ -38,6 +38,44 @@ const hint = (web: WebSource[] = []) => ({
 const textOf = (request: { instructions: string; prompt: string }) =>
 	`${request.instructions}\n${request.prompt}`;
 
+/* ── 다시 찾기는 보강한다 ───────────────────────────── */
+
+/**
+ * "정보 다시 찾기" 는 지난 줄거리를 **갈아 끼우지 않고 보강한다.**
+ *
+ * 이걸 안 하면 이번 자료가 지난 자료보다 얇을 때 줄거리가 오히려 짧아진다 — 부모가 다시
+ * 찾기를 누른 뜻과 반대다. 자료를 모아 두므로(§tavily.merge) 지난 줄거리의 근거가 된
+ * 페이지도 프롬프트에 그대로 남아 있어, "자료에 있는 것만" 을 지키면서 더할 수 있다.
+ */
+describe("지금까지 정리한 줄거리", () => {
+	const PLOT = "거인 크네가 움푹산에 혼자 살며 길을 잃은 아이들을 마을까지 데려다준다.";
+
+	it("지난 줄거리를 프롬프트에 싣고 보강하라고 시킨다", () => {
+		const text = textOf(
+			buildResearchRequest("gemini-3.6-flash", { ...hint([webSource()]), knownPlot: PLOT }, false),
+		);
+
+		expect(text).toContain("[지금까지 정리한 줄거리]");
+		expect(text).toContain(PLOT);
+		expect(text).toContain("지우지 말고 보강하세요");
+	});
+
+	// 자료로 확인되지 않는 대목을 그대로 물려받으면 지어낸 줄거리가 영영 남는다.
+	it("자료로 확인되지 않는 대목은 덜어내라고 시킨다", () => {
+		const text = textOf(
+			buildResearchRequest("gemini-3.6-flash", { ...hint([webSource()]), knownPlot: PLOT }, false),
+		);
+		expect(text).toContain("확인되지 않는 대목은 덜어냅니다");
+	});
+
+	// 첫 조사에는 물려받을 것이 없다. 빈 절을 붙이면 모델이 그것을 채우려 든다.
+	it("지난 줄거리가 없으면 그 절을 붙이지 않는다", () => {
+		const text = textOf(buildResearchRequest("gemini-3.6-flash", hint([webSource()]), false));
+		expect(text).not.toContain("[지금까지 정리한 줄거리]");
+		expect(text).not.toContain("지우지 말고 보강하세요");
+	});
+});
+
 /* ── Phase 2 ─────────────────────────────────────────── */
 
 describe("조사 지시 (Phase 2)", () => {
@@ -73,15 +111,21 @@ describe("조사 지시 (Phase 2)", () => {
 		expect(text).toContain("판매 정보·홍보 문구뿐이라면");
 	});
 
-	// 원문을 통째로 넣으면 프롬프트가 수만 자가 되고 모델이 중간을 흘린다.
+	/**
+	 * 원문을 통째로 넣으면 프롬프트가 수만 자가 되고 모델이 중간을 흘린다.
+	 *
+	 * 6건이었다. 자료를 모아 두게 되면서 고를 것이 늘어 10건으로 올렸다 — **줄거리를 정리하는
+	 * 이 호출은 조사할 때 한 번뿐**이라 문제 생성 비용에는 영향이 없다. Brief 에 싣는 수는
+	 * 생성 라운드마다 매번 실리므로 따로 둔다(`MAX_BRIEF_WEB`).
+	 */
 	it("자료 수와 길이에 상한이 있다", () => {
-		const many = Array.from({ length: 20 }, (_, i) =>
+		const many = Array.from({ length: 30 }, (_, i) =>
 			webSource({ url: `https://a.example/${i}`, content: "가".repeat(5_000) }),
 		);
 		const text = textOf(buildResearchRequest("gemini-3.6-flash", hint(many), false));
 
-		expect(text).toContain("[자료 6]");
-		expect(text).not.toContain("[자료 7]");
+		expect(text).toContain("[자료 10]");
+		expect(text).not.toContain("[자료 11]");
 		expect(text.length).toBeLessThan(20_000);
 	});
 });

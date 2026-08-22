@@ -1,6 +1,14 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { buildQuery, normalize, plotRelated, relevantCount, search, type WebSource } from "../src/search/tavily";
+import {
+	buildQuery,
+	merge,
+	normalize,
+	plotRelated,
+	relevantCount,
+	search,
+	type WebSource,
+} from "../src/search/tavily";
 import * as budget from "../src/services/search-budget";
 import type { AppEnv } from "../src/types";
 
@@ -88,6 +96,64 @@ describe("이 책을 다룬 결과인지", () => {
 	});
 });
 
+/**
+ * 모아 두는 자료의 순서와 상한 (§tavily.merge).
+ *
+ * 순서가 곧 프롬프트에 실릴 순서다. 판매 페이지가 관련도만 높아 앞자리를 차지하면 정작
+ * 줄거리를 담은 글이 상한 밖으로 밀린다.
+ */
+describe("자료를 모으는 규칙", () => {
+	const plotPage = (i: number, score: number): WebSource => ({
+		url: `https://blog.example.com/${i}`,
+		title: `움푹산의 비밀 서평 ${i}`,
+		content: "거인 크네의 줄거리와 등장인물, 결말까지 적은 독후감",
+		score,
+	});
+	const shopPage = (i: number, score: number): WebSource => ({
+		url: `https://shop.example.com/${i}`,
+		title: "움푹산의 비밀 - 인터넷 서점",
+		content: "정가 13,000원 배송 무료 장바구니 담기 적립",
+		score,
+	});
+
+	it("줄거리를 다룬 글을 앞에 세운다", () => {
+		// 판매 페이지가 관련도는 더 높다.
+		const out = merge([plotPage(1, 0.3)], [shopPage(2, 0.99)]);
+		expect(out.map((s) => s.url)).toEqual([
+			"https://blog.example.com/1",
+			"https://shop.example.com/2",
+		]);
+	});
+
+	it("같은 앞자리 안에서는 관련도로 줄 세운다", () => {
+		const out = merge([plotPage(1, 0.5)], [plotPage(2, 0.9)]);
+		expect(out.map((s) => s.score)).toEqual([0.9, 0.5]);
+	});
+
+	// 같은 주소는 한 번만. 새로 받은 발췌를 남긴다 — 페이지가 그동안 늘어났을 수 있다.
+	it("같은 주소는 새로 받은 것을 남긴다", () => {
+		const older = { ...plotPage(1, 0.5), content: "옛 발췌" };
+		const newer = { ...plotPage(1, 0.5), content: "새 발췌" };
+
+		const out = merge([older], [newer]);
+		expect(out).toHaveLength(1);
+		expect(out[0]!.content).toBe("새 발췌");
+	});
+
+	/**
+	 * 검색 한 번이 20건을 물어다 주고 책당 여섯 번까지 쓸 수 있다. 그냥 쌓으면 120건 ·
+	 * 240KB 가 되고 조사와 문제 생성이 그 행을 매번 읽는다.
+	 */
+	it("상한을 넘겨 쌓지 않는다", () => {
+		const many = Array.from({ length: 40 }, (_, i) => plotPage(i, 0.9 - i * 0.01));
+		const out = merge([], many);
+
+		expect(out).toHaveLength(24);
+		// 잘려 나가는 것은 관련도가 낮은 뒤쪽이다.
+		expect(out[0]!.score).toBeCloseTo(0.9);
+	});
+});
+
 describe("참고 자료로 올릴 자료인지", () => {
 	/**
 	 * 검색은 20건을 물어다 주는데 절반 이상이 판매 페이지·도서관 목록이다. 그것까지 참고 자료로
@@ -139,6 +205,8 @@ async function clearCounters(e: AppEnv = env as never) {
 	for (const n of [1, 2, 3, 4]) {
 		await e.SESSIONS.delete(n === 1 ? `tavily:${month}` : `tavily:${month}:${n}`);
 	}
+	// 잔량 조회 캐시도 지운다. 남아 있으면 다음 테스트가 앞 테스트의 숫자를 본다.
+	await e.SESSIONS.delete("tavily:usage");
 }
 
 /**
@@ -159,6 +227,117 @@ const withKeys = (...keys: (string | undefined)[]): AppEnv =>
 const noKeys = withKeys();
 const oneKey = withKeys("tvly-a");
 const fourKeys = withKeys("tvly-a", "tvly-b", "tvly-c", "tvly-d");
+
+/**
+ * 부모에게 보여줄 잔량은 **우리 카운터가 아니라 Tavily 가 아는 값**이다.
+ *
+ * 카운터는 막는 데 쓰는 값이라 실제와 어긋난다. KV 경쟁으로 새고, 이 앱 바깥에서 같은 키를
+ * 쓰면 아예 세지 못한다. 2026-08-22 실측에서 우리 표시는 한도가 3,800 이라고 했지만 실제
+ * 한도는 네 계정 × 1,000 = 4,000 이었다.
+ */
+describe("남은 크레딧", () => {
+	function mockUsage(planUsage: number, planLimit: number | null, times = 1) {
+		fetchMock
+			.get("https://api.tavily.com")
+			.intercept({ path: "/usage", method: "GET" })
+			.reply(200, { account: { plan_usage: planUsage, plan_limit: planLimit } })
+			.times(times);
+	}
+
+	it("Tavily 가 아는 값을 그대로 쓴다", async () => {
+		await clearCounters(oneKey);
+
+		mockUsage(98, 1000);
+		expect(await budget.refreshUsage(oneKey)).toEqual({ used: 98, limit: 1000, measured: true });
+
+		await clearCounters(oneKey);
+	});
+
+	// 키마다 딸린 계정이 다르다. 한도도 사용량도 합쳐야 서비스 전체의 잔량이 된다.
+	it("키가 여럿이면 계정마다 물어 합친다", async () => {
+		await clearCounters(fourKeys);
+
+		mockUsage(25, 1000, 4);
+		expect(await budget.refreshUsage(fourKeys)).toEqual({ used: 100, limit: 4000, measured: true });
+
+		await clearCounters(fourKeys);
+	});
+
+	/**
+	 * 못 물어본 키는 우리 카운터로 메운다. 한 키가 응답하지 않는다고 전체 숫자를 감추면
+	 * 부모는 얼마 남았는지 알 수 없다. 대신 짐작이라고 밝힌다.
+	 */
+	it("못 물어보면 카운터로 짐작하고 그렇다고 밝힌다", async () => {
+		await clearCounters(oneKey);
+		await env.SESSIONS.put(`tavily:${budget.currentMonth()}`, "40");
+
+		fetchMock
+			.get("https://api.tavily.com")
+			.intercept({ path: "/usage", method: "GET" })
+			.reply(401, { detail: "unauthorized" });
+
+		expect(await budget.refreshUsage(oneKey)).toEqual({
+			used: 40,
+			limit: budget.MONTHLY_CAP,
+			measured: false,
+		});
+
+		await clearCounters(oneKey);
+	});
+
+	/**
+	 * 화면이 부르는 쪽은 **외부를 부르지 않는다.** 물어보는 데 실측 1.5초가 걸려서, 책 화면을
+	 * 열 때마다 그만큼 기다리게 할 수 없다.
+	 */
+	it("화면 조회는 들고 있던 값을 그대로 내준다", async () => {
+		await clearCounters(oneKey);
+
+		mockUsage(7, 1000); // refreshUsage 한 번만 허용한다
+		await budget.refreshUsage(oneKey);
+
+		// 인터셉터가 없다 — usage() 가 외부를 부르면 테스트가 깨진다.
+		const out = await budget.usage(oneKey);
+		expect(out.used).toBe(7);
+		expect(out.limit).toBe(1000);
+		expect(out.stale).toBe(false);
+
+		await clearCounters(oneKey);
+	});
+
+	// 묵으면 다시 물을 때가 됐다고 알린다. 그 갱신은 응답 뒤에서 돈다.
+	it("묵은 값은 다시 물으라고 알린다", async () => {
+		await clearCounters(oneKey);
+
+		mockUsage(7, 1000);
+		const at = 1_000_000;
+		await budget.refreshUsage(oneKey, at);
+
+		expect((await budget.usage(oneKey, at + 60_000)).stale).toBe(false);
+		expect((await budget.usage(oneKey, at + 10 * 60_000)).stale).toBe(true);
+
+		await clearCounters(oneKey);
+	});
+
+	// 아직 한 번도 못 물어본 상태. 짐작한 값이라도 내주고 갱신을 맡긴다.
+	it("들고 있는 값이 없으면 짐작한 값을 내주고 갱신을 맡긴다", async () => {
+		await clearCounters(oneKey);
+		await env.SESSIONS.put(`tavily:${budget.currentMonth()}`, "12");
+
+		const out = await budget.usage(oneKey);
+		expect(out).toEqual({ used: 12, limit: budget.MONTHLY_CAP, measured: false, stale: true });
+
+		await clearCounters(oneKey);
+	});
+
+	it("키가 없으면 묻지 않는다", async () => {
+		expect(await budget.usage(noKeys)).toEqual({
+			used: 0,
+			limit: 0,
+			measured: false,
+			stale: false,
+		});
+	});
+});
 
 describe("월 크레딧 예산", () => {
 	// 무료 등급은 계정당 월 1,000 이고 그것은 조용히 넘길 수 있는 숫자다.
@@ -206,7 +385,7 @@ import { fetchMock } from "cloudflare:test";
 import { afterEach, beforeAll } from "vitest";
 import { Client, signupParent } from "./helpers";
 import * as booksRepo from "../src/repositories/books";
-import { refreshWeb, prepareWeb, cachedWeb, requireOwned } from "../src/services/book";
+import { applyResearch, prepareWeb, cachedWeb, requireOwned } from "../src/services/book";
 
 const PNG = new Uint8Array([
 	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -268,9 +447,12 @@ describe("키가 없을 때", () => {
 		// 인터셉터를 걸지 않았는데 통과했다 = 외부를 부르지 않았다.
 	});
 
-	it("재검색은 거절한다", async () => {
+	it("다시 찾기도 외부를 부르지 않는다", async () => {
 		const { bookId, userId } = await aBook();
-		await expect(refreshWeb(noKeys, userId, bookId)).rejects.toThrow();
+		await asResearched(noKeys, userId, bookId);
+
+		const out = await prepareWeb(noKeys, userId, await requireOwned(noKeys, userId, bookId));
+		expect(out).toEqual([]);
 	});
 });
 
@@ -302,41 +484,116 @@ describe("캐시", () => {
 	});
 });
 
-describe("재검색 상한", () => {
-	it("책당 횟수를 다 쓰면 거절한다", async () => {
+/**
+ * 이미 한 번 조사한 책으로 만든다. `prepareWeb` 은 이 표시를 보고 "부모가 정보 다시 찾기를
+ * 눌렀다" 고 판단한다.
+ */
+async function asResearched(e: AppEnv, userId: string, bookId: string): Promise<void> {
+	await booksRepo.update(e, userId, bookId, { searched_at: new Date().toISOString() });
+}
+
+describe("정보 다시 찾기", () => {
+	// 질의 사다리가 시도마다 다른 말로 묻는다. 다시 찾기가 검색하지 않으면 그 사다리를 쓸 곳이 없다.
+	it("다시 찾기는 웹을 새로 검색한다", async () => {
 		const { bookId, userId } = await aBook();
 		const e = withKeys("tvly-test");
+
+		mockTavily(PAGES, 1);
+		await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+		await asResearched(e, userId, bookId);
+
+		// 두 번째 인터셉터를 걸었다 = 다시 찾기는 실제로 검색해야 한다.
+		mockTavily(PAGES, 1);
+		const out = await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+
+		expect(out.length).toBeGreaterThan(0);
+		expect((await requireOwned(e, userId, bookId)).web_searches).toBe(2);
+	});
+
+	/**
+	 * 한 번의 조사가 조사 계획을 여러 번 세울 수 있다(모델 교체 · 내장 검색 429).
+	 * 그때마다 검색하면 부모가 버튼을 한 번 눌렀는데 크레딧이 두세 번 나간다.
+	 */
+	it("한 조사 안에서 두 번 찾지 않는다", async () => {
+		const { bookId, userId } = await aBook();
+		const e = withKeys("tvly-test");
+		await asResearched(e, userId, bookId);
+
+		mockTavily(PAGES, 1); // 딱 한 번만 허용한다
+		const first = await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+		expect(first.length).toBeGreaterThan(0);
+
+		// 인터셉터가 없다 — 부르면 테스트가 깨진다.
+		const second = await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+		expect(second).toHaveLength(first.length);
+	});
+
+	it("책당 횟수를 다 쓰면 더 찾지 않고 찾아 둔 자료를 쓴다", async () => {
+		const { bookId, userId } = await aBook();
+		const e = withKeys("tvly-test");
+
+		mockTavily(PAGES, 1);
+		const before = await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
 
 		await booksRepo.update(e, userId, bookId, { web_searches: budget.MAX_SEARCHES_PER_BOOK });
-		await expect(refreshWeb(e, userId, bookId)).rejects.toThrow(/횟수/);
+		await asResearched(e, userId, bookId);
+
+		// 인터셉터가 없다. 상한을 넘겨 부르면 테스트가 깨진다.
+		const out = await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+		expect(out).toHaveLength(before.length);
 	});
 
-	it("남은 횟수를 함께 알려준다", async () => {
+	/**
+	 * 다시 찾기는 **모으는 것**이다. 질의 사다리가 시도마다 다른 말로 물으므로 검색마다
+	 * 걸리는 페이지가 다르다. 새것으로 덮으면 지난번에 건진 독후감을 잃는다.
+	 */
+	it("다시 찾은 자료를 이전 자료에 더한다", async () => {
 		const { bookId, userId } = await aBook();
 		const e = withKeys("tvly-test");
 
 		mockTavily(PAGES, 1);
-		const out = await refreshWeb(e, userId, bookId);
+		const first = await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+		await asResearched(e, userId, bookId);
 
-		expect(out.sourceCount).toBeGreaterThan(0);
-		expect(out.searchesLeft).toBe(budget.MAX_SEARCHES_PER_BOOK - 1);
-		expect(out.notice).toBeNull();
+		// 주소가 겹치지 않는 다른 페이지가 걸린다.
+		const MORE = PAGES.map((page, i) => ({ ...page, url: `https://cafe.example.com/${i}` }));
+		mockTavily(MORE, 1);
+		const pooled = await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+
+		expect(pooled.length).toBe(first.length + MORE.length);
+		// 적어 둔 것도 합쳐진 것이어야 한다. 다음 조사가 이걸 읽는다.
+		expect(cachedWeb(await requireOwned(e, userId, bookId))).toHaveLength(pooled.length);
 	});
 
-	// 새 검색이 빈손이면 이전에 찾아 둔 자료를 잃어서는 안 된다.
-	it("빈손 재검색이 기존 자료를 지우지 않는다", async () => {
+	// 같은 주소는 한 번만. 사다리를 올려도 같은 페이지가 다시 걸리는 일이 흔하다.
+	it("같은 주소는 한 번만 남는다", async () => {
 		const { bookId, userId } = await aBook();
 		const e = withKeys("tvly-test");
 
 		mockTavily(PAGES, 1);
-		await refreshWeb(e, userId, bookId);
+		const first = await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+		await asResearched(e, userId, bookId);
+
+		mockTavily(PAGES, 1); // 똑같은 결과가 다시 온다
+		const pooled = await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+
+		expect(pooled).toHaveLength(first.length);
+	});
+
+	// 이번 질의가 못 건졌다고 지난번에 건진 근거를 버릴 이유가 없다.
+	it("빈손으로 돌아와도 찾아 둔 자료를 잃지 않는다", async () => {
+		const { bookId, userId } = await aBook();
+		const e = withKeys("tvly-test");
+
+		mockTavily(PAGES, 1);
+		const before = await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+		await asResearched(e, userId, bookId);
 
 		mockTavily([], 2); // basic 빈손 → advanced 도 빈손
-		const out = await refreshWeb(e, userId, bookId);
+		const out = await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
 
-		expect(out.sourceCount).toBeGreaterThan(0);
-		expect(out.notice).toContain("직접");
-		expect(cachedWeb(await requireOwned(e, userId, bookId)).length).toBeGreaterThan(0);
+		expect(out).toHaveLength(before.length);
+		expect(cachedWeb(await requireOwned(e, userId, bookId)).length).toBe(before.length);
 	});
 });
 
@@ -350,19 +607,72 @@ describe("참고 자료 적재", () => {
 		score: 0.95 - i * 0.01,
 	}));
 
+	/**
+	 * 조사 결과를 책에 반영한다. 참고 자료가 쌓이는 곳은 여기 하나다.
+	 *
+	 * 서지 결과를 미리 적어 둔다. 비워 두면 반영 단계가 공개 API 를 실제로 부른다 —
+	 * 여기서 재려는 것은 그 조회가 아니라 **웹 자료를 목록에 어떻게 올리는가**다.
+	 */
+	async function applyFound(e: AppEnv, userId: string, bookId: string, bib: unknown[] = []) {
+		await booksRepo.update(e, userId, bookId, {
+			bib_cache: JSON.stringify(
+				bib.length > 0
+					? bib
+					: [
+							{
+								source: "kakao-book",
+								title: "움푹산의 비밀",
+								author: "천희순",
+								publisher: "크레용하우스",
+								isbn13: "",
+								publishedAt: "",
+								description: "거인 크네가 사는 움푹산 이야기입니다.",
+								url: "https://kakao.example/1",
+							},
+						],
+			),
+		});
+
+		return applyResearch(
+			e,
+			userId,
+			bookId,
+			{
+				found: true,
+				title: "움푹산의 비밀",
+				author: "천희순",
+				publisher: "크레용하우스",
+				isbn13: "",
+				publishedAt: "",
+				targetAge: "",
+				bookLanguage: "ko",
+				arLevel: "",
+				arPoints: "",
+				arInterestLevel: "",
+				lexile: "",
+				description: "",
+				plotSummary: "거인 크네가 움푹산의 아이들을 구해 낸다.",
+				characters: [{ name: "크네", role: "거인" }],
+				keyEvents: ["크네가 아이들을 구한다"],
+				sources: [],
+			},
+			{ groundingUsed: true, searchNotice: null, modelNotice: null, model: "test-model" },
+		);
+	}
+
 	it("줄거리 없는 페이지는 목록에 올리지 않는다", async () => {
 		const { bookId, userId } = await aBook();
 		const e = withKeys("tvly-test");
 
 		mockTavily([...SHOP_PAGES, ...PAGES], 1);
-		const out = await refreshWeb(e, userId, bookId);
+		await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+		await applyFound(e, userId, bookId);
 
-		// 13건을 받았지만 목록에 남는 것은 줄거리를 다룬 8건이다.
-		expect(out.sourceCount).toBe(PAGES.length);
-
+		// 13건을 받았지만 목록에 남는 웹 자료는 줄거리를 다룬 8건이다.
 		const rows = await booksRepo.listSources(e, bookId);
-		expect(rows).toHaveLength(PAGES.length);
-		expect(rows.every((row) => row.url!.startsWith("https://blog.example.com/"))).toBe(true);
+		const web = rows.filter((row) => row.source === "web");
+		expect(web).toHaveLength(PAGES.length);
+		expect(web.every((row) => row.url!.startsWith("https://blog.example.com/"))).toBe(true);
 
 		// 프롬프트에 실을 자료는 줄이지 않는다. 거르는 것은 부모가 눈으로 읽는 목록뿐이다.
 		expect(cachedWeb(await requireOwned(e, userId, bookId))).toHaveLength(
@@ -370,17 +680,17 @@ describe("참고 자료 적재", () => {
 		);
 	});
 
-	it("판매 페이지만 걸리면 무엇이 없는지 알려준다", async () => {
+	it("판매 페이지만 걸리면 웹 자료를 올리지 않는다", async () => {
 		const { bookId, userId } = await aBook();
 		const e = withKeys("tvly-test");
 
 		// 제목은 다 맞으므로 한 번으로 끝난다 — 넓혀 다시 찾는 것은 "이 책" 을 못 찾았을 때다.
 		mockTavily(SHOP_PAGES, 1);
-		const out = await refreshWeb(e, userId, bookId);
+		await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+		await applyFound(e, userId, bookId);
 
-		expect(out.sourceCount).toBe(0);
-		expect(out.notice).toContain("판매");
-		expect(await booksRepo.listSources(e, bookId)).toHaveLength(0);
+		const rows = await booksRepo.listSources(e, bookId);
+		expect(rows.filter((row) => row.source === "web")).toHaveLength(0);
 	});
 
 	/**
@@ -393,14 +703,32 @@ describe("참고 자료 적재", () => {
 		const { bookId, userId } = await aBook();
 		const e = withKeys("tvly-test");
 
-		// 일부러 뒤섞어 넣는다. 순서를 정하는 것은 넣는 순서가 아니라 소스 종류다.
-		await booksRepo.replaceSources(e, bookId, [
-			{ id: "s-aladin", bookId, source: "aladin", url: "https://aladin.example/1", title: "알라딘", content: "책소개" },
-			{ id: "s-kakao", bookId, source: "kakao-book", url: "https://kakao.example/1", title: "카카오", content: "책소개" },
-		]);
-
 		mockTavily(PAGES, 1);
-		await refreshWeb(e, userId, bookId);
+		await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+
+		// 일부러 알라딘을 앞에 적어 둔다. 순서를 정하는 것은 적힌 순서가 아니라 소스 종류다.
+		await applyFound(e, userId, bookId, [
+			{
+				source: "aladin",
+				title: "움푹산의 비밀",
+				author: "천희순",
+				publisher: "크레용하우스",
+				isbn13: "",
+				publishedAt: "",
+				description: "알라딘 책소개입니다.",
+				url: "https://aladin.example/1",
+			},
+			{
+				source: "kakao-book",
+				title: "움푹산의 비밀",
+				author: "천희순",
+				publisher: "크레용하우스",
+				isbn13: "",
+				publishedAt: "",
+				description: "카카오 책소개입니다.",
+				url: "https://kakao.example/1",
+			},
+		]);
 
 		const kinds = (await booksRepo.listSources(e, bookId)).map((row) => row.source);
 		expect(kinds[0]).toBe("kakao-book");

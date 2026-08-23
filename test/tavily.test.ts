@@ -304,7 +304,12 @@ describe("남은 크레딧", () => {
 		await clearCounters(oneKey);
 	});
 
-	// 묵으면 다시 물을 때가 됐다고 알린다. 그 갱신은 응답 뒤에서 돈다.
+	/**
+	 * 묵으면 다시 물을 때가 됐다고 알린다. 그 갱신은 응답 뒤에서 돈다.
+	 *
+	 * 기준 시간을 여기 적어 두지 않고 상수를 가져다 쓴다. 값을 두 곳에 적으면 한쪽을 고쳤을 때
+	 * 이 테스트가 조용히 어긋난다 — 실제로 그렇게 깨졌다(5분 → 30분으로 늘렸을 때).
+	 */
 	it("묵은 값은 다시 물으라고 알린다", async () => {
 		await clearCounters(oneKey);
 
@@ -312,8 +317,11 @@ describe("남은 크레딧", () => {
 		const at = 1_000_000;
 		await budget.refreshUsage(oneKey, at);
 
-		expect((await budget.usage(oneKey, at + 60_000)).stale).toBe(false);
-		expect((await budget.usage(oneKey, at + 10 * 60_000)).stale).toBe(true);
+		const fresh = at + budget.USAGE_STALE_MS / 2;
+		const stale = at + budget.USAGE_STALE_MS + 1_000;
+
+		expect((await budget.usage(oneKey, fresh)).stale).toBe(false);
+		expect((await budget.usage(oneKey, stale)).stale).toBe(true);
 
 		await clearCounters(oneKey);
 	});

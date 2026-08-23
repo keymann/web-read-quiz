@@ -135,10 +135,20 @@ export async function quizReviewPage({ id }) {
 
 	await refresh();
 
-	// 릴레이 모드에서는 서버가 생성을 시작해 주지 않는다(홍콩 콜로에서 나가면 Gemini 에 막힌다).
-	// 책 화면에서 막 넘어와 아직 문항이 없다면 여기서 바로 돌린다.
-	if (lastData?.quiz.status === "DRAFT" && lastData.progress.generated === 0) {
-		if (await usesBrowserRelay()) await startGeneration();
+	/*
+	 * 갓 만들어진 퀴즈면 **여기서 생성을 시작한다.**
+	 *
+	 * 책 화면은 퀴즈 행만 만들고 곧바로 넘긴다 — 진행 상황을 보여 주는 화면이 이쪽이므로,
+	 * 시작도 이쪽이 하는 편이 낫다. 그래야 첫 화면부터 진행이 그려진다.
+	 *
+	 * 시작하는 방법이 경로마다 다르다. 브라우저 릴레이는 이 탭이 Gemini 를 직접 부르고,
+	 * 서버 경로는 백그라운드 작업에 맡긴다. `startGeneration` 이 그 갈림을 안다.
+	 *
+	 * 이미 만들다 만 회차(재도전으로 생긴 것)에는 걸리지 않는다. `DRAFT` 이고 문항이 0개일
+	 * 때만 — 그건 방금 만들어졌다는 뜻이다. 부모가 직접 버튼을 눌러 채우는 회차를 가로채지 않는다.
+	 */
+	if (lastData?.quiz.status === "DRAFT" && lastData.progress.generated === 0 && !lastData.quiz.error) {
+		await startGeneration();
 	}
 
 	async function refresh() {

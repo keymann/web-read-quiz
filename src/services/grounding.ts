@@ -90,6 +90,35 @@ export const MIN_EVIDENCE_GROUNDING = 0.65;
 export const MIN_QUESTION_GROUNDING = 0.5;
 
 /**
+ * **정답**이 줄거리 절 안에서 나왔다고 인정하는 하한.
+ *
+ * 문제 본문과 따로 재는 이유: 문제 문장에는 배경 낱말(시리즈명·수상 이력)이 섞여도 되지만,
+ * 정답은 아이가 책을 읽어야만 아는 것이어야 한다. 정답이 홍보 문구의 낱말로만 이뤄졌다면
+ * 그 문제는 소개문만 읽어도 풀린다(§7).
+ *
+ * 실측 표본으로 정했다(`test/grounding.test.ts` 의 두 무리, `[줄거리]·[등장인물]·[주요 사건]`
+ * 절과 대조).
+ *
+ *   제대로 조사한 정보로 만든 문항 4개   1.00 · 1.00 · 1.00 · 1.00
+ *   기억으로 지어낸 문항 2개            0.50 · 0.20
+ *
+ * 두 무리 사이가 넓어 0.6 은 어느 쪽에도 걸리지 않는다.
+ */
+export const MIN_ANSWER_GROUNDING = 0.6;
+
+/**
+ * 근거로 인정할 최소 길이.
+ *
+ * 비율 검사에는 길이 하한이 없어서, 낱말 하나만 적어 보내면 비율이 1.0 이 된다("잎싹"). 그건
+ * 인용이 아니라 우연이다. 실측 표본의 근거는 51~75자였으므로 20자는 멀쩡한 근거를 걸지 않는다.
+ *
+ * 영어 근거에는 더 길게 요구한다 — 알파벳은 글자당 정보가 적다. `hasVerbatimQuote` 의 창 길이와
+ * 같은 이유이고 같은 비율(14:28)을 쓴다.
+ */
+const MIN_EVIDENCE_LENGTH_KO = 20;
+const MIN_EVIDENCE_LENGTH_EN = 40;
+
+/**
  * 두 글이 같은 문자 체계를 쓰는가.
  *
  * 문제 언어를 영어로 두면 문항은 영어인데 Brief 는 한국어다(§17). 이때 글자를 맞대 보는
@@ -183,6 +212,28 @@ function sectionsOf(brief: string): { header: string; body: string }[] {
  * `[줄거리]` 를 남기는 이유: 웹 자료를 발췌해 만든 요약이고, 부모가 직접 적은 줄거리도
  * 거기 들어간다(PR #30) — 가장 믿을 만한 출처를 근거에서 빼면 안 된다.
  */
+/**
+ * 출제 근거로 인정되는 절만 남긴다. **웹 자료가 없어도 좁힌다.**
+ *
+ * `evidenceBase` 와 다른 점이 그것이다. 그쪽은 웹 자료가 있을 때만 좁히는데, 그 조심스러움은
+ * "지금 잘 되는 책이 갑자기 전부 탈락하면 안 된다" 는 이유였다(PR #30). 근거(evidence) 검사에는
+ * 그 조심스러움이 여전히 맞다 — 모델이 인용할 만한 문장은 소개에도 있다.
+ *
+ * 그러나 **정답**은 다르다. 정답이 홍보 문구에만 있는 낱말로 이뤄졌다면 그 문제는 책을 읽지
+ * 않아도 풀린다(§7). 정답은 늘 줄거리·인물·사건 안에서 나와야 한다.
+ *
+ * 남길 절의 본문이 전부 비어 있으면 Brief 전체로 되돌린다 — 대조할 것이 없는데 전부 떨어뜨리면
+ * 문제를 하나도 만들 수 없다.
+ */
+export function plotBase(brief: string): string {
+	const kept = sectionsOf(brief).filter((section) =>
+		EVIDENCE_SECTIONS.some((name) => section.header.startsWith(name)),
+	);
+
+	if (kept.length === 0 || kept.every((section) => section.body.trim() === "")) return brief;
+	return kept.map((section) => `${section.header}\n${section.body}`).join("\n");
+}
+
 export function evidenceBase(brief: string): string {
 	if (!brief.includes(WEB_SECTION)) return brief;
 
@@ -290,6 +341,25 @@ export function checkGrounding(
 	const evidence = question.evidence ?? "";
 	const evidenceRatio = groundedRatio(evidence, base);
 
+	/*
+	 * 근거가 **인용이라고 볼 만한 길이**인지 먼저 본다.
+	 *
+	 * 비율 검사에는 길이 하한이 없어서 낱말 하나만 적어 보내면 비율이 1.0 이 된다. 그건 인용이
+	 * 아니라 우연이고, 그런 문항은 무엇을 근거로 삼았는지 부모가 확인할 수 없다.
+	 */
+	const trimmed = evidence.trim();
+	const floor = hasHangul(trimmed) ? MIN_EVIDENCE_LENGTH_KO : MIN_EVIDENCE_LENGTH_EN;
+	if (trimmed !== "" && trimmed.length < floor) {
+		return {
+			ok: false,
+			reason:
+				"근거가 너무 짧습니다. 어느 대목에서 나왔는지 알 수 있도록 제공된 책 정보의" +
+				" 문장을 통째로 옮겨 적으세요.",
+			evidenceRatio,
+			questionRatio: 1,
+		};
+	}
+
 	const answer = question.choices?.[question.correctChoice - 1] ?? "";
 	const asked = `${question.questionText} ${answer}`;
 	// 문항과 Brief 의 문자 체계가 다르면(영어 출제 + 한국어 정보) 글자 대조가 성립하지 않는다.
@@ -335,6 +405,29 @@ export function checkGrounding(
 		return {
 			ok: false,
 			reason: "문제와 정답이 제공된 책 정보에 없는 인물·장면을 다룹니다.",
+			evidenceRatio,
+			questionRatio,
+		};
+	}
+
+	/*
+	 * **정답은 줄거리 안에서 나와야 한다.**
+	 *
+	 * 위의 문제 본문 검사는 Brief 전체와 대조한다 — 문제 문장에 배경 낱말이 섞이는 것은 잘못이
+	 * 아니기 때문이다. 정답은 다르다. 아이가 책을 읽어야만 아는 것이어야 하고, 홍보 문구
+	 * (`[소개]`·`[출판사 소개]`)의 낱말로만 이뤄진 정답은 소개문만 읽어도 맞힐 수 있다(§7).
+	 *
+	 * 그래서 정답만 따로, **줄거리·인물·사건 절과만** 대조한다.
+	 */
+	const answerComparable = sharesScript(answer, brief);
+	const answerRatio = answerComparable ? groundedRatio(answer, plotBase(brief)) : 1;
+
+	if (answerComparable && answerRatio < MIN_ANSWER_GROUNDING) {
+		return {
+			ok: false,
+			reason:
+				"정답이 줄거리·등장인물·주요 사건에 없는 내용입니다. 소개문이 아니라" +
+				" 줄거리에 적힌 사건으로 문제를 만드세요.",
 			evidenceRatio,
 			questionRatio,
 		};

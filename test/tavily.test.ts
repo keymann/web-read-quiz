@@ -536,19 +536,36 @@ describe("정보 다시 찾기", () => {
 		expect(second).toHaveLength(first.length);
 	});
 
-	it("책당 횟수를 다 쓰면 더 찾지 않고 찾아 둔 자료를 쓴다", async () => {
+	it("책당 크레딧을 다 쓰면 더 찾지 않고 찾아 둔 자료를 쓴다", async () => {
 		const { bookId, userId } = await aBook();
 		const e = withKeys("tvly-test");
 
 		mockTavily(PAGES, 1);
 		const before = await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
 
-		await booksRepo.update(e, userId, bookId, { web_searches: budget.MAX_SEARCHES_PER_BOOK });
+		await booksRepo.update(e, userId, bookId, { web_credits: budget.MAX_CREDITS_PER_BOOK });
 		await asResearched(e, userId, bookId);
 
 		// 인터셉터가 없다. 상한을 넘겨 부르면 테스트가 깨진다.
 		const out = await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
 		expect(out).toHaveLength(before.length);
+	});
+
+	// 실제로 잡은 크레딧을 세야 한다. 깊이로 짐작하면 키 회전·예산 소진에서 어긋난다.
+	it("쓴 크레딧을 책에 쌓는다", async () => {
+		const { bookId, userId } = await aBook();
+		const e = withKeys("tvly-test");
+
+		// 관련 결과가 넉넉하면 basic 한 번(1 크레딧)으로 끝난다.
+		mockTavily(PAGES, 1);
+		await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+		expect((await requireOwned(e, userId, bookId)).web_credits).toBe(1);
+
+		// 빈손이면 advanced(2 크레딧)로 한 번 더 간다 → 이번 조사에서 3 이 더 쌓인다.
+		await asResearched(e, userId, bookId);
+		mockTavily([], 2);
+		await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
+		expect((await requireOwned(e, userId, bookId)).web_credits).toBe(4);
 	});
 
 	/**
@@ -702,19 +719,22 @@ describe("참고 자료 적재", () => {
 	});
 
 	/**
-	 * 부모가 근거를 훑는 순서 — 카카오 책 → 알라딘 → 웹 검색.
+	 * **서지 자료는 목록에 오르지 않는다.**
 	 *
-	 * `created_at` 으로는 지킬 수 없다. 한 배치로 넣으면 밀리초까지 같은 값이 박혀 정렬이
-	 * 사실상 무순서가 된다. `position` 이 그 자리를 맡는다.
+	 * 참고 자료 목록은 부모가 근거를 훑는 곳이고, 서지 API 의 책소개는 홍보 문구라 출제 근거로
+	 * 인정되지 않는다(§7 — `[출판사 소개]` 가 `EVIDENCE_SECTIONS` 에서 빠져 있다).
+	 *
+	 * 낱말로 가리지 않고 **종류로** 가린다. 줄거리 낱말 검사(`mentionsPlot`)는 상거래 문구가
+	 * 섞인 긴 페이지를 가르려고 맞춘 것이라 짧고 밀도 높은 책소개에는 맞지 않는다 — 실측으로
+	 * 알라딘의 실제 책소개가 줄거리 낱말 0개였다.
 	 */
-	it("카카오 책 → 알라딘 → 웹 검색 순으로 늘어놓는다", async () => {
+	it("서지 자료는 목록에 오르지 않고 웹 자료만 남는다", async () => {
 		const { bookId, userId } = await aBook();
 		const e = withKeys("tvly-test");
 
 		mockTavily(PAGES, 1);
 		await prepareWeb(e, userId, await requireOwned(e, userId, bookId));
 
-		// 일부러 알라딘을 앞에 적어 둔다. 순서를 정하는 것은 적힌 순서가 아니라 소스 종류다.
 		await applyFound(e, userId, bookId, [
 			{
 				source: "aladin",
@@ -739,9 +759,8 @@ describe("참고 자료 적재", () => {
 		]);
 
 		const kinds = (await booksRepo.listSources(e, bookId)).map((row) => row.source);
-		expect(kinds[0]).toBe("kakao-book");
-		expect(kinds[1]).toBe("aladin");
-		expect(kinds.slice(2).every((kind) => kind === "web")).toBe(true);
+		expect(kinds.length).toBeGreaterThan(0);
+		expect(kinds.every((kind) => kind === "web")).toBe(true);
 	});
 });
 
@@ -832,7 +851,7 @@ describe("Tavily 가 소진을 알려올 때", () => {
 		mockStatus(432, 1); // 1번 키
 		mockTavily(PAGES, 1); // 2번 키
 
-		const out = await search(fourKeys, { title: "움푹산의 비밀", author: "천희순" });
+		const { sources: out } = await search(fourKeys, { title: "움푹산의 비밀", author: "천희순" });
 		expect(out.length).toBeGreaterThan(0);
 
 		// 1번은 소진으로 표시됐고 2번은 1 크레딧만 썼다.
@@ -849,7 +868,7 @@ describe("Tavily 가 소진을 알려올 때", () => {
 		// basic 이 429 → 빈손, 관련 결과 부족이라 advanced 로 한 번 더 → 또 429
 		mockStatus(429, 2);
 
-		const out = await search(fourKeys, { title: "움푹산의 비밀", author: "천희순" });
+		const { sources: out } = await search(fourKeys, { title: "움푹산의 비밀", author: "천희순" });
 		expect(out).toEqual([]);
 		expect(await budget.spentOn(fourKeys, 1)).toBeLessThan(budget.MONTHLY_CAP);
 
@@ -864,7 +883,7 @@ describe("Tavily 가 소진을 알려올 때", () => {
 		await clearCounters();
 		mockStatus(432, 4);
 
-		const out = await search(fourKeys, { title: "움푹산의 비밀", author: "천희순" });
+		const { sources: out } = await search(fourKeys, { title: "움푹산의 비밀", author: "천희순" });
 		expect(out).toEqual([]);
 		expect(await budget.remaining(fourKeys)).toBe(0);
 		// 인터셉터가 딱 4번 소진됐다 = 그 이상 부르지 않았다(afterEach 가 확인한다).
@@ -893,14 +912,17 @@ describe("질의 사다리", () => {
 	});
 
 	/**
-	 * 좁은 것과 넓은 것의 길이가 서로 나누어지지 않아야(4·3) 여섯 번을 다른 조합으로 쓴다.
-	 * 상한(`MAX_SEARCHES_PER_BOOK`)만큼 눌러도 같은 짝이 다시 나오지 않아야 한다.
+	 * 좁은 것과 넓은 것의 길이가 서로 나누어지지 않아야(4·3) 열두 번을 다른 조합으로 쓴다.
+	 *
+	 * 예전에는 책당 상한이 6회여서 그만큼만 확인했다. 상한이 크레딧으로 바뀌어 훨씬 여러 번
+	 * 누를 수 있으므로, 두 사다리의 최소공배수만큼 겹치지 않는지 본다.
 	 */
-	it("책당 상한까지 짝이 겹치지 않는다", () => {
-		const pairs = Array.from({ length: budget.MAX_SEARCHES_PER_BOOK }, (_, n) =>
+	it("사다리가 한 바퀴 돌기까지 짝이 겹치지 않는다", () => {
+		const cycle = 12; // 좁은 질의 4개 × 넓은 질의 3개
+		const pairs = Array.from({ length: cycle }, (_, n) =>
 			`${buildQuery(KO, false, n).query} || ${buildQuery(KO, true, n).query}`,
 		);
-		expect(new Set(pairs).size).toBe(budget.MAX_SEARCHES_PER_BOOK);
+		expect(new Set(pairs).size).toBe(cycle);
 	});
 
 	it("첫 시도의 질의는 예전과 같다", () => {

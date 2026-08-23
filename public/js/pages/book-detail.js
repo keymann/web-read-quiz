@@ -33,6 +33,14 @@ const SOURCE_LABEL = {
 	parent: "부모가 직접 입력",
 };
 
+/**
+ * 표지 방향 보정을 한 화면에서 몇 번까지 시도할지.
+ *
+ * 실패가 이어지는 상황(키 없음·모델 차단)에서 `refresh()` 마다 다시 걸면 화면이 계속
+ * "확인 중" 으로 보인다. 부모가 분석을 누르면 이 셈이 0 으로 돌아가 다시 기회를 얻는다.
+ */
+const MAX_COVER_FIX = 2;
+
 /** 주소에서 사이트 이름만. 주소가 없거나 깨졌으면 "웹 검색" 으로 되돌린다. */
 function hostOf(url) {
 	try {
@@ -62,12 +70,17 @@ export async function bookDetailPage({ id }) {
 	 */
 	let coverFixing = null;
 	/**
-	 * 이 화면에서 방향 보정을 이미 시도했는지.
+	 * 이 화면에서 방향 보정을 몇 번 시도했는지.
 	 *
-	 * 실패해도 다시 걸지 않는다 — 키가 없거나 모델이 막힌 상황이면 `refresh()` 마다 같은
-	 * 실패를 되풀이하게 되고, 그 사이 화면은 계속 "확인 중" 으로 보인다.
+	 * 실패를 무한히 되풀이하지 않으려고 센다 — 키가 없거나 모델이 막힌 상황이면 `refresh()`
+	 * 마다 같은 실패를 겪고, 그 사이 화면은 계속 "확인 중" 으로 보인다.
+	 *
+	 * 예전에는 boolean 이었고 **시도 직전에 무조건 세웠다.** 그래서 첫 시도가 실패하면 그 화면
+	 * 에서는 다시 걸리지 않았다. 실패는 드물지 않다 — 방금 올린 표지가 KV 에 아직 퍼지지
+	 * 않았거나(등록 직후가 바로 그 순간이다), 부모가 아직 AI 키를 넣지 않았을 수 있다.
+	 * 그러면 부모가 "AI 로 책 정보 읽기" 를 눌러도 표지는 계속 누워 있었다.
 	 */
-	let coverFixTried = false;
+	let coverFixAttempts = 0;
 	/**
 	 * 마지막으로 그린 데이터. 조회 없이 화면만 다시 그릴 때 쓴다.
 	 *
@@ -107,8 +120,11 @@ export async function bookDetailPage({ id }) {
 	 * 열어 보는 순간 바로 선다.
 	 */
 	async function fixCoverOrientation(data) {
-		if (!data || coverFixTried) return;
-		coverFixTried = true;
+		if (!data) return;
+		// 확인이 끝나고 똑바로 서 있는 책. 할 일이 없다.
+		if (data.book.coverRotation === 0) return;
+		if (coverFixAttempts >= MAX_COVER_FIX) return;
+		coverFixAttempts++;
 
 		let rotation = data.book.coverRotation;
 
@@ -288,12 +304,21 @@ export async function bookDetailPage({ id }) {
 					type: "button",
 					text: busy === "analyze" ? "표지를 읽는 중…" : book.analyzedAt ? "다시 분석하기" : "AI 로 책 정보 읽기",
 					disabled: busy !== null,
-					onClick: () =>
-							run(
-								"analyze",
-								(relay) => (relay ? identifyBook(id) : post(`/api/books/${id}/analyze`)),
-								"표지에서 책 정보를 읽었습니다.",
-							),
+					onClick: () => {
+						/*
+						 * 방향 보정에 **새 기회를 준다.**
+						 *
+						 * 분석이 도는 것은 표지를 읽을 수 있고 AI 키도 살아 있다는 뜻이다. 화면을
+						 * 열 때의 보정이 그 둘 때문에 실패했다면 지금은 될 가능성이 높다.
+						 * `run` 이 끝에 `refresh()` 를 부르고, 그 안에서 다시 시도된다.
+						 */
+						coverFixAttempts = 0;
+						return run(
+							"analyze",
+							(relay) => (relay ? identifyBook(id) : post(`/api/books/${id}/analyze`)),
+							"표지에서 책 정보를 읽었습니다.",
+						);
+					},
 				}),
 			]),
 		]);
@@ -681,19 +706,25 @@ export async function bookDetailPage({ id }) {
 			el("button", {
 				class: "btn",
 				type: "button",
-				text: "문제 만들기",
+				text: busy === "quiz" ? "퀴즈를 만드는 중…" : "문제 만들기",
 				disabled: !readyForQuiz || busy !== null,
+				/*
+				 * **누르면 곧바로 검수 화면으로 넘어간다.**
+				 *
+				 * 예전에는 여기서 생성 시작까지 기다렸다. 그 사이 이 화면은 "퀴즈를 만드는
+				 * 중입니다" 만 띄우고 서 있었고, 부모는 진행 상황을 볼 수 없었다 — 정작 그것을
+				 * 보여 주는 화면이 다음 화면이다. 퀴즈 행을 만드는 왕복 하나만 기다리고 넘긴다.
+				 *
+				 * 생성을 시작하는 일은 넘어간 화면이 맡는다. 그래야 서버 경로든 브라우저
+				 * 릴레이든 **자기에게 맞는 방식으로** 시작하고, 그 화면이 처음부터 진행을 그린다.
+				 */
 				onClick: async () => {
 					busy = "quiz";
-					message = "퀴즈를 만드는 중입니다.";
-					messageKind = "info";
 					const chosen = language.select.value;
-					await refresh();
+					render(lastData);
+
 					try {
 						const { quiz } = await post("/api/quizzes", { bookId: book.id, language: chosen });
-						// 브라우저 릴레이에서는 검수 화면이 생성 루프를 직접 돌린다.
-						// 서버에게 시작을 시키면 홍콩 콜로에서 나가 Gemini 에 막힌다.
-						if (!(await usesBrowserRelay())) await post(`/api/quizzes/${quiz.id}/generate`);
 						await navigate(`/parent/quizzes/${quiz.id}`);
 						return;
 					} catch (err) {

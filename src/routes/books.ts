@@ -142,7 +142,7 @@ async function analyze({ env, principal, params }: RouteCtx): Promise<Response> 
  * 예전에는 웹 자료 재검색이 따로 있었다. 버튼을 하나로 합치면서 이 호출이 웹 검색까지
  * 맡는다 — 부모가 "정보 다시 찾기" 를 누르면 질의 사다리가 한 칸 올라간다.
  *
- * 크레딧은 책당 횟수(`MAX_SEARCHES_PER_BOOK`)와 월 예산(`MONTHLY_CAP`)이 두 겹으로 막고,
+ * 크레딧은 책당 상한(`MAX_CREDITS_PER_BOOK`)과 월 예산(`MONTHLY_CAP`)이 두 겹으로 막고,
  * 이 레이트리밋은 AI 호출을 막는 몫이다.
  */
 async function search({ env, principal, params }: RouteCtx): Promise<Response> {

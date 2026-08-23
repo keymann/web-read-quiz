@@ -219,7 +219,7 @@ describe("조회", () => {
 			},
 		]);
 
-		const out = await lookup(oneKey, HINT);
+		const { level: out } = await lookup(oneKey, HINT);
 		expect(out).toMatchObject({
 			arLevel: "4.4",
 			arPoints: "5.0",
@@ -243,21 +243,21 @@ describe("조회", () => {
 			},
 		]);
 
-		expect(await lookup(oneKey, HINT)).toMatchObject({ arLevel: "", lexile: "" });
+		expect((await lookup(oneKey, HINT)).level).toMatchObject({ arLevel: "", lexile: "" });
 	});
 
 	it("키가 없으면 검색하지 않는다", async () => {
 		// 인터셉터를 걸지 않았는데 통과했다 = 외부를 부르지 않았다.
-		expect(await lookup(noKeys, HINT)).toMatchObject({ arLevel: "", lexile: "" });
+		expect((await lookup(noKeys, HINT)).level).toMatchObject({ arLevel: "", lexile: "" });
 	});
 
 	it("제목이 비었으면 검색하지 않는다", async () => {
-		expect(await lookup(oneKey, { title: "  ", author: "" })).toMatchObject({ lexile: "" });
+		expect((await lookup(oneKey, { title: "  ", author: "" })).level).toMatchObject({ lexile: "" });
 	});
 
 	it("찾지 못해도 빈 값으로 돌아온다", async () => {
 		mockTavily([]);
-		expect(await lookup(oneKey, HINT)).toMatchObject({ arLevel: "", lexile: "" });
+		expect((await lookup(oneKey, HINT)).level).toMatchObject({ arLevel: "", lexile: "" });
 	});
 });
 

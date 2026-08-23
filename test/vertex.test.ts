@@ -130,7 +130,13 @@ describe("Vertex 자격증명", () => {
 
 		expect(models).not.toContain("text-embedding-005");
 		expect(models).not.toContain("imagen-4.0-generate-001");
-		expect(models[0]).toBe("gemini-3.7-flash");
+		/*
+		 * `gemini-2.5-flash` 가 맨 앞이다. 무료 등급에서 이 세대가 가장 안정적으로 응답한다
+		 * (`ai/google-shared.ts` 의 `FAMILY_PREFERENCE`). Vertex 는 유료 경로지만 정렬 기준을
+		 * 두 벌로 두지 않는다 — 부모가 설정에서 직접 고를 수 있고, 기준이 갈리면 어긋난다.
+		 */
+		expect(models[0]).toBe("gemini-2.5-flash");
+		// 같은 세대 안에서는 flash 가 pro 보다 앞이다. pro 는 비싸다.
 		expect(models.indexOf("gemini-3.5-flash")).toBeLessThan(models.indexOf("gemini-3.5-pro"));
 	});
 

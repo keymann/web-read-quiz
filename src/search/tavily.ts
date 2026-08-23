@@ -275,6 +275,22 @@ export const plotRelated = (sources: WebSource[], title: string): WebSource[] =>
 	sources.filter((source) => aboutBook(source, title) && mentionsPlot(source));
 
 /**
+ * 줄거리를 **교차 검증**하려면 자료가 이만큼은 있어야 한다.
+ *
+ * 한 곳만 보고 정리하면 그 한 곳이 틀렸을 때 알아낼 방법이 없다. 독후감은 기억으로 쓰는 글이라
+ * 줄거리를 잘못 옮기는 일이 흔하고, 같은 제목의 다른 책을 다룬 글도 섞인다. 두 곳이 같은 사건을
+ * 말하면 그건 책에 실제로 있는 사건이다.
+ *
+ * 못 채웠다고 조사를 포기하지는 않는다 — 그때는 근거가 얇다고 부모에게 알리고, 부모가 줄거리를
+ * 직접 적을 수 있게 한다.
+ */
+export const MIN_PLOT_SOURCES = 2;
+
+/** 줄거리를 교차 검증할 만큼 자료가 모였는가. */
+export const crossCheckable = (sources: WebSource[], title: string): boolean =>
+	plotRelated(sources, title).length >= MIN_PLOT_SOURCES;
+
+/**
  * 이 키의 월 크레딧이 정말 바닥났다는 신호.
  *
  * - **432 Plan Limit Exceeded** — 무료 등급 월 1,000 을 다 썼다
@@ -291,7 +307,7 @@ async function callOnce(
 	depth: Depth,
 	broad: boolean,
 	attempt: number,
-): Promise<WebSource[]> {
+): Promise<QueryResult> {
 	const { query, country } = buildQuery(hint, broad, attempt);
 	return runQuery(env, { query, country, depth });
 }
@@ -303,12 +319,24 @@ export interface QuerySpec {
 }
 
 /**
+ * 질의 하나의 결과와 **실제로 쓴 크레딧.**
+ *
+ * 크레딧 수를 함께 돌려주는 이유는 책당 상한을 크레딧으로 세기 때문이다. 깊이만 보고
+ * 짐작하면 어긋난다 — 키가 소진돼 다음 키로 넘어가면 그만큼 더 잡아 두고, 예산이 바닥나
+ * 한 번도 못 부르면 0 이다. 실제로 잡은 값을 세는 쪽만 맞는다.
+ */
+export interface QueryResult {
+	sources: WebSource[];
+	credits: number;
+}
+
+/**
  * 질의 하나를 던지고 결과를 정규화해 돌려준다. **크레딧을 실제로 쓰는 곳**이다.
  *
  * 질의를 만드는 일과 분리해 둔다 — 줄거리 검색과 읽기 난이도 검색은 찾는 것이 전혀 달라
  * 질의도 다르지만, 키 회전·예산·오류 처리는 똑같아야 한다.
  */
-export async function runQuery(env: AppEnv, spec: QuerySpec): Promise<WebSource[]> {
+export async function runQuery(env: AppEnv, spec: QuerySpec): Promise<QueryResult> {
 	const { query, country, depth } = spec;
 	const body = JSON.stringify({
 		query,
@@ -332,11 +360,14 @@ export async function runQuery(env: AppEnv, spec: QuerySpec): Promise<WebSource[
 	 * 소진으로 표시하고** 다음 키로 간다.
 	 */
 	const exhausted: number[] = [];
+	/** 실제로 잡아 둔 크레딧. 키를 넘어갈 때마다 쌓인다. */
+	let credits = 0;
 
 	for (;;) {
 		// **호출 전에** 잡는다. 쓰고 나서 세면 초과를 초과한 뒤에 안다.
 		const slot = await budget.reserve(env, CREDITS[depth], exhausted);
-		if (!slot) return [];
+		if (!slot) return { sources: [], credits };
+		credits += CREDITS[depth];
 
 		try {
 			const response = await fetch(ENDPOINT, {
@@ -348,16 +379,16 @@ export async function runQuery(env: AppEnv, spec: QuerySpec): Promise<WebSource[
 
 			if (response.ok) {
 				const payload = (await response.json()) as { results?: RawResult[] };
-				return normalize(payload.results ?? []);
+				return { sources: normalize(payload.results ?? []), credits };
 			}
 
-			if (!EXHAUSTED.has(response.status)) return [];
+			if (!EXHAUSTED.has(response.status)) return { sources: [], credits };
 
 			await budget.markExhausted(env, slot.index);
 			exhausted.push(slot.index);
 		} catch {
 			// 네트워크 오류·타임아웃. 다른 키로 바꿔도 같을 테니 여기서 접는다.
-			return [];
+			return { sources: [], credits };
 		}
 	}
 }
@@ -377,15 +408,24 @@ export async function search(
 	hint: WebHint,
 	/** 이 책이 지금까지 웹 검색을 쓴 횟수. 질의 사다리를 한 칸 올리는 데 쓴다. */
 	attempt = 0,
-): Promise<WebSource[]> {
-	if (budget.slots(env).length === 0 || hint.title.trim() === "") return [];
+): Promise<QueryResult> {
+	if (budget.slots(env).length === 0 || hint.title.trim() === "") {
+		return { sources: [], credits: 0 };
+	}
 
 	const first = await callOnce(env, hint, "basic", false, attempt);
-	if (relevantCount(first, hint.title) >= MIN_RELEVANT) return first;
+	if (relevantCount(first.sources, hint.title) >= MIN_RELEVANT) return first;
 
 	const second = await callOnce(env, hint, "advanced", true, attempt);
 	// 더 많이 건진 쪽을 쓴다. 두 번째가 늘 나은 것은 아니다.
-	return relevantCount(second, hint.title) > relevantCount(first, hint.title) ? second : first;
+	// 크레딧은 **둘을 합쳐** 센다. 결과를 버렸다고 이미 잡아 둔 크레딧이 돌아오지는 않는다.
+	const credits = first.credits + second.credits;
+	const better =
+		relevantCount(second.sources, hint.title) > relevantCount(first.sources, hint.title)
+			? second
+			: first;
+
+	return { sources: better.sources, credits };
 }
 
 interface RawResult {

@@ -546,7 +546,6 @@ const orderSources = <T extends { source: string }>(sources: T[]): T[] =>
 function collectSources(
 	bookId: string,
 	title: string,
-	bib: bibliographic.BibRecord[],
 	found: BookResearch,
 	notices: {
 		groundingUsed: boolean;
@@ -556,14 +555,27 @@ function collectSources(
 		webSources?: tavily.WebSource[];
 	},
 ): booksRepo.NewSource[] {
-	const sources: booksRepo.NewSource[] = bib.map((record) => ({
-		id: newId(),
-		bookId,
-		source: record.source,
-		url: isStorableUrl(record.url) ? record.url : null,
-		title: record.title,
-		content: record.description,
-	}));
+	/*
+	 * **서지 자료는 참고 자료 목록에 올리지 않는다.**
+	 *
+	 * 이 목록은 부모가 문제를 검수할 때 **근거를 훑는 곳**이다. 그런데 서지 API 의 책소개는
+	 * 홍보 문구라 출제 근거로 인정되지 않는다 — `[출판사 소개]` 는 `EVIDENCE_SECTIONS` 에서
+	 * 일부러 빠져 있고(§7), 그것만으로 답할 수 있는 문제는 책을 읽지 않아도 풀린다. 근거가
+	 * 아닌 것을 근거 목록에 올려 두면 부모는 읽을 것이 어디 있는지 알 수 없다.
+	 *
+	 * 웹 자료에 쓰는 줄거리 낱말 검사(`mentionsPlot`)를 여기에 쓰려 했는데 **과했다.** 그
+	 * 검사는 상거래 문구가 잔뜩 섞인 긴 페이지를 가르려고 맞춘 것이라, 짧고 밀도 높은 책소개는
+	 * 멀쩡한 것도 떨어진다. 실측 — 알라딘의 실제 책소개
+	 * "…<나쁜 어린이표>로 아이들만의 생각을 절묘하게 표현해냈던 황선미의 장편동화."
+	 * 는 줄거리 낱말이 **0개**다. 홍보 문구인 것은 맞지만 그렇게 걸러낼 대상은 아니다.
+	 *
+	 * 그래서 낱말로 가리지 않고 **종류로** 가린다. 판정 기준이 하나뿐이라 어긋날 여지가 없다.
+	 *
+	 * 서지 정보 자체는 계속 쓴다 — 조사 프롬프트에서 **어느 책인지 대조하는 사실**로 들어가고
+	 * (`buildResearchRequest` 의 `known`), Brief 의 `[출판사 소개]` 에도 남아 배경이 된다.
+	 * 목록에서만 빠진다.
+	 */
+	const sources: booksRepo.NewSource[] = [];
 
 	/*
 	 * Tavily 결과는 **줄거리를 다루는 것만** 올린다.
@@ -664,12 +676,12 @@ export function cachedWeb(row: BookRow): tavily.WebSource[] {
  * 그때마다 검색하면 부모가 버튼을 한 번 눌렀는데 크레딧이 두세 번 나간다.
  */
 const shouldSearchWeb = (row: BookRow): boolean => {
+	// 책당 크레딧을 다 썼으면 더 찾지 않는다. 찾아 둔 자료로 간다.
+	if (row.web_credits >= budget.MAX_CREDITS_PER_BOOK) return false;
 	// 아직 한 번도 조사하지 않은 책. 첫 조사는 늘 한 번 찾는다.
 	if (row.searched_at === null) return row.web_searches === 0;
 	// 이번 조사에서 이미 찾았다.
-	if (row.web_searched_at !== null && row.web_searched_at > row.searched_at) return false;
-	// 책당 상한을 다 썼으면 캐시로 간다.
-	return row.web_searches < budget.MAX_SEARCHES_PER_BOOK;
+	return !(row.web_searched_at !== null && row.web_searched_at > row.searched_at);
 };
 
 /**
@@ -710,7 +722,7 @@ async function runWebSearch(
 	 * 이걸 넘기지 않으면 부모가 "웹 자료 다시 찾기" 를 여섯 번 눌러도 똑같은 질의가 여섯 번
 	 * 나가 같은 결과를 받아 온다 — 크레딧만 쓰고 근거는 늘지 않는다.
 	 */
-	const found = await tavily.search(
+	const { sources: found, credits } = await tavily.search(
 		env,
 		{ title: row.title, author: row.author ?? "", publisher: row.publisher ?? "" },
 		row.web_searches,
@@ -727,8 +739,12 @@ async function runWebSearch(
 
 	// 빈손이어도 횟수와 시각은 남긴다. 안 남기면 자료 없는 책에서 같은 조사가 크레딧을
 	// 두 번 쓴다(모델 교체·내장 검색 429 로 조사 계획을 다시 세울 때).
+	//
+	// 크레딧은 **실제로 잡은 값**을 더한다. 깊이로 짐작하면 어긋난다 — 키가 소진돼 다음 키로
+	// 넘어가면 그만큼 더 잡고, 예산이 바닥나 한 번도 못 부르면 0 이다.
 	await booksRepo.update(env, userId, row.id, {
 		web_searches: row.web_searches + 1,
+		web_credits: row.web_credits + credits,
 		web_searched_at: new Date().toISOString(),
 		...(pooled.length > 0 ? { web_cache: JSON.stringify(pooled) } : {}),
 	});
@@ -784,7 +800,7 @@ export async function applyResearch(
 
 	// 준비 단계가 적어 둔 웹 자료. 여기서 새로 검색하지 않는다 — 크레딧을 두 번 쓰게 된다.
 	const webSources = cachedWeb(row);
-	const sources = collectSources(bookId, row.title, bib, found, { ...notices, webSources });
+	const sources = collectSources(bookId, row.title, found, { ...notices, webSources });
 	await booksRepo.replaceSources(env, bookId, sources);
 
 	// 책을 특정하지 못했으면 그 결과의 서지정보를 받아들이지 않는다. 엉뚱한 책의 정보가 섞이면
@@ -868,9 +884,17 @@ const noticeFor = (fellBackFrom: string | null): string | null =>
  */
 export const isReadyForQuiz = (brief: string | null): boolean => brief !== null && brief.trim() !== "";
 
-/** 근거가 얇은지. 웹 검색으로 얻은 출처가 이만큼은 있어야 든든하다. */
+/**
+ * 근거가 얇은지. **줄거리를 교차 검증할 만큼 모였는가**로 본다.
+ *
+ * 자료가 하나뿐이면 그것이 틀렸을 때 알아낼 방법이 없다. 독후감은 기억으로 쓰는 글이라
+ * 줄거리를 잘못 옮기는 일이 흔하다. 둘이 같은 사건을 말하면 그건 책에 실제로 있는 사건이다.
+ *
+ * 만들 수 없다는 뜻은 아니다 — 그건 Brief 가 있느냐로만 가른다(`isReadyForQuiz`). 여기서
+ * 정하는 것은 부모에게 "더 꼼꼼히 검수하라" 고 말할지다.
+ */
 export const hasWeakEvidence = (evidenceCount: number): boolean =>
-	evidenceCount < MIN_SOURCES_FOR_QUIZ;
+	evidenceCount < tavily.MIN_PLOT_SOURCES;
 
 /**
  * 근거로 셀 수 있는 출처의 수.
@@ -920,7 +944,10 @@ export async function ensureReadingLevel(
 	// AR·Lexile 이 아예 없는 책이 흔해서, 그 반복이 크레딧을 그냥 태운다.
 	if (!(await booksRepo.claimReadingLevelSearch(env, userId, row.id))) return;
 
-	const found = await readingLevel.lookup(env, { title: row.title, author: row.author ?? "" });
+	const { level: found, credits } = await readingLevel.lookup(env, {
+		title: row.title,
+		author: row.author ?? "",
+	});
 
 	const fields: booksRepo.BookFields = {};
 	if (row.ar_level === null && found.arLevel !== "") fields.ar_level = Number(found.arLevel);
@@ -928,9 +955,15 @@ export async function ensureReadingLevel(
 	if (!row.ar_interest && found.arInterestLevel !== "") fields.ar_interest = found.arInterestLevel;
 	if (!row.lexile && found.lexile !== "") fields.lexile = found.lexile;
 
-	if (Object.keys(fields).length > 0) {
-		await booksRepo.update(env, userId, row.id, { ...fields, reading_level_source: "web" });
-	}
+	/*
+	 * 이 검색도 책의 크레딧을 쓴다. 예전에는 세지 않았다 — 횟수로 막을 때는 셀 자리가 없었다.
+	 * 빈손이어도 더한다. 쓴 것은 쓴 것이다.
+	 */
+	await booksRepo.update(env, userId, row.id, {
+		...fields,
+		...(Object.keys(fields).length > 0 ? { reading_level_source: "web" as const } : {}),
+		web_credits: row.web_credits + credits,
+	});
 }
 
 /**

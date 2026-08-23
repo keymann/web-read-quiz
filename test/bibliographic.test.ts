@@ -494,11 +494,30 @@ describe("조사 1회 = 조회 1회", () => {
 		const res = await client.post(`/api/books/${bookId}/search`);
 		expect(res.status).toBe(200);
 
-		// 알라딘·카카오가 출처로 남는다 → 웹 근거 2건이라 근거 얇음 경고가 사라진다.
+		/*
+		 * **서지 자료는 참고 자료 목록에 오르지 않는다.**
+		 *
+		 * 그 목록은 부모가 근거를 훑는 곳이고, 서지 API 의 책소개는 홍보 문구라 출제 근거로
+		 * 인정되지 않는다(§7 — `[출판사 소개]` 가 `EVIDENCE_SECTIONS` 에서 빠져 있다).
+		 * 서지 정보는 조사 프롬프트에서 "어느 책인지 대조하는 사실" 로 쓰이고 Brief 에도 남는다.
+		 *
+		 * 여기서 확인하려는 것은 그 위에 있다 — **조사 1회에 조회도 1회.** 인터셉터를 각 소스
+		 * 한 번씩만 걸었으므로, 반영 단계가 다시 불렀다면 이 테스트가 깨진다.
+		 */
 		const detail = await client.get(`/api/books/${bookId}`);
 		const sources = detail.body.data.sources.map((s: { source: string }) => s.source);
-		expect(sources).toContain("aladin");
-		expect(sources).toContain("kakao-book");
-		expect(detail.body.data.evidenceWeak).toBe(false);
+		expect(sources).not.toContain("aladin");
+		expect(sources).not.toContain("kakao-book");
+
+		// 서지가 프롬프트에는 들어갔다는 증거. 캐시에 적혀 있어야 반영 단계가 그것을 읽는다.
+		const cached = await env.DB.prepare("SELECT bib_cache FROM books WHERE id = ?")
+			.bind(bookId)
+			.first<{ bib_cache: string }>();
+		const kinds = (JSON.parse(cached!.bib_cache) as { source: string }[]).map((r) => r.source);
+		expect(kinds).toContain("aladin");
+		expect(kinds).toContain("kakao-book");
+
+		// 줄거리 자료(웹)가 없으니 근거는 얇다. 부모에게 더 꼼꼼히 검수하라고 알린다.
+		expect(detail.body.data.evidenceWeak).toBe(true);
 	});
 });

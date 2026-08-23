@@ -16,6 +16,12 @@ import type { AppEnv } from "../types";
  * 추론이 필요 없다. AI 를 태우지 않으니 비용도 안 들고 지어낼 여지도 없다.
  */
 
+/** 등급과 **실제로 쓴 크레딧.** 책당 상한을 크레딧으로 세므로 함께 돌려준다. */
+export interface LevelLookup {
+	level: ReadingLevel;
+	credits: number;
+}
+
 export interface ReadingLevel {
 	/** ATOS 북 레벨. `4.4` 꼴의 문자열. 못 찾으면 빈 문자열. */
 	arLevel: string;
@@ -244,15 +250,20 @@ export const buildQuery = (hint: Hint): string =>
  *
  * 실패는 빈 값으로 돌려준다 — 등급을 못 찾았다고 조사 전체를 무산시키지 않는다.
  */
-export async function lookup(env: AppEnv, hint: Hint): Promise<ReadingLevel> {
-	if (budget.slots(env).length === 0 || hint.title.trim() === "") return EMPTY;
+export async function lookup(env: AppEnv, hint: Hint): Promise<LevelLookup> {
+	if (budget.slots(env).length === 0 || hint.title.trim() === "") {
+		return { level: EMPTY, credits: 0 };
+	}
 
-	const results = await tavily.runQuery(env, { query: buildQuery(hint), depth: "basic" });
+	const { sources, credits } = await tavily.runQuery(env, {
+		query: buildQuery(hint),
+		depth: "basic",
+	});
 
-	const perSource = results
+	const perSource = sources
 		// 그 책을 다룬 페이지만 본다. 숫자는 부모가 그냥 믿으므로 엄격하게 거른다.
 		.filter((s) => groundedRatio(hint.title, `${s.title} ${s.content}`) >= MIN_TITLE_MATCH)
 		.map((s) => ({ value: extract(`${s.title} ${s.content}`), url: s.url, title: s.title }));
 
-	return vote(perSource);
+	return { level: vote(perSource), credits };
 }

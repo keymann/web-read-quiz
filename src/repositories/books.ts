@@ -33,8 +33,15 @@ export interface BookRow {
 	bib_cache: string | null;
 	/** Tavily 웹 검색 결과(JSON 배열). 재조사·재도전이 크레딧을 다시 쓰지 않게 한다. */
 	web_cache: string | null;
-	/** 이 책이 웹 검색을 쓴 횟수. 책당 상한을 건다. */
+	/**
+	 * 이 책이 웹 검색을 쓴 횟수.
+	 *
+	 * **상한이 아니다.** 질의 사다리의 칸 번호로 쓴다 — 다시 찾을 때마다 다른 말로 묻기 위한
+	 * 값이다(`search/tavily.ts` 의 `buildQuery`). 상한은 `web_credits` 가 맡는다.
+	 */
 	web_searches: number;
+	/** 이 책이 지금까지 쓴 웹 검색 크레딧. 책당 상한(`MAX_CREDITS_PER_BOOK`)을 건다. */
+	web_credits: number;
 	/**
 	 * 웹 자료를 마지막으로 찾은 시각.
 	 *
@@ -122,6 +129,7 @@ export interface BookFields {
 	bib_cache?: string | null;
 	web_cache?: string | null;
 	web_searches?: number;
+	web_credits?: number;
 	web_searched_at?: string | null;
 	book_language?: string | null;
 	ar_level?: number | null;

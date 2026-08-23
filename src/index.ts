@@ -19,7 +19,7 @@ import { matchRoute, type Route } from "./routes/router";
 import { settingsRoutes } from "./routes/settings";
 import type { AppEnv } from "./types";
 import { assertSameOrigin } from "./utils/csrf";
-import { clientIp, rateLimit } from "./utils/ratelimit";
+import { clientIp, rateLimitLocal } from "./utils/ratelimit";
 import { fail, toResponse } from "./utils/response";
 
 const routes: Route[] = [
@@ -66,8 +66,15 @@ async function handleApi(
 
 	const principal = await readSession(request, env);
 
-	// 인증된 사용자는 사용자 단위로, 아니면 IP 단위로 전체 호출량을 제한한다.
-	await rateLimit(env, "api", principal?.userId ?? clientIp(request), 300, 60);
+	/*
+	 * 인증된 사용자는 사용자 단위로, 아니면 IP 단위로 전체 호출량을 제한한다.
+	 *
+	 * **KV 를 쓰지 않는 쪽으로 센다.** 이 줄은 모든 API 요청을 지나므로 KV 에 쓰면 요청마다
+	 * 쓰기 한 번이 된다. 무료 등급은 하루 1,000회라 그것으로 앱 전체가 멈춘 적이 있다
+	 * (2026-08-23, `utils/ratelimit.ts` 머리말). 정확히 세야 하는 제한은 각 라우트가
+	 * 자기 스코프로 따로 건다.
+	 */
+	rateLimitLocal("api", principal?.userId ?? clientIp(request), 300, 60);
 
 	// `await` 를 붙여 핸들러의 예외가 이 함수의 프레임 안에서 거부되게 한다.
 	// 그냥 반환하면 거부된 프로미스가 채택되기 전 한 틱 동안 미처리 상태로 남아

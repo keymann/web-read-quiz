@@ -118,8 +118,18 @@ const USAGE_TIMEOUT_MS = 4_000;
  * 만료된 순간에 걸린 부모가 카운터로 짐작한 숫자를 보게 된다.
  */
 const USAGE_CACHE_KEY = "tavily:usage";
-const USAGE_TTL = 6 * 60 * 60;
-const USAGE_STALE_MS = 5 * 60 * 1000;
+const USAGE_TTL = 24 * 60 * 60;
+
+/**
+ * 이만큼 묵으면 다시 묻는다.
+ *
+ * 5분이었다. 그러면 책 화면을 꾸준히 열어 볼 때 **하루 최대 288번 KV 에 쓴다** — 무료 등급
+ * 하루 쓰기 1,000회의 3할이다. 그 한도로 앱이 멈춘 적이 있어(2026-08-23) 여유를 크게 둔다.
+ *
+ * 30분 묵은 크레딧 숫자로도 부모가 판단하는 데는 충분하다. 이 값이 정확해야 하는 자리는
+ * 화면이 아니라 예산 가드(`reserve`)이고, 그쪽은 우리 카운터를 본다.
+ */
+export const USAGE_STALE_MS = 30 * 60 * 1000;
 
 export interface Usage {
 	/** 이달 쓴 크레딧. */

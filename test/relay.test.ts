@@ -99,6 +99,22 @@ describe("자격증명 노출 경계", () => {
 		expect(res.body.data.model).toBe("gemini-3.5-flash");
 	});
 
+	/**
+	 * 부모가 고르지 않았을 때의 기본 모델. 목록을 어떤 순서로 줘도 이것이 나와야 한다.
+	 *
+	 * 무료 등급에서 최신 세대는 `429 RESOURCE_EXHAUSTED` 가 잦고, 그러면 매 호출이 헛걸음
+	 * 한 번과 모델 교체를 치른다(`ai/google-shared.ts` 의 `FAMILY_PREFERENCE`).
+	 */
+	it("Gemini 기본 모델은 gemini-2.5-flash 다", async () => {
+		const client = await parentWithGemini([
+			"gemini-3.7-flash",
+			"gemini-2.5-flash",
+			"gemini-3.6-flash",
+		]);
+
+		expect((await client.get("/api/ai/credential")).body.data.model).toBe("gemini-2.5-flash");
+	});
+
 	// 서버에서 부를 수 있는 제공자는 키를 내려보낼 이유가 없다.
 	it("OpenAI 를 쓰는 부모에게는 키를 내려주지 않는다", async () => {
 		const { client } = await signupParent();
@@ -186,8 +202,12 @@ describe("표지 식별 릴레이", () => {
  * 서버가 정한다. 여기서 확인하는 것은 서버 쪽 절반이다.
  */
 describe("릴레이 모델 폴백", () => {
+	/*
+	 * 목록을 준 순서와 무관하게 **서버가 정한 순위**로 고른다. `gemini-2.5-flash` 가 기본이다 —
+	 * 무료 등급에서 이 세대가 가장 안정적으로 응답한다(`ai/google-shared.ts`).
+	 */
 	async function parentWithBook() {
-		const client = await parentWithGemini(["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"]);
+		const client = await parentWithGemini(["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"]);
 		const form = new FormData();
 		form.append("cover", new File([PNG], "cover.png", { type: "image/png" }));
 		const bookId = (await client.upload("/api/books", form)).body.data.book.id;
@@ -198,20 +218,20 @@ describe("릴레이 모델 폴백", () => {
 		const { client, bookId } = await parentWithBook();
 
 		const first = await client.post("/api/ai/plan", { kind: "identify", bookId });
-		expect(first.body.data.model).toBe("gemini-3.5-flash");
+		expect(first.body.data.model).toBe("gemini-2.5-flash");
 		expect(first.body.data.modelNotice).toBeNull();
 
 		const second = await client.post("/api/ai/plan", {
 			kind: "identify",
 			bookId,
-			avoid: ["gemini-3.5-flash"],
+			avoid: ["gemini-2.5-flash"],
 		});
 
 		expect(second.status).toBe(200);
-		expect(second.body.data.model).toBe("gemini-3.5-flash-lite");
-		expect(second.body.data.url).toContain("gemini-3.5-flash-lite");
+		expect(second.body.data.model).toBe("gemini-2.5-flash-lite");
+		expect(second.body.data.url).toContain("gemini-2.5-flash-lite");
 		// 조용히 바꾸지 않는다. 결과가 달라 보일 수 있으니 부모에게 알린다.
-		expect(second.body.data.modelNotice).toContain("gemini-3.5-flash");
+		expect(second.body.data.modelNotice).toContain("gemini-2.5-flash");
 	});
 
 	// 브라우저가 avoid 를 계속 늘리며 무한히 되물어 볼 수 있으면 안 된다.
@@ -221,7 +241,7 @@ describe("릴레이 모델 폴백", () => {
 		const res = await client.post("/api/ai/plan", {
 			kind: "identify",
 			bookId,
-			avoid: ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"],
+			avoid: ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash"],
 		});
 
 		expect(res.status).toBe(502);

@@ -83,6 +83,12 @@ question_validations → question_histories → question_versions → questions
 가린다. 한 번의 조사가 조사 계획을 여러 번 세울 수 있어(릴레이의 모델 교체, 무료 등급 Gemini
 키의 내장 검색 429) 그때마다 검색하면 부모가 버튼을 한 번 눌렀는데 크레딧이 두세 번 나간다.
 
+### `web_credits` (0018)
+
+이 책이 지금까지 쓴 웹 검색 크레딧. 책당 상한을 **횟수에서 크레딧으로** 바꾼 값이다
+(`MAX_CREDITS_PER_BOOK` = 50). `web_searches` 는 남아 있지만 상한이 아니라 질의 사다리의 칸
+번호로만 쓴다.
+
 ## 시간 표기
 
 모든 시각 컬럼은 ISO8601 UTC 문자열이다. 기본값은 `strftime('%Y-%m-%dT%H:%M:%fZ','now')`.

@@ -9,6 +9,8 @@ import {
 	dominantScript,
 	groundedRatio,
 	hasVerbatimQuote,
+	MIN_ANSWER_GROUNDING,
+	plotBase,
 } from "../src/services/grounding";
 
 /**
@@ -437,5 +439,120 @@ describe("근거 언어 지시", () => {
 	// 같은 언어일 때는 군더더기다. 프롬프트가 길어지면 모델이 중간을 흘린다.
 	it("언어가 같으면 이 지시를 붙이지 않는다", () => {
 		expect(request("ko", BRIEF)).not.toContain("그대로 복사");
+	});
+});
+
+/**
+ * 정답이 **줄거리 안에서** 나왔는지 (§출제 검증 강화).
+ *
+ * 문제 본문은 Brief 전체와 대조한다 — 문제 문장에 배경 낱말(시리즈명·수상 이력)이 섞이는 것은
+ * 잘못이 아니다. 정답은 다르다. 아이가 책을 읽어야만 아는 것이어야 하고, 홍보 문구의 낱말로만
+ * 이뤄진 정답은 소개문만 읽어도 맞힐 수 있다(§7).
+ */
+describe("정답은 줄거리에서 나와야 한다", () => {
+	// 홍보 문구만 남긴 절은 대조 대상에서 빠져야 한다.
+	it("소개·출판사 소개를 대조 범위에서 뺀다", () => {
+		const base = plotBase(BRIEF);
+
+		expect(base).toContain("[줄거리]");
+		expect(base).toContain("[등장인물]");
+		expect(base).not.toContain("[소개]");
+		// 소개에만 있던 문구가 빠졌다.
+		expect(base).not.toContain("감동적인 이야기입니다");
+	});
+
+	/**
+	 * 웹 자료가 없어도 좁힌다. `evidenceBase` 와 다른 점이 그것이다 — 그쪽은 근거 문장을 보므로
+	 * 조심스럽게 두었고(PR #30), 이쪽은 정답을 보므로 늘 좁힌다.
+	 */
+	it("웹 자료가 없어도 좁힌다", () => {
+		expect(plotBase(BRIEF).length).toBeLessThan(BRIEF.length);
+	});
+
+	// 남길 절이 전부 비면 되돌린다. 대조할 것이 없는데 전부 떨어뜨리면 하나도 못 만든다.
+	it("줄거리 절이 비어 있으면 Brief 전체로 되돌린다", () => {
+		const empty = ["[책] 어떤 책", "", "[소개]", "홍보 문구입니다.", "", "[줄거리]", ""].join("\n");
+		expect(plotBase(empty)).toBe(empty);
+	});
+
+	it("실측 표본의 두 무리가 이 검사로도 갈린다", () => {
+		const answerRatio = (q: { choices: string[]; correctChoice: number }) =>
+			groundedRatio(q.choices[q.correctChoice - 1]!, plotBase(BRIEF));
+
+		const good = Math.min(...GROUNDED.map(answerRatio));
+		const bad = Math.max(...INVENTED.map(answerRatio));
+
+		expect(good).toBe(1);
+		expect(bad).toBeLessThan(MIN_ANSWER_GROUNDING);
+		expect(MIN_ANSWER_GROUNDING).toBeGreaterThan(bad);
+		expect(MIN_ANSWER_GROUNDING).toBeLessThan(good);
+	});
+
+	/**
+	 * 소개문에만 있는 낱말로 정답을 만든 문항. 근거는 줄거리에서 옮겼으므로 근거 검사는
+	 * 통과하지만, 정답이 줄거리 밖이라 걸려야 한다.
+	 */
+	it("소개문 낱말로 만든 정답은 걸린다", () => {
+		const question = {
+			questionText: "이 이야기가 깊이 있게 다루는 것은 무엇인가요?",
+			choices: [
+				"자연의 생명 순환 법칙과 삶의 주체성",
+				"우주선 조종술",
+				"수학 문제 풀이",
+				"자동차 정비",
+			],
+			correctChoice: 1,
+			// 근거는 줄거리 원문에서 그대로 옮겼다.
+			evidence: "좁은 닭장 속에서 알만 낳던 암탉 잎싹은 자신의 알을 품어 보고 마당을 거니는 꿈을 꿉니다.",
+		};
+
+		const result = checkGrounding(question, BRIEF);
+		expect(result.ok).toBe(false);
+		expect(result.reason).toContain("줄거리");
+	});
+
+	// 출제 언어가 다르면 글자를 맞댈 수 없다. 그때는 이 검사를 건너뛴다.
+	it("영어 출제에는 이 검사를 걸지 않는다", () => {
+		const question = {
+			questionText: "What did Ipssak want more than anything?",
+			choices: ["To hatch her own egg", "To leave the farm", "To fly away", "To sleep"],
+			correctChoice: 1,
+			evidence: "좁은 닭장 속에서 알만 낳던 암탉 잎싹은 자신의 알을 품어 보고 마당을 거니는 꿈을 꿉니다.",
+		};
+
+		expect(checkGrounding(question, BRIEF).ok).toBe(true);
+	});
+});
+
+/**
+ * 근거가 **인용이라고 볼 만한 길이**인가.
+ *
+ * 비율 검사에는 길이 하한이 없어서 낱말 하나만 적어 보내면 비율이 1.0 이 된다. 그건 인용이
+ * 아니라 우연이고, 그런 문항은 무엇을 근거로 삼았는지 부모가 확인할 수 없다.
+ */
+describe("근거 길이", () => {
+	const withEvidence = (evidence: string) => ({
+		questionText: "잎싹이 알을 품기로 한 까닭은 무엇인가요?",
+		choices: [
+			"자신의 알을 품어 보고 마당을 거니는 꿈을 꾸었기 때문",
+			"주인이 시켰기 때문",
+			"족제비를 피하려고",
+			"초록이가 부탁해서",
+		],
+		correctChoice: 1,
+		evidence,
+	});
+
+	it("낱말 하나짜리 근거는 걸린다", () => {
+		const result = checkGrounding(withEvidence("잎싹"), BRIEF);
+		expect(result.ok).toBe(false);
+		expect(result.reason).toContain("짧습니다");
+	});
+
+	// 실측 표본의 근거는 51~75자였다. 멀쩡한 근거를 걸어서는 안 된다.
+	it("실측 표본의 근거 길이는 통과한다", () => {
+		for (const question of GROUNDED) {
+			expect(checkGrounding(question, BRIEF).ok, question.questionText).toBe(true);
+		}
 	});
 });

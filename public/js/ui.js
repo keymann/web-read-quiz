@@ -17,7 +17,23 @@
  */
 const SAFE_URL = /^(https?:|mailto:|\/|#|\?)/i;
 
-const isSafeUrl = (value) => SAFE_URL.test(String(value).trim());
+/**
+ * `src` 에만 더 허용하는 스킴.
+ *
+ * `blob:` 은 우리가 `URL.createObjectURL` 로 만든 주소다 — 부모가 방금 고른 사진의 미리보기가
+ * 그것이다. 화이트리스트에 없어서 `el()` 이 조용히 버렸고, 그래서 **표지를 골라도 썸네일이
+ * 뜨지 않았다.** 콘솔에 경고만 남아 알아채기 어려웠다.
+ *
+ * `href` 에는 허용하지 않는다. 이 화이트리스트가 막으려는 것은 **AI·외부 API 가 만든 주소**가
+ * 링크로 붙는 것이고, blob: 링크는 우리 오리진의 내용을 내려받게 만드는 통로가 될 수 있다.
+ * 이미지 출력에는 그런 여지가 없다.
+ *
+ * CSP 는 이미 `img-src 'self' data: blob:` 로 열려 있다(`public/_headers`).
+ */
+const SAFE_SRC = /^(https?:|blob:|data:image\/|\/|#|\?)/i;
+
+const isSafeUrl = (value, key) =>
+	(key === "src" ? SAFE_SRC : SAFE_URL).test(String(value).trim());
 
 export function el(tag, props = {}, children = []) {
 	const node = document.createElement(tag);
@@ -27,7 +43,7 @@ export function el(tag, props = {}, children = []) {
 		if (key === "class") node.className = value;
 		else if (key === "text") node.textContent = String(value);
 		else if (key.startsWith("on")) node.addEventListener(key.slice(2).toLowerCase(), value);
-		else if ((key === "href" || key === "src") && !isSafeUrl(value)) {
+		else if ((key === "href" || key === "src") && !isSafeUrl(value, key)) {
 			// 조용히 버리지 않는다. 링크가 사라진 이유를 콘솔에서 찾을 수 있어야 한다.
 			console.warn(`허용되지 않은 주소를 건너뜁니다: ${key}`);
 		} else node.setAttribute(key, value === true ? "" : String(value));

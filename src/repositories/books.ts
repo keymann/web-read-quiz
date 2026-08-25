@@ -27,6 +27,21 @@ export interface BookRow {
 	ai_extracted: string | null;
 	ai_confidence: number | null;
 	brief: string | null;
+	/**
+	 * 지금까지 조사로 쌓은 줄거리. 다시 찾을 때마다 **더해진다**(`services/plot.ts`).
+	 *
+	 * `brief` 의 `[줄거리]` 절과 다르다 — 그쪽에는 부모가 적은 글도 함께 들어 있어, 그것을
+	 * 되돌려 쌓으면 부모가 자기 글을 고쳤을 때 지운 문장이 영영 남는다.
+	 */
+	ai_plot: string | null;
+	/**
+	 * 지금까지 조사로 쌓은 등장인물(JSON 배열). 줄거리와 같은 이유로 더해 간다.
+	 *
+	 * `[{"name":"잎싹","role":"양계장을 나온 암탉"}, …]`
+	 */
+	ai_characters: string | null;
+	/** 지금까지 조사로 쌓은 주요 사건(JSON 문자열 배열). 순서가 곧 일어난 순서다. */
+	ai_events: string | null;
 	/** 부모가 직접 적은 줄거리. AI 가 모르는 책의 유일한 입력이다. */
 	manual_plot: string | null;
 	/** 이번 조사에서 받은 서지 결과(JSON 배열). 프롬프트와 병합이 같은 값을 쓰게 한다. */
@@ -125,6 +140,9 @@ export interface BookFields {
 	ai_extracted?: string | null;
 	ai_confidence?: number | null;
 	brief?: string | null;
+	ai_plot?: string | null;
+	ai_characters?: string | null;
+	ai_events?: string | null;
 	manual_plot?: string | null;
 	bib_cache?: string | null;
 	web_cache?: string | null;

@@ -8,6 +8,7 @@ import * as tavily from "../search/tavily";
 import * as readingLevel from "../search/reading-level";
 import { research, type BookResearch } from "../search/web";
 import { sectionBody, WEB_SECTION } from "./grounding";
+import * as plot from "./plot";
 import * as budget from "./search-budget";
 import * as settings from "./settings";
 import type { AppEnv } from "../types";
@@ -24,6 +25,12 @@ import { ApiError, invalid, notFound } from "../utils/response";
 
 /** 문제를 만들려면 근거가 이만큼은 있어야 한다. AI 가 없는 내용을 지어내는 것을 막는 장치(§리스크). */
 export const MIN_SOURCES_FOR_QUIZ = 2;
+
+/**
+ * 주요 사건 절의 이름. **적는 쪽과 되읽는 쪽이 같은 값을 봐야 한다** — 어긋나면 옛 행을
+ * 되짚을 때 조용히 빈 목록이 된다(`knownEvents`).
+ */
+const EVENTS_SECTION = "[주요 사건 — 일어난 순서]";
 
 export interface BookView {
 	id: string;
@@ -446,8 +453,11 @@ export async function search(env: AppEnv, userId: string, bookId: string): Promi
 		isbn: row.isbn13 ?? row.isbn10 ?? "",
 		bib,
 		web,
-		// 다시 찾기면 지난 줄거리를 지우지 말고 보강하게 한다.
+		// 다시 찾기면 지난 정리를 지우지 말고 보강하게 한다. 셋을 함께 준다 — 사건 순서를
+		// 제자리에 놓으려면 지난 사건과 새 사건을 한 번에 봐야 한다.
 		knownPlot: knownPlot(row),
+		knownCharacters: knownCharacters(row),
+		knownEvents: knownEvents(row),
 	};
 
 	// 웹 검색을 쓸 수 없는 키가 있다(Gemini 무료 등급). 그 경우 조사 자체를 포기하지 말고
@@ -522,6 +532,15 @@ const isStorableUrl = (url: string | null): url is string =>
 	typeof url === "string" && /^https?:\/\//i.test(url.trim());
 
 /**
+ * 목록에 쌓아 둘 자료의 수.
+ *
+ * 다시 찾을 때마다 더하므로 상한이 없으면 부모가 훑을 목록이 한없이 길어진다. 한 번의 검색이
+ * 줄거리를 다룬 페이지를 몇 건씩 물어다 주고 책당 크레딧 상한(50)이 검색 횟수를 스무 번쯤으로
+ * 묶으므로, 40 은 실제로 닿기 어려운 여유값이다.
+ */
+const MAX_LISTED_SOURCES = 40;
+
+/**
  * 참고 자료를 늘어놓는 순서 — **카카오 책 → 알라딘 → 웹 검색**.
  *
  * 부모가 근거를 훑는 순서다. 앞의 둘은 서지 데이터베이스로 검증된 정보이고(카카오의 책소개가
@@ -554,6 +573,8 @@ function collectSources(
 		/** Tavily 로 찾은 페이지. 부모가 실제로 열어 확인할 수 있는 근거다. */
 		webSources?: tavily.WebSource[];
 	},
+	/** 이미 목록에 올려 둔 자료. 자리를 지키고 그 뒤에 새것을 붙인다. */
+	listed: booksRepo.BookSourceRow[] = [],
 ): booksRepo.NewSource[] {
 	/*
 	 * **서지 자료는 참고 자료 목록에 올리지 않는다.**
@@ -586,20 +607,60 @@ function collectSources(
 	 */
 	const web = tavily.plotRelated(notices.webSources ?? [], title);
 
+	/*
+	 * **이미 올려 둔 것을 자리째 들고 시작한다.**
+	 *
+	 * 웹 자료만 들고 온다. 서지 자료는 이 목록에 올리지 않기로 했으므로(위) 옛 행에 남아 있어도
+	 * 여기서 되살리지 않는다. `ai` 행은 아래에서 다시 판단한다 — 웹 근거가 생겼으면 그 행은
+	 * 더 이상 사실이 아니다.
+	 *
+	 * 들고 오기 전에 **지금 제목으로 다시 견준다.** 부모가 엉뚱하게 식별된 책의 제목을 고치고
+	 * 다시 찾는 길이 있어, 그때 지난 자료는 다른 책 것이 된다. 오래된 근거가 섞이면 부모는
+	 * 그것을 이 책의 근거로 읽는다. 목록에 올릴 때 쓰는 것과 같은 자로 본다(`tavily.aboutBook`).
+	 */
+	const at = new Map<string, number>();
+	for (const row of listed) {
+		if (row.source !== "web" || !isStorableUrl(row.url) || at.has(row.url)) continue;
+		const kept = { url: row.url, title: row.title ?? "", content: row.content ?? "" };
+		// 관련도 점수는 검색이 준 값이라 적어 두지 않았다. 제목 대조에는 쓰이지 않는다.
+		if (!tavily.aboutBook({ ...kept, score: 0 }, title)) continue;
+
+		at.set(row.url, sources.length);
+		sources.push({ id: row.id, bookId, source: "web", ...kept });
+	}
+
 	// Tavily 로 찾은 페이지, 모델이 적어 준 출처, 제공자가 알려준 출처를 합친다.
 	// 같은 URL 은 한 번만. Tavily 를 앞에 두어 발췌가 있는 쪽이 남게 한다.
-	const seen = new Set<string>();
 	for (const source of [...web, ...found.sources, ...(notices.groundingSources ?? [])]) {
-		if (!isStorableUrl(source.url) || seen.has(source.url)) continue;
-		seen.add(source.url);
-		sources.push({
-			id: newId(),
-			bookId,
-			source: "web",
-			url: source.url,
-			title: source.title,
-			content: ("content" in source ? (source.content as string) : "") || "웹 검색으로 참고한 페이지입니다.",
-		});
+		if (!isStorableUrl(source.url)) continue;
+		const content = ("content" in source ? (source.content as string) : "") || "웹 검색으로 참고한 페이지입니다.";
+
+		const kept = at.get(source.url);
+		if (kept !== undefined) {
+			// 같은 주소면 **자리를 지키고 발췌만 새로 받은 것으로 바꾼다.** 그동안 페이지가
+			// 늘어났을 수 있고, 부모가 "세 번째 자료" 로 짚어 둔 자리는 그대로 남아야 한다.
+			sources[kept] = { ...sources[kept]!, title: source.title, content };
+			continue;
+		}
+
+		// 자리가 다 찼으면 붙이지 않는다. 올려 둔 것을 밀어내지는 않는다 — 부모가 이미 읽은 것이다.
+		if (sources.length >= MAX_LISTED_SOURCES) continue;
+
+		at.set(source.url, sources.length);
+		sources.push({ id: newId(), bookId, source: "web", url: source.url, title: source.title, content });
+	}
+
+	/*
+	 * 이번 조사가 빈손이면 **지난번에 남긴 기록을 그대로 둔다.**
+	 *
+	 * Brief 는 그때 정리한 것이 그대로 남아 있으므로(위), 그것이 어디서 나왔는지 적어 둔 줄도
+	 * 함께 남아야 앞뒤가 맞는다. 지우면 부모는 근거 없는 Brief 를 보게 된다.
+	 */
+	if (!found.found && !sources.some((s) => s.source === "web")) {
+		for (const row of listed) {
+			if (row.source !== "ai") continue;
+			sources.push({ id: row.id, bookId, source: "ai", url: null, title: row.title, content: row.content });
+		}
 	}
 
 	// 웹 근거가 하나도 없으면, 이 내용이 모델의 기억에서 나왔다는 것을 남긴다.
@@ -700,16 +761,98 @@ export async function prepareWeb(
 }
 
 /**
- * 지금까지 정리해 둔 줄거리. 조사를 다시 돌릴 때 모델에게 되돌려 준다.
+ * 지금까지 쌓아 둔 줄거리. 조사를 다시 돌릴 때 모델에게 되돌려 주고, 새 결과를 여기에 더한다.
  *
  * 이걸 안 넘기면 다시 찾기가 지난 줄거리를 통째로 새 결과로 갈아 끼운다. 이번 자료가 지난
  * 자료보다 얇으면 줄거리가 오히려 짧아진다 — 부모가 다시 찾기를 누른 뜻과 반대다.
  *
  * 자료를 모아 두므로(위) 지난 줄거리의 근거가 된 페이지도 프롬프트에 그대로 남아 있다.
  * 그래서 "자료에 있는 것만" 이라는 요구를 지키면서 보강할 수 있다.
+ *
+ * `ai_plot` 이 빈 **옛 행**은 `brief` 의 `[줄거리]` 에서 되살린다. 그 절에는 부모가 적은
+ * 줄거리가 뒤에 붙어 있으므로(`buildBrief`) 그만큼 떼어낸다 — 떼지 않으면 부모 글이 AI 가
+ * 쌓은 글에 섞여 들어가, 부모가 자기 글을 고쳐도 옛 문장이 영영 남는다.
  */
-export const knownPlot = (row: BookRow): string =>
-	row.brief ? sectionBody(row.brief, "[줄거리]") : "";
+export const knownPlot = (row: BookRow): string => {
+	const pooled = (row.ai_plot ?? "").trim();
+	if (pooled !== "") return pooled;
+
+	const section = row.brief ? sectionBody(row.brief, "[줄거리]") : "";
+	const manual = (row.manual_plot ?? "").trim();
+	return manual !== "" && section.endsWith(manual)
+		? section.slice(0, section.length - manual.length).trim()
+		: section;
+};
+
+/**
+ * 지금까지 쌓아 둔 등장인물. 조사를 다시 돌릴 때 모델에게 되돌려 주고 새 결과를 더한다.
+ *
+ * 컬럼이 빈 **옛 행**은 `brief` 의 `[등장인물]` 절을 되짚는다. 그 절은 `buildBrief` 가
+ * `- 이름: 역할` 꼴로 적어 두므로 되읽을 수 있다.
+ */
+export const knownCharacters = (row: BookRow): plot.Character[] => {
+	const stored = parseJson<plot.Character[]>(row.ai_characters);
+	if (stored && stored.length > 0) return stored;
+
+	return sectionBody(row.brief ?? "", "[등장인물]")
+		.split("\n")
+		.map((line) => line.replace(/^-\s*/, "").trim())
+		.filter((line) => line !== "")
+		.map((line) => {
+			const at = line.indexOf(":");
+			return at === -1
+				? { name: line, role: "" }
+				: { name: line.slice(0, at).trim(), role: line.slice(at + 1).trim() };
+		})
+		.filter((person) => person.name !== "");
+};
+
+/**
+ * 지금까지 쌓아 둔 주요 사건. 옛 행은 `[주요 사건 — 일어난 순서]` 절의 번호 목록을 되짚는다.
+ */
+export const knownEvents = (row: BookRow): string[] => {
+	const stored = parseJson<string[]>(row.ai_events);
+	if (stored && stored.length > 0) return stored;
+
+	return sectionBody(row.brief ?? "", EVENTS_SECTION)
+		.split("\n")
+		.map((line) => line.replace(/^\d+\.\s*/, "").trim())
+		.filter((line) => line !== "");
+};
+
+/** 적어 둔 JSON 을 읽는다. 깨져 있으면 없는 것으로 본다 — 조사를 실패시킬 일이 아니다. */
+function parseJson<T>(raw: string | null): T | null {
+	if (!raw) return null;
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		return Array.isArray(parsed) ? (parsed as T) : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * 지금까지 쌓아 둔 책 내용. 조사가 돌 때마다 여기에 더해지고, 그대로 Brief 가 된다.
+ *
+ * 세 값을 함께 들고 다닌다 — 한 조사가 함께 돌려주고 함께 Brief 에 실리므로 따로 흐르면
+ * 한쪽만 갱신되는 일이 생긴다.
+ */
+export interface Pooled {
+	plot: string;
+	characters: plot.Character[];
+	events: string[];
+}
+
+/** 조사가 무엇이든 찾아 두었는가. 하나라도 있으면 Brief 를 없애지 않는다. */
+export const hasPooled = (pooled: Pooled): boolean =>
+	pooled.plot !== "" || pooled.characters.length > 0 || pooled.events.length > 0;
+
+/** 책에 적어 둔 것을 그대로 읽는다. 새로 조사하지 않는다. */
+export const pooledOf = (row: BookRow): Pooled => ({
+	plot: knownPlot(row),
+	characters: knownCharacters(row),
+	events: knownEvents(row),
+});
 
 async function runWebSearch(
 	env: AppEnv,
@@ -800,7 +943,16 @@ export async function applyResearch(
 
 	// 준비 단계가 적어 둔 웹 자료. 여기서 새로 검색하지 않는다 — 크레딧을 두 번 쓰게 된다.
 	const webSources = cachedWeb(row);
-	const sources = collectSources(bookId, row.title, found, { ...notices, webSources });
+	/*
+	 * 이미 올려 둔 참고 자료를 **함께 넘긴다.** 목록을 갈아 끼우지 않고 더하기 위해서다.
+	 *
+	 * 부모가 실제로 겪은 것이 이 자리다 — 다시 찾을 때마다 참고 자료 목록이 새로 쓰였다.
+	 * 웹 자료 묶음(`web_cache`)은 서버가 쌓지만 그 묶음에는 상한(24건)이 있어 밀려난 자료가
+	 * 목록에서 사라지고, 모델이 적어 준 출처와 제공자가 알려준 페이지는 애초에 이번 조사 것만
+	 * 남았다. 부모가 지난번에 열어 본 자료가 없어지면 검수를 이어 갈 수 없다.
+	 */
+	const listed = await booksRepo.listSources(env, bookId);
+	const sources = collectSources(bookId, row.title, found, { ...notices, webSources }, listed);
 	await booksRepo.replaceSources(env, bookId, sources);
 
 	// 책을 특정하지 못했으면 그 결과의 서지정보를 받아들이지 않는다. 엉뚱한 책의 정보가 섞이면
@@ -816,8 +968,23 @@ export async function applyResearch(
 	 * "정보 다시 찾기" 한 번에 줄거리를 잃고 문제 만들기 버튼이 잠긴다. 모델이 한 번 빈손으로
 	 * 돌아오는 것은 흔한 일이라(무료 등급·과부하·잘 안 알려진 책) 실제로 겪게 된다.
 	 *
-	 * 조사가 성공했을 때만 새 줄거리로 바꾼다. 실패는 **아무것도 하지 않는 것**이 맞다.
+	 * 조사가 성공했을 때만 줄거리를 손댄다. 실패는 **아무것도 하지 않는 것**이 맞다.
 	 */
+	/*
+	 * 성공했을 때도 갈아 끼우지 않고 **쌓는다.** 줄거리·등장인물·사건 셋 모두.
+	 *
+	 * 조사 프롬프트가 지난 정리를 되돌려 주며 "지우지 말고 보강하라" 고 시키지만, 모델은 그
+	 * 말을 자주 흘린다 — 다시 찾을 때마다 줄거리가 통째로 새 것으로 갈렸다. 부모가 그 버튼을
+	 * 누른 뜻은 "더 모아 달라" 이므로, 지키는 일을 부탁이 아니라 서버가 맡는다.
+	 *
+	 * 셋을 함께 쌓아야 한다 — 하나만 쌓으면 줄거리에 나오는 인물이 목록에서 빠진다.
+	 */
+	const kept = pooledOf(row);
+	const pooled: Pooled = {
+		plot: plot.mergePlot(kept.plot, found.plotSummary),
+		characters: plot.mergeCharacters(kept.characters, found.characters),
+		events: plot.mergeEvents(kept.events, found.keyEvents),
+	};
 	/*
 	 * 읽기 난이도를 **여기서 기다리지 않고 먼저 띄운다.** 조사 결과를 책에 적는 일과
 	 * 서로 아무 상관이 없어, 순서대로 하면 그만큼 부모가 더 기다린다.
@@ -833,7 +1000,12 @@ export async function applyResearch(
 		...merged,
 		// 부모가 적어 둔 줄거리는 조사가 성공해도 남긴다. 가장 믿을 만한 출처다.
 		...(found.found
-			? { brief: buildBrief(row.title, merged, found, bib, row.manual_plot ?? "", webSources) }
+			? {
+					ai_plot: pooled.plot,
+					ai_characters: JSON.stringify(pooled.characters),
+					ai_events: JSON.stringify(pooled.events),
+					brief: buildBrief(row.title, merged, found, bib, row.manual_plot ?? "", webSources, pooled),
+				}
 			: {}),
 		searched_at: new Date().toISOString(),
 	});
@@ -1082,6 +1254,7 @@ function mergeMetadata(
 /** Brief 에 실을 웹 자료 수. 프롬프트가 매 라운드 실리므로 조심해서 정한다. */
 const MAX_BRIEF_WEB = 6;
 
+
 /** 부모가 적은 줄거리의 최소 길이. 이보다 짧으면 문제를 만들 만한 내용이 안 된다. */
 export const MIN_MANUAL_PLOT = 50;
 /** 상한. 프롬프트가 한없이 길어지지 않게 한다. */
@@ -1151,10 +1324,24 @@ export async function saveManualPlot(
 		sources: [],
 	};
 
+	/*
+	 * 조사가 쌓아 둔 것은 **여기서도 남긴다.**
+	 *
+	 * 예전에는 부모가 줄거리를 저장하면 Brief 를 빈 조사 결과로 다시 조립해서, AI 가 찾아 둔
+	 * 줄거리·등장인물·사건이 그 순간 사라졌다. 부모가 보태려고 적은 글이 오히려 근거를 깎아냈다.
+	 */
+	const pooled = pooledOf(row);
+
 	await booksRepo.update(env, userId, bookId, {
 		manual_plot: text || null,
-		// 비우면 Brief 도 없앤다. 부모가 지웠는데 그 내용으로 문제가 나오면 안 된다.
-		brief: text === "" ? null : buildBrief(row.title, merged, empty, bib, text, cachedWeb(row)),
+		/*
+		 * 비우면 Brief 도 없앤다 — 부모가 지웠는데 그 내용으로 문제가 나오면 안 된다.
+		 * 다만 AI 가 쌓아 둔 줄거리가 있으면 그것은 남는다. 부모가 지운 것은 자기 글이다.
+		 */
+		brief:
+			text === "" && !hasPooled(pooled)
+				? null
+				: buildBrief(row.title, merged, empty, bib, text, cachedWeb(row), pooled),
 	});
 
 	const updated = await requireOwned(env, userId, bookId);
@@ -1185,13 +1372,22 @@ function buildBrief(
 	manualPlot = "",
 	/** 웹에서 읽은 페이지. 출제 근거로 인정되는 유일한 외부 글이다. */
 	web: tavily.WebSource[] = [],
+	/**
+	 * 지금까지 쌓아 둔 줄거리·등장인물·사건. **이번 조사 결과가 이미 여기 더해져 있다.**
+	 *
+	 * 그래서 이 세 절은 `found` 를 보지 않는다 — 보면 이번 조사가 흘린 것을 그대로 잃는다.
+	 */
+	pooled: Pooled = { plot: "", characters: [], events: [] },
 ): string {
 	/*
 	 * 부모가 적은 글도 `[줄거리]` 안에 둔다. 별도 제목을 붙이면 생성 프롬프트가 그것을
 	 * 출제 근거 목록(`[줄거리]·[주요 사건]·[등장인물]`)에서 빠뜨린다 — 정작 가장 믿을 만한
 	 * 출처인데 근거로 안 쓰이게 된다.
+	 *
+	 * 부모 글은 **뒤에** 붙인다. 자리가 정해져 있어야 다음 조사가 쌓아 둔 것과 부모 글을 다시
+	 * 가려낼 수 있다(`knownPlot` 의 옛 행 되살리기).
 	 */
-	const plot = [found.plotSummary.trim(), manualPlot.trim()].filter(Boolean).join("\n");
+	const plotText = [pooled.plot.trim(), manualPlot.trim()].filter(Boolean).join("\n");
 
 	const lines = [
 		`[책] ${title}`,
@@ -1202,7 +1398,7 @@ function buildBrief(
 		merged.description ?? "",
 		"",
 		"[줄거리]",
-		plot,
+		plotText,
 	];
 
 	// 출판사·서점이 공개한 책소개. **모델의 기억이 아니라 확인된 글**이라 근거 검사가 인정한다.
@@ -1226,14 +1422,14 @@ function buildBrief(
 		}
 	}
 
-	if (found.characters.length > 0) {
+	if (pooled.characters.length > 0) {
 		lines.push("", "[등장인물]");
-		for (const person of found.characters) lines.push(`- ${person.name}: ${person.role}`);
+		for (const person of pooled.characters) lines.push(`- ${person.name}: ${person.role}`);
 	}
 
-	if (found.keyEvents.length > 0) {
-		lines.push("", "[주요 사건 — 일어난 순서]");
-		found.keyEvents.forEach((event, index) => lines.push(`${index + 1}. ${event}`));
+	if (pooled.events.length > 0) {
+		lines.push("", EVENTS_SECTION);
+		pooled.events.forEach((event, index) => lines.push(`${index + 1}. ${event}`));
 	}
 
 	/*

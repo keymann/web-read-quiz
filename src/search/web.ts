@@ -176,6 +176,16 @@ export interface ResearchHint {
 	 * 지난 자료보다 얇으면 줄거리가 오히려 짧아진다 — 부모가 "다시 찾기" 를 누른 뜻과 반대다.
 	 */
 	knownPlot?: string;
+	/** 지금까지 정리해 둔 등장인물. 줄거리와 같은 이유로 되돌려 준다. */
+	knownCharacters?: { name: string; role: string }[];
+	/**
+	 * 지금까지 정리해 둔 주요 사건.
+	 *
+	 * 이 목록을 되돌려 주는 이유는 **순서** 때문이다. 서버도 빠진 사건을 뒤에 붙여 지키지만
+	 * (`services/plot.ts`), 그렇게 붙은 사건은 일어난 자리가 아니라 맨 끝에 놓인다. 모델이
+	 * 지난 사건을 함께 보고 늘어놓으면 순서가 살아 있는 목록이 된다.
+	 */
+	knownEvents?: string[];
 }
 
 /** 조사 요청 조립. 브라우저 릴레이 경로도 이걸 그대로 쓴다. */
@@ -252,25 +262,43 @@ export function buildResearchRequest(
 			: "";
 
 	/*
-	 * 지금까지 정리해 둔 줄거리를 **되돌려 준다.**
+	 * 지금까지 정리해 둔 줄거리·등장인물·사건을 **되돌려 준다.**
 	 *
-	 * 자료를 모아 두므로 지난 줄거리의 근거가 된 페이지도 아래 [웹 자료] 에 그대로 있다.
+	 * 자료를 모아 두므로 지난 정리의 근거가 된 페이지도 아래 [웹 자료] 에 그대로 있다.
 	 * 그래서 "자료에 있는 것만" 이라는 요구를 지키면서도 지난 내용을 지키고 더할 수 있다.
 	 */
 	const priorPlot = (hint.knownPlot ?? "").trim();
+	const priorCharacters = (hint.knownCharacters ?? []).filter((person) => person.name.trim() !== "");
+	const priorEvents = (hint.knownEvents ?? []).filter((event) => event.trim() !== "");
+	const prior = priorPlot !== "" || priorCharacters.length > 0 || priorEvents.length > 0;
 
 	const prompt = [
 		`다음 책을 조사해 주세요: ${query}`,
 		known ? `\n서지 데이터베이스에서 확인된 정보:\n${known}` : "",
 		priorPlot ? `\n[지금까지 정리한 줄거리]\n${priorPlot}` : "",
+		priorCharacters.length > 0
+			? `\n[지금까지 정리한 등장인물]\n${priorCharacters.map((p) => `- ${p.name}: ${p.role}`).join("\n")}`
+			: "",
+		priorEvents.length > 0
+			? `\n[지금까지 정리한 사건 — 일어난 순서]\n${priorEvents.map((e, i) => `${i + 1}. ${e}`).join("\n")}`
+			: "",
 		excerpts ? `\n[웹 자료]\n${excerpts}` : "",
 		"\n이 책은 초등학교 고학년 아이의 독서 확인 문제를 만드는 데 쓰입니다.",
 		"줄거리·등장인물·사건 순서를 최대한 구체적으로 정리해 주세요.",
 		crossCheck,
-		priorPlot
-			? "\n[지금까지 정리한 줄거리] 는 앞선 조사에서 정리한 것입니다. **지우지 말고 보강하세요.**" +
-				" 거기 있는 내용을 plotSummary 에 담고, [웹 자료] 에서 새로 확인되는 사건·인물을 더합니다." +
-				" 자료와 어긋나는 대목만 고치고, 어느 자료로도 확인되지 않는 대목은 덜어냅니다."
+		/*
+		 * 앞선 조사가 정리해 둔 것을 **지우지 말라고 못박는다.**
+		 *
+		 * 서버도 세 값을 쌓지만(`services/plot.ts`), 사건은 순서가 뜻을 가진다 — 서버가 뒤에
+		 * 붙인 사건은 일어난 자리가 아니라 맨 끝에 놓인다. 그 자리를 제대로 잡는 일은 자료를
+		 * 읽은 모델만 할 수 있으므로, 세 목록을 함께 주고 함께 늘어놓게 한다.
+		 */
+		prior
+			? "\n[지금까지 정리한 …] 절은 앞선 조사에서 정리한 것입니다. **지우지 말고 보강하세요.**" +
+				" 거기 있는 내용을 plotSummary · characters · keyEvents 에 담고, [웹 자료] 에서 새로" +
+				" 확인되는 것을 더합니다. keyEvents 는 지난 사건과 새 사건을 합쳐 **일어난 순서대로**" +
+				" 다시 늘어놓으세요. 자료와 어긋나는 대목만 고치고, 어느 자료로도 확인되지 않는" +
+				" 대목은 덜어냅니다."
 			: "",
 	].join("");
 

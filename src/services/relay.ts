@@ -289,8 +289,10 @@ export async function planResearch(
 					isbn: row.isbn13 ?? row.isbn10 ?? "",
 					bib,
 					web,
-					// 서버 경로와 같다 — 다시 찾기면 지난 줄거리를 지우지 말고 보강하게 한다.
+					// 서버 경로와 같다 — 다시 찾기면 지난 정리를 지우지 말고 보강하게 한다.
 					knownPlot: book.knownPlot(row),
+					knownCharacters: book.knownCharacters(row),
+					knownEvents: book.knownEvents(row),
 				},
 				useWebSearch && !grounded,
 			),

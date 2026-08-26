@@ -51,7 +51,14 @@ async function detail({ env, ctx, principal, params }: RouteCtx): Promise<Respon
 
 	return ok({
 		book: book.toView(row),
-		sources: sources.map((s) => ({ source: s.source, url: s.url, title: s.title, content: s.content })),
+		// `id` 를 함께 내린다 — 부모가 자료 한 건을 지울 때 그것으로 짚는다.
+		sources: sources.map((s) => ({
+			id: s.id,
+			source: s.source,
+			url: s.url,
+			title: s.title,
+			content: s.content,
+		})),
 		// 판정 기준은 서비스 한 곳에만 둔다. 예전에는 여기와 search 결과가 서로 달라
 		// "검색 직후엔 만들 수 있다더니 다시 열면 버튼이 잠기는" 일이 있었다.
 		readyForQuiz: book.isReadyForQuiz(row.brief),
@@ -163,6 +170,13 @@ async function remove({ env, principal, params }: RouteCtx): Promise<Response> {
 	return ok({ deleted: true });
 }
 
+/** 참고 자료 한 건 삭제. 웹 자료 묶음에서도 빼므로 다시 찾기에서 되살아나지 않는다. */
+async function removeSource({ env, principal, params }: RouteCtx): Promise<Response> {
+	const parent = requireParent(principal);
+	const { sourceCount } = await book.removeSource(env, parent.userId, params.id!, params.sourceId!);
+	return ok({ deleted: true, sourceCount });
+}
+
 /**
  * 화면의 ISBN 칸 하나를 **자릿수에 맞는 컬럼**으로 보낸다.
  *
@@ -225,4 +239,5 @@ export const bookRoutes: Route[] = [
 	route("POST", "/api/books/:id/orient", orient),
 	route("POST", "/api/books/:id/analyze", analyze),
 	route("POST", "/api/books/:id/search", search),
+	route("DELETE", "/api/books/:id/sources/:sourceId", removeSource),
 ];

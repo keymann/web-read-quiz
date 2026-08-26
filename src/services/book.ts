@@ -895,6 +895,39 @@ async function runWebSearch(
 	return pooled;
 }
 
+/**
+ * 참고 자료 한 건을 지운다.
+ *
+ * **웹 자료 묶음(`web_cache`)에서도 뺀다.** 목록만 지우면 다음 "정보 다시 찾기" 가 그 묶음에서
+ * 그 페이지를 그대로 되살린다 — 목록을 쌓게 만든 규칙(`collectSources`)이 그렇게 동작한다.
+ * 부모가 지운 자료가 다시 올라오면 지운 뜻이 없어진다.
+ *
+ * 이미 만들어 둔 문제와 Brief 는 건드리지 않는다. 그것은 이 자료를 근거로 이미 검수를 거친
+ * 결과물이고, 여기서 함께 바꾸면 부모가 자료 한 건을 지우려다 문제까지 잃는다. Brief 의
+ * `[웹 자료]` 절은 **다음 조사에서** 이 자료 없이 다시 조립된다.
+ */
+export async function removeSource(
+	env: AppEnv,
+	userId: string,
+	bookId: string,
+	sourceId: string,
+): Promise<{ sourceCount: number }> {
+	const row = await requireOwned(env, userId, bookId);
+
+	const source = await booksRepo.findSource(env, bookId, sourceId);
+	if (!source) throw notFound("참고 자료를 찾을 수 없습니다.");
+
+	await booksRepo.removeSource(env, bookId, sourceId);
+
+	if (source.url !== null) {
+		const kept = cachedWeb(row).filter((page) => page.url !== source.url);
+		await booksRepo.update(env, userId, bookId, { web_cache: JSON.stringify(kept) });
+	}
+
+	const left = await booksRepo.listSources(env, bookId);
+	return { sourceCount: left.length };
+}
+
 /** 적어 둔 서지 결과만 읽는다. 없으면 빈 배열 — 외부를 부르지 않는다. */
 function cachedBib(row: BookRow): bibliographic.BibRecord[] {
 	if (!row.bib_cache) return [];

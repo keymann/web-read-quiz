@@ -86,6 +86,7 @@
 | PATCH | `/api/books/:id` | PARENT | ✅ 부모가 책 정보 직접 수정 (AI 오인식 보정) |
 | PUT | `/api/books/:id/plot` | PARENT | ✅ 부모가 직접 적은 줄거리 저장 → Brief 재조립 |
 | DELETE | `/api/books/:id` | PARENT | ✅ 책과 그 책에서 나온 기록 전부 삭제 |
+| DELETE | `/api/books/:id/sources/:sourceId` | PARENT | ✅ 참고 자료 한 건 삭제 (웹 자료 묶음에서도 뺀다) |
 | GET | `/api/books/:id/history` | PARENT | 이 책의 퀴즈·풀이 이력 |
 
 ### 삭제는 되돌릴 수 없다
@@ -111,6 +112,16 @@ question_answers · KV 의 표지 이미지
 
 화면은 지우기 전에 무엇이 사라지는지 알리고 취소할 기회를 준다(`confirmDialog`). 책 화면에서
 지우면 책장으로 돌아간다.
+
+### 참고 자료 한 건 삭제는 묶음까지 건드린다
+
+목록은 조사마다 쌓인다(`collectSources`). 그래서 목록에서만 지우면 다음 "정보 다시 찾기" 가
+웹 자료 묶음(`books.web_cache`)에서 그 페이지를 그대로 되살린다. `DELETE :id/sources/:sourceId`
+는 행을 지우고 **그 주소를 묶음에서도 뺀다.**
+
+이미 만들어 둔 문제와 Brief 는 건드리지 않는다. 그것은 이 자료를 근거로 부모의 검수를 이미
+지난 결과물이고, 자료 한 건을 지우려다 문제까지 잃을 이유가 없다. Brief 의 `[웹 자료]` 절은
+**다음 조사에서** 이 자료 없이 다시 조립된다.
 
 ### 정보 찾기가 웹 검색까지 맡는다
 
@@ -324,10 +335,22 @@ AR·Lexile 이 아예 매겨지지 않았거나 잘 알려지지 않은 책이 �
 | POST | `/api/quizzes/:id/regenerate` | PARENT | ✅ `{ questionIds }` — 고른 문항만 비활성화. 채우기는 `generate` |
 | GET | `/api/quizzes/:id` | PARENT | ✅ 퀴즈 + 문제 + 진행 상태 + 내준 아이 |
 | POST | `/api/quizzes/:id/assign` | PARENT | ✅ `{ childId }` → assignment 생성, status=ASSIGNED |
+| DELETE | `/api/quizzes/:id` | PARENT | ✅ 회차 삭제 → 남은 회차 번호 재배정. 생성 중이면 **409** |
 | GET | `/api/books/:id/quizzes` | PARENT | ✅ 이 책의 퀴즈 회차 목록 |
 | PATCH | `/api/questions/:id` | PARENT | 문제 수정 → version+1, history=PARENT_EDITED |
 | GET | `/api/questions/:id/history` | PARENT | 문제 변경 이력 |
 | POST | `/api/quizzes/:id/approve` | PARENT | 검증 후 status=APPROVED |
+
+### 회차를 지우면 번호를 다시 매긴다
+
+`DELETE /api/quizzes/:id` 는 그 회차의 문항과 아이의 도전 기록까지 지운다(`quizzes.remove` 한
+곳에 순서까지 적혀 있다). 그러고 나서 남은 회차에 **만든 순서대로 1번부터 다시 번호를 매긴다**
+(`renumberRounds`). 번호에 구멍이 나면 부모는 잃은 회차를 찾게 되고, 다음 회차 번호
+(`nextRound` = 최댓값 + 1)도 그 구멍만큼 앞서 나간다.
+
+**만드는 중(`GENERATING`)인 회차는 409 로 막는다.** 백그라운드 작업은 밖에서 죽일 수 없어
+(`cancel` 은 표시만 남긴다), 행을 먼저 지우면 그 작업이 지워진 회차에 문항을 계속 써 넣는다.
+멈추고 나서 지운다.
 
 `POST /api/quizzes` 의 `language` 는 `en` | `ko`. 안 보내면 부모 설정의 기본값(초기값 `en`)이고,
 값은 퀴즈 행에 **복사된다** — 나중에 설정을 바꿔도 이미 만든 퀴즈의 언어는 그대로다. 부족한

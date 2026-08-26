@@ -317,3 +317,140 @@ describe("서버 사후 검사", () => {
 		expect(counts).toEqual([5, 5, 5, 5]);
 	});
 });
+
+/**
+ * 회차 삭제.
+ *
+ * 문항은 보통 감추는 데 그치지만(`is_active = 0`) 회차를 지울 때는 행까지 지운다. 남으면
+ * 부모에게는 안 보이면서 통계와 이력에만 나타나는 유령 기록이 된다.
+ */
+describe("회차 삭제", () => {
+	/** 이 회차에 딸린 것을 다 만들어 둔다. 한 줄이라도 남으면 아래 검사가 잡는다. */
+	async function seedRound(client: Client, bookId: string, quizId: string) {
+		const { childId } = await addChild(client);
+		const owner = await env.DB.prepare("SELECT created_by FROM books WHERE id = ?")
+			.bind(bookId)
+			.first<{ created_by: string }>();
+		const userId = owner!.created_by;
+
+		await env.DB.batch([
+			env.DB.prepare(
+				`INSERT INTO questions
+				   (id, quiz_id, question_number, question_text, choice1, choice2, choice3, choice4,
+				    correct_choice, question_type, difficulty)
+				 VALUES ('del-q1', ?, 1, '무슨 일이 있었나요?', '가', '나', '다', '라', 1, 'EVENT', 2)`,
+			).bind(quizId),
+			env.DB.prepare(
+				`INSERT INTO question_versions
+				   (id, question_id, version, question_text, choice1, choice2, choice3, choice4,
+				    correct_choice, question_type, difficulty, created_by)
+				 VALUES ('del-qv1', 'del-q1', 1, '무슨 일이 있었나요?', '가', '나', '다', '라', 1, 'EVENT', 2, 'AI')`,
+			),
+			env.DB.prepare(
+				"INSERT INTO question_histories (id, question_id, action, actor_type) VALUES ('del-qh1', 'del-q1', 'AI_GENERATED', 'AI')",
+			),
+			env.DB.prepare(
+				"INSERT INTO question_validations (id, question_id, question_version_id, valid, score) VALUES ('del-qval1', 'del-q1', 'del-qv1', 1, 90)",
+			),
+			env.DB.prepare(
+				"INSERT INTO quiz_assignments (id, quiz_id, parent_user_id, child_id) VALUES ('del-as1', ?, ?, ?)",
+			).bind(quizId, userId, childId),
+			env.DB.prepare(
+				"INSERT INTO quiz_attempts (id, assignment_id, quiz_id, child_id) VALUES ('del-at1', 'del-as1', ?, ?)",
+			).bind(quizId, childId),
+			env.DB.prepare(
+				"INSERT INTO attempt_questions (id, attempt_id, question_id, question_version_id, question_number) VALUES ('del-aq1', 'del-at1', 'del-q1', 'del-qv1', 1)",
+			),
+			env.DB.prepare(
+				`INSERT INTO question_answers
+				   (id, attempt_id, question_id, question_version_id, selected_choice, correct_choice, is_correct)
+				 VALUES ('del-an1', 'del-at1', 'del-q1', 'del-qv1', 1, 1, 1)`,
+			),
+		]);
+	}
+
+	const roundsOf = async (bookId: string) => {
+		const { results } = await env.DB.prepare(
+			"SELECT id, round FROM quizzes WHERE book_id = ? ORDER BY round",
+		)
+			.bind(bookId)
+			.all<{ id: string; round: number }>();
+		return results;
+	};
+
+	it("가운데 회차를 지우면 남은 회차가 번호를 다시 받는다", async () => {
+		const { client, bookId } = await readyBook();
+		const first = await createQuiz(client, bookId);
+		const second = await createQuiz(client, bookId);
+		const third = await createQuiz(client, bookId);
+
+		expect((await client.del(`/api/quizzes/${second}`)).status).toBe(200);
+
+		// 만든 순서대로 1번부터 다시 받는다. 구멍이 남으면 다음 회차 번호도 그만큼 앞서 나간다.
+		expect(await roundsOf(bookId)).toEqual([
+			{ id: first, round: 1 },
+			{ id: third, round: 2 },
+		]);
+
+		// 다음 회차는 3번이다 — 4번으로 뛰지 않는다.
+		const next = await client.post("/api/quizzes", { bookId });
+		expect(next.body.data.quiz.round).toBe(3);
+	});
+
+	it("문제와 배정·도전 기록까지 함께 사라진다", async () => {
+		const { client, bookId } = await readyBook();
+		const quizId = await createQuiz(client, bookId);
+		await seedRound(client, bookId, quizId);
+
+		expect((await client.del(`/api/quizzes/${quizId}`)).status).toBe(200);
+
+		for (const table of ["questions", "quiz_assignments", "quiz_attempts"]) {
+			const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE quiz_id = ?`)
+				.bind(quizId)
+				.first<{ n: number }>();
+			expect(row!.n).toBe(0);
+		}
+
+		// 문항·시도에 매달린 자식 행까지 본다. 남으면 부모에게는 안 보이는 유령 기록이 된다.
+		for (const sql of [
+			"SELECT COUNT(*) AS n FROM question_versions WHERE question_id = 'del-q1'",
+			"SELECT COUNT(*) AS n FROM question_histories WHERE question_id = 'del-q1'",
+			"SELECT COUNT(*) AS n FROM question_validations WHERE question_id = 'del-q1'",
+			"SELECT COUNT(*) AS n FROM attempt_questions WHERE attempt_id = 'del-at1'",
+			"SELECT COUNT(*) AS n FROM question_answers WHERE attempt_id = 'del-at1'",
+		]) {
+			expect((await env.DB.prepare(sql).first<{ n: number }>())!.n).toBe(0);
+		}
+	});
+
+	/*
+	 * 백그라운드 작업은 밖에서 죽일 수 없다. 행을 먼저 지우면 그 작업이 지워진 회차에 문항을
+	 * 계속 써 넣어, 화면에 보이지 않는 행만 남는다.
+	 */
+	it("만드는 중인 회차는 지우지 않는다", async () => {
+		const { client, bookId } = await readyBook();
+		const quizId = await createQuiz(client, bookId);
+		await env.DB.prepare("UPDATE quizzes SET status = 'GENERATING' WHERE id = ?").bind(quizId).run();
+
+		const res = await client.del(`/api/quizzes/${quizId}`);
+		expect(res.status).toBe(409);
+		expect(res.body.error.message).toContain("멈춘 뒤");
+	});
+
+	it("남의 퀴즈는 지울 수 없다", async () => {
+		const { client, bookId } = await readyBook();
+		const quizId = await createQuiz(client, bookId);
+		const { client: other } = await signupParent();
+
+		expect((await other.del(`/api/quizzes/${quizId}`)).status).toBe(404);
+		expect((await client.get(`/api/quizzes/${quizId}`)).status).toBe(200);
+	});
+
+	it("아이 계정은 회차를 지울 수 없다", async () => {
+		const { client, bookId } = await readyBook();
+		const quizId = await createQuiz(client, bookId);
+		const { client: child } = await addChild(client);
+
+		expect((await child.del(`/api/quizzes/${quizId}`)).status).toBe(403);
+	});
+});

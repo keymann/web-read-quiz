@@ -565,3 +565,89 @@ describe("책 삭제", () => {
 		expect((await child.del(`/api/books/${body.data.book.id}`)).status).toBe(403);
 	});
 });
+
+/**
+ * 참고 자료 한 건 삭제.
+ *
+ * 목록은 이제 조사마다 쌓이므로(#54), 목록에서만 지우면 다음 "정보 다시 찾기" 가 웹 자료
+ * 묶음에서 그 페이지를 그대로 되살린다. 그래서 묶음에서도 빼는지를 함께 잰다.
+ */
+describe("참고 자료 삭제", () => {
+	const PAGE_A = { url: "https://example.com/a", title: "잎싹 독후감", content: "잎싹의 이야기", score: 0.9 };
+	const PAGE_B = { url: "https://example.com/b", title: "잎싹 서평", content: "성장 서사", score: 0.8 };
+
+	/** 자료 두 건과 그 자료가 담긴 웹 묶음까지 갖춘 책. AI 는 부르지 않는다. */
+	async function bookWithSources() {
+		const client = await withKey();
+		const { body } = await uploadCover(client);
+		const bookId = body.data.book.id;
+		await client.patch(`/api/books/${bookId}`, { title: "마당을 나온 암탉" });
+
+		await env.DB.batch([
+			env.DB.prepare(
+				`INSERT INTO book_sources (id, book_id, source, url, title, content, position)
+				 VALUES ('src-a', ?, 'web', ?, ?, ?, 0)`,
+			).bind(bookId, PAGE_A.url, PAGE_A.title, PAGE_A.content),
+			env.DB.prepare(
+				`INSERT INTO book_sources (id, book_id, source, url, title, content, position)
+				 VALUES ('src-b', ?, 'web', ?, ?, ?, 1)`,
+			).bind(bookId, PAGE_B.url, PAGE_B.title, PAGE_B.content),
+			env.DB.prepare("UPDATE books SET web_cache = ? WHERE id = ?").bind(
+				JSON.stringify([PAGE_A, PAGE_B]),
+				bookId,
+			),
+		]);
+
+		return { client, bookId };
+	}
+
+	const sourceIds = async (bookId: string) => {
+		const { results } = await env.DB.prepare(
+			"SELECT id FROM book_sources WHERE book_id = ? ORDER BY position",
+		)
+			.bind(bookId)
+			.all<{ id: string }>();
+		return results.map((row) => row.id);
+	};
+
+	it("고른 자료만 목록에서 사라진다", async () => {
+		const { client, bookId } = await bookWithSources();
+
+		const res = await client.del(`/api/books/${bookId}/sources/src-a`);
+		expect(res.status).toBe(200);
+		expect(res.body.data.sourceCount).toBe(1);
+		expect(await sourceIds(bookId)).toEqual(["src-b"]);
+	});
+
+	// 여기가 이 기능의 핵심이다. 묶음에 남아 있으면 다시 찾기가 그대로 되살린다.
+	it("웹 자료 묶음에서도 빠진다", async () => {
+		const { client, bookId } = await bookWithSources();
+		await client.del(`/api/books/${bookId}/sources/src-a`);
+
+		const row = await env.DB.prepare("SELECT web_cache FROM books WHERE id = ?")
+			.bind(bookId)
+			.first<{ web_cache: string }>();
+
+		expect(JSON.parse(row!.web_cache).map((page: { url: string }) => page.url)).toEqual([PAGE_B.url]);
+	});
+
+	it("없는 자료를 지우면 404", async () => {
+		const { client, bookId } = await bookWithSources();
+		expect((await client.del(`/api/books/${bookId}/sources/src-none`)).status).toBe(404);
+	});
+
+	it("남의 책 자료는 지울 수 없다", async () => {
+		const { bookId } = await bookWithSources();
+		const { client: other } = await signupParent();
+
+		expect((await other.del(`/api/books/${bookId}/sources/src-a`)).status).toBe(404);
+		expect(await sourceIds(bookId)).toEqual(["src-a", "src-b"]);
+	});
+
+	it("아이 계정은 자료를 지울 수 없다", async () => {
+		const { client, bookId } = await bookWithSources();
+		const { client: child } = await addChild(client);
+
+		expect((await child.del(`/api/books/${bookId}/sources/src-a`)).status).toBe(403);
+	});
+});

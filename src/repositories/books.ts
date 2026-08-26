@@ -212,6 +212,31 @@ export async function listSources(env: AppEnv, bookId: string): Promise<BookSour
 	return results;
 }
 
+/** 자료 한 건. 지우기 전에 그 주소를 알아야 웹 자료 묶음에서도 뺄 수 있다. */
+export async function findSource(
+	env: AppEnv,
+	bookId: string,
+	sourceId: string,
+): Promise<BookSourceRow | null> {
+	return env.DB.prepare("SELECT * FROM book_sources WHERE id = ? AND book_id = ?")
+		.bind(sourceId, bookId)
+		.first<BookSourceRow>();
+}
+
+/**
+ * 자료 한 건을 지운다. **`position` 은 다시 매기지 않는다.**
+ *
+ * 순서는 값의 크기만 보므로 가운데가 비어도 그대로 지켜진다. 다음 조사가 목록을 다시 쓸 때
+ * 자리 번호도 함께 촘촘해진다(`services/book.ts` 의 `collectSources`).
+ */
+export async function removeSource(env: AppEnv, bookId: string, sourceId: string): Promise<boolean> {
+	const result = await env.DB.prepare("DELETE FROM book_sources WHERE id = ? AND book_id = ?")
+		.bind(sourceId, bookId)
+		.run();
+
+	return (result.meta.changes ?? 0) > 0;
+}
+
 export interface NewSource {
 	id: string;
 	bookId: string;

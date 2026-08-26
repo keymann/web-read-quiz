@@ -174,6 +174,35 @@ async function inbox({ env, principal }: RouteCtx): Promise<Response> {
 	});
 }
 
+/**
+ * 회차 하나를 지운다(§내 책장).
+ *
+ * 문제와 아이의 도전 기록까지 함께 사라지므로, 무엇이 사라지는지는 화면이 확인 창에 적는다.
+ * 지운 뒤에는 남은 회차에 1번부터 다시 번호를 매긴다 — 번호에 구멍이 나면 부모는 잃은 회차를
+ * 찾게 되고, 다음 회차 번호도 그만큼 앞서 나간다.
+ */
+async function remove({ env, principal, params }: RouteCtx): Promise<Response> {
+	const parent = requireParent(principal);
+
+	const quiz = await quizzesRepo.findOwned(env, parent.userId, params.id!);
+	if (!quiz) throw notFound("퀴즈를 찾을 수 없습니다.");
+
+	/*
+	 * 만드는 중인 회차는 지우지 않는다.
+	 *
+	 * 백그라운드 작업은 밖에서 죽일 수 없다(`cancel`). 행을 먼저 지우면 그 작업이 지워진 회차에
+	 * 문항을 계속 써 넣어, 화면에 보이지 않는 행만 남는다. 멈추고 나서 지우게 한다.
+	 */
+	if (quiz.status === "GENERATING") {
+		throw conflict("문제를 만드는 중입니다. 먼저 멈춘 뒤에 지울 수 있습니다.");
+	}
+
+	await quizzesRepo.remove(env, parent.userId, quiz.id);
+	await quizzesRepo.renumberRounds(env, quiz.book_id);
+
+	return ok({ deleted: true });
+}
+
 async function listForBook({ env, principal, params }: RouteCtx): Promise<Response> {
 	const parent = requireParent(principal);
 	const rows = await quizzesRepo.listByBook(env, parent.userId, params.id!);
@@ -219,6 +248,7 @@ export const quizRoutes: Route[] = [
 	route("POST", "/api/quizzes/:id/cancel", cancel),
 	route("POST", "/api/quizzes/:id/regenerate", regenerate),
 	route("POST", "/api/quizzes/:id/assign", assignToChild),
+	route("DELETE", "/api/quizzes/:id", remove),
 	route("GET", "/api/books/:id/quizzes", listForBook),
 	route("GET", "/api/my/quizzes", inbox),
 ];

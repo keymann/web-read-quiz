@@ -542,17 +542,65 @@ export async function bookDetailPage({ id }) {
 					text: grouped ? hostOf(source.url) : (SOURCE_LABEL[source.source] ?? source.source),
 				}),
 			]),
-			source.url
-				? el("a", {
-						class: "btn btn--ghost",
-						href: source.url,
-						target: "_blank",
-						rel: "noopener noreferrer",
-						text: "열기",
-					})
-				: null,
+			// 열기 오른쪽에 같은 모양으로 둔다. 주소가 없는 자료(AI 기억 기록)에도 붙인다 —
+			// 지울 수 있느냐가 자료 종류에 따라 갈리면 부모는 규칙을 짐작해야 한다.
+			el("div", { class: "list__actions" }, [
+				source.url
+					? el("a", {
+							class: "btn btn--ghost",
+							href: source.url,
+							target: "_blank",
+							rel: "noopener noreferrer",
+							text: "열기",
+						})
+					: null,
+				el("button", {
+					class: "btn btn--ghost",
+					type: "button",
+					text: "삭제",
+					disabled: busy !== null,
+					onClick: () => removeSource(source),
+				}),
+			]),
 			source.content ? el("p", { class: "source-excerpt", text: source.content }) : null,
 		]);
+	}
+
+	/**
+	 * 참고 자료 한 건을 지운다.
+	 *
+	 * 웹 자료 묶음에서도 빠지므로 다음 "정보 다시 찾기" 에 다시 올라오지 않는다. 이미 만들어 둔
+	 * 문제는 그대로 남는다 — 그 문제는 이미 부모의 검수를 지난 결과물이다.
+	 */
+	async function removeSource(source) {
+		if (busy !== null) return;
+		busy = "source";
+
+		const yes = await confirmDialog({
+			title: "참고 자료 삭제",
+			message:
+				"이 자료를 참고 자료 목록에서 지웁니다. 다음 ‘정보 다시 찾기’ 에도 다시 올라오지 않습니다. 이미 만들어 둔 문제는 그대로 남습니다. 되돌릴 수 없습니다.",
+			confirmText: "삭제",
+			cancelText: "취소",
+		});
+		if (!yes) {
+			busy = null;
+			render(lastData);
+			return;
+		}
+
+		render(lastData);
+
+		try {
+			await del(`/api/books/${id}/sources/${source.id}`);
+			message = "참고 자료를 삭제했습니다.";
+			messageKind = "info";
+		} catch (err) {
+			message = err.message;
+			messageKind = "error";
+		}
+		busy = null;
+		await refresh();
 	}
 
 	function sourcesCard(sources, evidenceWeak, readyForQuiz) {
@@ -591,6 +639,45 @@ export async function bookDetailPage({ id }) {
 					])
 				: null,
 		]);
+	}
+
+	/**
+	 * 회차 하나를 지운다.
+	 *
+	 * 문제와 그 회차에 남은 아이의 도전 기록이 함께 사라진다. 무엇이 사라지는지는 확인 창에
+	 * 적는다 — 부모가 누르기 전에 읽을 수 있어야 한다.
+	 *
+	 * 지운 뒤 남은 회차는 만든 순서대로 번호를 다시 받는다(서버). 그래서 목록을 다시 조회한다.
+	 */
+	async function removeQuiz(quiz) {
+		if (busy !== null) return;
+		busy = "quiz";
+
+		const yes = await confirmDialog({
+			title: `${quiz.round}회차 삭제`,
+			message:
+				"이 회차의 문제와 아이의 도전 기록을 모두 삭제합니다. 남은 회차는 만든 순서대로 번호를 다시 받습니다. 되돌릴 수 없습니다.",
+			confirmText: "삭제",
+			cancelText: "취소",
+		});
+		if (!yes) {
+			busy = null;
+			render(lastData);
+			return;
+		}
+
+		render(lastData);
+
+		try {
+			await del(`/api/quizzes/${quiz.id}`);
+			message = `${quiz.round}회차를 삭제했습니다.`;
+			messageKind = "info";
+		} catch (err) {
+			message = err.message;
+			messageKind = "error";
+		}
+		busy = null;
+		await refresh();
 	}
 
 	/** 이 책에 누가 몇 번 도전했는지(§19). */
@@ -664,12 +751,22 @@ export async function bookDetailPage({ id }) {
 							}),
 						]),
 						pending ? el("span", { class: "tag tag--warn", text: "문제 부족" }) : null,
-						el("a", {
-							class: pending ? "btn" : "btn btn--ghost",
-							href: `/parent/quizzes/${quiz.id}`,
-							"data-link": true,
-							text: pending ? "문제 만들기" : "보기",
-						}),
+						// 보기 오른쪽에 붙인다. 묶어 두지 않으면 `space-between` 이 둘 사이를 벌린다.
+						el("div", { class: "list__actions" }, [
+							el("a", {
+								class: pending ? "btn" : "btn btn--ghost",
+								href: `/parent/quizzes/${quiz.id}`,
+								"data-link": true,
+								text: pending ? "문제 만들기" : "보기",
+							}),
+							el("button", {
+								class: "btn btn--ghost",
+								type: "button",
+								text: "삭제",
+								disabled: busy !== null,
+								onClick: () => removeQuiz(quiz),
+							}),
+						]),
 					]);
 				}),
 			),

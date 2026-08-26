@@ -81,6 +81,68 @@ export async function listByBook(
 	return results;
 }
 
+/**
+ * 이 회차와 거기서 나온 **모든 기록**을 지운다.
+ *
+ * 문항은 보통 감추는 데 그치지만(`is_active = 0`) 여기서는 행까지 지운다. 부모가 회차를
+ * 지우는 것은 "다른 문제를 내 달라" 가 아니라 **"이 회차를 없애 달라"** 는 뜻이고, 그 회차에
+ * 딸린 아이의 도전 기록도 함께 사라져야 한다. `books.remove` 와 같은 판단이다.
+ *
+ * 스키마에 `ON DELETE CASCADE` 가 있지만 자식부터 직접 지운다 — 외래키 강제 여부에 기대지
+ * 않아도 되고, **무엇이 함께 사라지는지가 코드에 적혀 있어야** 부모에게 알릴 말을 한 곳에서
+ * 정할 수 있다. 한 `batch` 로 보내므로 왕복은 한 번이고, 중간에 실패하면 전부 되돌아간다.
+ */
+export async function remove(env: AppEnv, parentUserId: string, quizId: string): Promise<boolean> {
+	const questionIds = "SELECT id FROM questions WHERE quiz_id = ?";
+	const attemptIds = "SELECT id FROM quiz_attempts WHERE quiz_id = ?";
+
+	// 각 문장의 `?` 는 하나뿐이라 모두 같은 값을 바인딩한다.
+	const cascade = [
+		`DELETE FROM question_answers WHERE attempt_id IN (${attemptIds})`,
+		`DELETE FROM attempt_questions WHERE attempt_id IN (${attemptIds})`,
+		"DELETE FROM quiz_attempts WHERE quiz_id = ?",
+		"DELETE FROM quiz_assignments WHERE quiz_id = ?",
+		`DELETE FROM question_validations WHERE question_id IN (${questionIds})`,
+		`DELETE FROM question_histories WHERE question_id IN (${questionIds})`,
+		`DELETE FROM question_versions WHERE question_id IN (${questionIds})`,
+		"DELETE FROM questions WHERE quiz_id = ?",
+	];
+
+	const results = await env.DB.batch([
+		...cascade.map((sql) => env.DB.prepare(sql).bind(quizId)),
+		// 소유 확인을 마지막 문장에도 넣는다. 남의 퀴즈가 지워지는 일은 어느 층에서도 막아야 한다.
+		env.DB.prepare("DELETE FROM quizzes WHERE id = ? AND parent_user_id = ?").bind(quizId, parentUserId),
+	]);
+
+	// 마지막 문장이 퀴즈 행이다. 그것이 지워졌을 때만 삭제로 본다.
+	return (results[results.length - 1]?.meta.changes ?? 0) > 0;
+}
+
+/**
+ * 남은 회차에 **만든 순서대로 1번부터 다시 번호를 매긴다.**
+ *
+ * 회차를 지우면 번호에 구멍이 난다. "1회차 · 3회차" 는 부모에게 2회차를 어디서 잃었는지 묻게
+ * 만들고, 다음 회차 번호(`nextRound` = 최댓값 + 1)도 그 구멍만큼 앞서 나간다.
+ *
+ * 같은 밀리초에 만든 회차가 있을 수 있다. 시각만으로 세면 그 둘이 같은 번호를 받으므로
+ * `rowid` 를 함께 본다 — 넣은 순서가 그대로 담겨 있어 만든 순서와 어긋나지 않는다.
+ */
+export async function renumberRounds(env: AppEnv, bookId: string): Promise<void> {
+	await env.DB.prepare(
+		`UPDATE quizzes
+		    SET round = (
+		          SELECT COUNT(*) FROM quizzes AS earlier
+		           WHERE earlier.book_id = quizzes.book_id
+		             AND (earlier.created_at < quizzes.created_at
+		                  OR (earlier.created_at = quizzes.created_at AND earlier.rowid <= quizzes.rowid))
+		        ),
+		        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		  WHERE book_id = ?`,
+	)
+		.bind(bookId)
+		.run();
+}
+
 /** 이 책의 다음 회차 번호(§18 재도전). */
 export async function nextRound(env: AppEnv, bookId: string): Promise<number> {
 	const row = await env.DB.prepare("SELECT MAX(round) AS m FROM quizzes WHERE book_id = ?")

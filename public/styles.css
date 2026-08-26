@@ -489,6 +489,20 @@ body {
 	min-width: 0;
 }
 
+/*
+ * 한 줄에 버튼이 둘일 때 **붙여 둔다.**
+ *
+ * `.list__item` 은 `justify-content: space-between` 이라 남는 공간이 항목 사이로 고르게
+ * 들어간다. 버튼을 그대로 나란히 놓으면 "열기" 와 "삭제" 사이가 벌어져 한 짝으로 보이지
+ * 않는다. 묶어 두면 둘 사이는 이 `gap` 하나로 고정되고, 묶음은 오른쪽 끝에 그대로 남는다.
+ */
+.list__actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+
 .list__title {
 	font-weight: 600;
 }
